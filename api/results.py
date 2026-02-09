@@ -17,6 +17,6 @@ async def get_result(job_id: str):
 
     return {
         "status": "done",
-        "data": [JOB_RESULTS[job_id]]
+        "data": JOB_RESULTS[job_id]
     }
 
