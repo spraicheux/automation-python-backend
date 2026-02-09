@@ -1,0 +1,28 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from api.ingest import router as ingest_router
+
+app = FastAPI(
+    title="Automation Python Backend",
+    version="1.0.0",
+    description="Async backend for Make.com-driven Email & WhatsApp offer processing",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(ingest_router, prefix="/api", tags=["Ingest"])
+
+@app.get("/health", tags=["System"])
+async def health():
+    return {
+        "status": "ok",
+        "service": "automation-python-backend",
+        "version": "1.0.0",
+    }
