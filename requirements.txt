@@ -6,3 +6,4 @@ python-multipart>=0.0.9
 openai>=1.12
 structlog>=24.1
 gunicorn>=21.2
+pandas~=2.3.3
