@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.ingest import router as ingest_router
 from api.results import router as results_router
+from api.debug import router as debug_router
+
 
 app = FastAPI(
     title="Python Ingestion Backend",
@@ -20,6 +22,8 @@ app.add_middleware(
 
 app.include_router(ingest_router, prefix="/api", tags=["Ingest"])
 app.include_router(results_router, prefix="/api", tags=["Result"])
+app.include_router(debug_router, prefix="/debug", tags=["debug"])
+
 
 @app.get("/health", tags=["System"])
 async def health():
