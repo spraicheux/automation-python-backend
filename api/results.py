@@ -5,7 +5,6 @@ from core.redis_client import redis_manager
 
 router = APIRouter()
 
-redis_client = redis.Redis.from_url(os.getenv("REDIS_URL"))
 
 
 @router.get("/result/{job_id}")
