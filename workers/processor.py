@@ -1,6 +1,8 @@
 import uuid
 import traceback
 from datetime import datetime
+
+from core.file_download import resolve_attachment_bytes
 from schemas.output import OfferItem
 from core.openai_client import extract_offer, extract_from_file, parse_buffer_data
 from core.redis_client import redis_manager
@@ -45,7 +47,7 @@ async def process_offer(payload, job_id: str):
                     logger.info(f"Processing attachment: {file_name}")
 
                     file_ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-                    file_bytes = parse_buffer_data(attachment.data)
+                    file_bytes = await resolve_attachment_bytes(attachment)
 
                     if not file_bytes:
                         logger.warning(f"Could not parse file data for {file_name}")
