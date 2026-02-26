@@ -12,10 +12,18 @@ async def resolve_attachment_bytes(attachment: Attachment) -> bytes:
     if "url" in attachment.data:
         media_url = attachment.data["url"]
 
+        media_url = media_url.replace(
+            "https://lookaside.fbsbx.com",
+            "https://waba-v2.360dialog.io"
+        )
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 media_url,
-                headers={"D360-API-KEY": D360_API_KEY}
+                headers={
+                    "Authorization": f"Bearer {D360_API_KEY}",
+                    "User-Agent": "curl/7.64.1"
+                }
             )
             response.raise_for_status()
             return response.content
