@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from fastapi import UploadFile, File, Form, Request
 from typing import List, Optional
 from schemas.ingest import IngestRequest
@@ -14,7 +14,7 @@ router = APIRouter()
 @router.post("/ingest")
 async def ingest(
     request: Request,
-    payload: Optional[IngestRequest] = None,
+    payload: Optional[dict] = Body(None),
 
     source_channel: Optional[str] = Form(None),
     source_message_id: Optional[str] = Form(None),
@@ -29,9 +29,16 @@ async def ingest(
 ):
     job_id = str(uuid4())
 
-    if payload:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        if payload is None:
+            return {"error": "Invalid JSON body"}
+
+        validated_payload = IngestRequest(**payload)
+
         redis_manager.set_job_status(job_id, "processing")
-        process_document_task.delay(job_id, payload.model_dump())
+        process_document_task.delay(job_id, validated_payload.model_dump())
+
         return {
             "status": "accepted",
             "job_id": job_id,
