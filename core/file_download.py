@@ -9,23 +9,36 @@ async def resolve_attachment_bytes(attachment: Attachment) -> bytes:
     if attachment.data.get("type") == "Buffer":
         return bytes(attachment.data.get("data", []))
 
-    if "url" in attachment.data:
-        media_url = attachment.data["url"]
+    media_id = (
+        attachment.data.get("id")
+        or attachment.data.get("contentId")
+    )
 
-        media_url = media_url.replace(
-            "https://lookaside.fbsbx.com",
-            "https://waba-v2.360dialog.io"
-        )
-
+    if media_id:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(
-                media_url,
+
+            meta_response = await client.get(
+                f"https://waba-v2.360dialog.io/{media_id}",
                 headers={
-                    "Authorization": f"Bearer {D360_API_KEY}",
-                    "User-Agent": "curl/7.64.1"
+                    "D360-API-KEY": D360_API_KEY
                 }
             )
-            response.raise_for_status()
-            return response.content
+            meta_response.raise_for_status()
+
+            meta_json = meta_response.json()
+            fresh_url = meta_json.get("url")
+
+            if not fresh_url:
+                raise ValueError("360dialog did not return media URL")
+
+            file_response = await client.get(
+                fresh_url,
+                headers={
+                    "D360-API-KEY": D360_API_KEY
+                }
+            )
+            file_response.raise_for_status()
+
+            return file_response.content
 
     raise ValueError("Unsupported attachment format")
