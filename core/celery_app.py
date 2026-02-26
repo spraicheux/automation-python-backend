@@ -12,8 +12,6 @@ celery_app = Celery(
     include=["workers.celery_tasks"]
 )
 
-# SSL configuration for Azure Cache for Redis
-# Note: Use rediss:// in your environment variables to trigger this
 ssl_conf = None
 if broker_url.startswith('rediss://'):
     ssl_conf = {
@@ -31,4 +29,12 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     broker_use_ssl=ssl_conf,
     redis_backend_use_ssl=ssl_conf,
+    broker_heartbeat=30,
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+    worker_max_tasks_per_child=10,
+    broker_transport_options={
+        "visibility_timeout": 3600
+    },
+    worker_concurrency=1,
 )
