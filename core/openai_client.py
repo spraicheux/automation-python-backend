@@ -205,6 +205,7 @@ async def extract_offer(text: str) -> dict:
         🚨 7️⃣ CUSTOM STATUS RULE (T1 / T2):
         Column: custom_status
         If offer contains:
+        If offer contains T1 or T2 anywhere in the offer send it to custom status
         - T1
         - T2
         Extract it.
@@ -297,15 +298,15 @@ async def extract_offer(text: str) -> dict:
 
         ALCOHOL PERCENT - CRITICAL INSTRUCTION:
         - Extract the alcohol percentage exactly as it appears in the source text.
-        - If the text shows "40%" → output alcohol_percent: "40%"
-        - If the text shows "5%" → output alcohol_percent: "5%"  
-        - If the text shows "17%" → output alcohol_percent: "17%"
-        - If the text shows "40" (without % sign) → output alcohol_percent: "40%" (add % sign)
-        - If the text shows "0.4" or "0,4" → output alcohol_percent: "0.4%" (DO NOT multiply by 100)
-        - If the text shows "40.0" → output alcohol_percent: "40.0%"
+        - If the text shows "40%" → output alcohol_percent: 40
+        - If the text shows "5%" → output alcohol_percent: 5  
+        - If the text shows "17%" → output alcohol_percent: 17
+        - If the text shows "40" (without % sign) → output alcohol_percent: 40
+        - If the text shows "0.4" or "0,4" → output alcohol_percent: 0.4 (DO NOT multiply by 100)
+        - If the text shows "40.0" → output alcohol_percent: 40.0
         - NEVER perform any mathematical conversion or multiplication on the alcohol value.
-        - NEVER change 0.4 to 40 - keep it exactly as 0.4 with % sign.
-        - If alcohol percentage is not found in the text, leave blank.
+        - NEVER change 0.4 to 40 - keep it exactly as 0.4.
+        - If alcohol percentage is not found in the text, return "Not Found".
         - Do NOT default to 0 when alcohol percentage is missing.
 
         CASES_PER_PALLET - CRITICAL RULE:
@@ -427,9 +428,9 @@ async def extract_offer(text: str) -> dict:
                             'alcohol_percent', 'moq_cases'
                         ]
                         if key in numeric_fields:
-                            product[key] = None
+                            product[key] = "Not Found"
                         else:
-                            product[key] = ""
+                            product[key] = "Not Found"
 
                 cleaned_product = clean_product_data(product)
                 cleaned_products.append(cleaned_product)
@@ -448,10 +449,10 @@ async def extract_offer(text: str) -> dict:
     # After extracting all products, convert prices to EUR
     logger.info("Converting prices to EUR for all products...")
     for product in all_products:
-        currency = product.get('currency', "")
+        currency = product.get('currency', "Not Found")
 
         # Skip if currency is not found or already EUR
-        if currency in ["", None, "EUR"]:
+        if currency in ["Not Found", "", None, "EUR"]:
             product['price_per_unit_eur'] = product.get('price_per_unit')
             product['price_per_case_eur'] = product.get('price_per_case')
             continue
@@ -460,7 +461,7 @@ async def extract_offer(text: str) -> dict:
         exchange_rate = await get_exchange_rate_to_eur(currency)
 
         # Convert unit price if exists
-        if product.get('price_per_unit') not in [None, "", 0, "0"]:
+        if product.get('price_per_unit') not in [None, "Not Found", "", 0, "0"]:
             product['price_per_unit_eur'] = convert_price_to_eur(
                 product['price_per_unit'],
                 currency,
@@ -468,7 +469,7 @@ async def extract_offer(text: str) -> dict:
             )
 
         # Convert case price if exists
-        if product.get('price_per_case') not in [None, "", 0, "0"]:
+        if product.get('price_per_case') not in [None, "Not Found", "", 0, "0"]:
             product['price_per_case_eur'] = convert_price_to_eur(
                 product['price_per_case'],
                 currency,
@@ -778,15 +779,15 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
 
                     ALCOHOL PERCENT - CRITICAL INSTRUCTION:
                     - Extract the alcohol percentage exactly as it appears in the source text.
-                    - If the text shows "40%" → output alcohol_percent: "40%"
-                    - If the text shows "5%" → output alcohol_percent: "5%"
-                    - If the text shows "17%" → output alcohol_percent: "17%"
-                    - If the text shows "40" (without % sign) → output alcohol_percent: "40%" (add % sign)
-                    - If the text shows "0.4" or "0,4" → output alcohol_percent: "0.4%" (DO NOT multiply by 100)
-                    - If the text shows "40.0" → output alcohol_percent: "40.0%"
+                    - If the text shows "40%" → output alcohol_percent: 40
+                    - If the text shows "5%" → output alcohol_percent: 5
+                    - If the text shows "17%" → output alcohol_percent: 17
+                    - If the text shows "40" (without % sign) → output alcohol_percent: 40
+                    - If the text shows "0.4" or "0,4" → output alcohol_percent: 0.4 (DO NOT multiply by 100)
+                    - If the text shows "40.0" → output alcohol_percent: 40.0
                     - NEVER perform any mathematical conversion or multiplication on the alcohol value.
-                    - NEVER change 0.4 to 40 - keep it exactly as 0.4 with % sign.
-                    - If alcohol percentage is not found in the text, leave blank.
+                    - NEVER change 0.4 to 40 - keep it exactly as 0.4.
+                    - If alcohol percentage is not found in the text, return "Not Found".
                     - Do NOT default to 0 when alcohol percentage is missing.
 
                     CASES_PER_PALLET - CRITICAL RULE:
@@ -1213,52 +1214,52 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
 def clean_product_data(product: dict) -> dict:
     """Clean up product data to ensure it matches schema exactly"""
     schema_fields = {
-        'uid': "",
-        'product_key': "",
-        'processing_version': "",
-        'brand': "",
-        'product_name': "",
-        'product_reference': "",
-        'category': "",
-        'sub_category': "",
-        'origin_country': "",
-        'vintage': "",
-        'alcohol_percent': None,  # None for numeric fields
-        'packaging': "",
-        'unit_volume_ml': None,  # None for numeric fields
-        'units_per_case': None,  # None for numeric fields
-        'cases_per_pallet': None,  # None for numeric fields
-        'quantity_case': None,  # None for numeric fields
-        'bottle_or_can_type': "",
-        'price_per_unit': None,  # None for numeric fields
-        'price_per_case': None,  # None for numeric fields
+        'uid': "Not Found",
+        'product_key': "Not Found",
+        'processing_version': "Not Found",
+        'brand': "Not Found",
+        'product_name': "Not Found",
+        'product_reference': "Not Found",
+        'category': "Not Found",
+        'sub_category': "Not Found",
+        'origin_country': "Not Found",
+        'vintage': "Not Found",
+        'alcohol_percent': None,  # Changed from "Not Found" to None for numeric fields
+        'packaging': "Not Found",
+        'unit_volume_ml': None,  # Changed from "Not Found" to None for numeric fields
+        'units_per_case': None,  # Changed from "Not Found" to None for numeric fields
+        'cases_per_pallet': None,  # Changed from "Not Found" to None for numeric fields
+        'quantity_case': None,  # Changed from "Not Found" to None for numeric fields
+        'bottle_or_can_type': "Not Found",
+        'price_per_unit': None,  # Changed from "Not Found" to None for numeric fields
+        'price_per_case': None,  # Changed from "Not Found" to None for numeric fields
         'currency': "EUR",
-        'price_per_unit_eur': None,  # None for numeric fields
-        'price_per_case_eur': None,  # None for numeric fields
-        'incoterm': "",
-        'location': "",
-        'min_order_quantity_case': None,  # None for numeric fields
-        'port': "",
-        'lead_time': "",
-        'supplier_name': "",
-        'supplier_reference': "",
-        'supplier_country': "",
-        'offer_date': "",
-        'valid_until': "",
-        'date_received': "",
-        'source_channel': "",
-        'source_filename': "",
-        'source_message_id': "",
+        'price_per_unit_eur': None,  # Changed from "Not Found" to None for numeric fields
+        'price_per_case_eur': None,  # Changed from "Not Found" to None for numeric fields
+        'incoterm': "Not Found",
+        'location': "Not Found",
+        'min_order_quantity_case': None,  # Changed from "Not Found" to None for numeric fields
+        'port': "Not Found",
+        'lead_time': "Not Found",
+        'supplier_name': "Not Found",
+        'supplier_reference': "Not Found",
+        'supplier_country': "Not Found",
+        'offer_date': "Not Found",
+        'valid_until': "Not Found",
+        'date_received': "Not Found",
+        'source_channel': "Not Found",
+        'source_filename': "Not Found",
+        'source_message_id': "Not Found",
         'confidence_score': 0.0,
         'error_flags': [],
         'needs_manual_review': False,
-        'best_before_date': "",
-        'label_language': "",
-        'ean_code': "",
-        'gift_box': "",
-        'refillable_status': "",
-        'custom_status': "",
-        'moq_cases': None
+        'best_before_date': "Not Found",
+        'label_language': "Not Found",
+        'ean_code': "Not Found",
+        'gift_box': "Not Found",
+        'refillable_status': "NRF",
+        'custom_status': "Not Found",
+        'moq_cases': None  # Changed from "Not Found" to None for numeric fields
     }
 
     cleaned_product = {}
@@ -1267,7 +1268,7 @@ def clean_product_data(product: dict) -> dict:
         if field in product:
             value = product[field]
 
-            if value in [None, "", "null", 0, "0"]:
+            if value in [None, "Not Found", "", "null", 0, "0"]:
                 cleaned_product[field] = default_value
             else:
                 numeric_keys = [
@@ -1279,11 +1280,7 @@ def clean_product_data(product: dict) -> dict:
                 if field in numeric_keys:
                     try:
                         if field == 'alcohol_percent':
-                            if isinstance(value, str) and '%' in value:
-                                cleaned_product[field] = value
-                            else:
-                                float_val = float(value)
-                                cleaned_product[field] = f"{float_val}%"
+                            cleaned_product[field] = float(value)
                         else:
                             cleaned_product[field] = float(value)
                     except (ValueError, TypeError):
