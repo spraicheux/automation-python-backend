@@ -167,6 +167,36 @@ If none found → leave blank.
 NEVER use: person names, sales desk names, email usernames.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RULE 6b — supplier_reference EXTRACTION  ⚠️ OVERRIDE RULE ⚠️
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+supplier_reference must be actively searched across the ENTIRE file/text.
+If ANY supplier reference / offer reference is found, it MUST override the
+supplier_reference field — even if a value was already set.
+
+Scan every part of the source for these patterns (column names, labels, inline text):
+  Column names: "Ref", "Reference", "Ref No", "Ref #", "Supplier Ref",
+                "Offer Ref", "Offer Reference", "Offer No", "Offer Number",
+                "Order Ref", "PO Ref", "SKU", "Item Code", "Product Code",
+                "Supplier Code", "Supplier SKU", "Article", "Art No",
+                "Art#", "Code", "Item No", "Stock Code"
+  Inline patterns:
+    "Ref: ABC123"            → supplier_reference: "ABC123"
+    "Offer No: OFF-2024-001" → supplier_reference: "OFF-2024-001"
+    "PO Ref: XYZ789"        → supplier_reference: "XYZ789"
+    "Our ref: 45892"         → supplier_reference: "45892"
+    "Your ref: SUP-007"      → supplier_reference: "SUP-007"
+    "Reference: OM-NOV25"    → supplier_reference: "OM-NOV25"
+
+Priority order when multiple candidates exist:
+  1. Explicit "Supplier Ref" / "Offer Ref" column or label → highest priority
+  2. "Ref No" / "Reference" / "Offer No" column or label
+  3. "SKU" / "Item Code" / "Product Code" / "Stock Code" column
+  4. Any other reference-like alphanumeric code associated with the product
+
+If found → always write to supplier_reference (override any previous value).
+If truly absent from ALL sources → leave blank.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULE 7 — custom_status (T1 / T2)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • If "T1" or "T2" appears anywhere in the offer → extract it.
@@ -345,6 +375,8 @@ Key reminders:
 • alcohol_percent: MANDATORY — scan the entire text for ABV, Alc%, Vol%, strength,
   or any numeric value that represents alcohol content. Format as "43%" not 43.
   Check product codes too (e.g. "12/100/17%" → alcohol_percent: "17%").
+• supplier_reference: MANDATORY — scan for any Ref, Reference, Offer Ref, Offer No,
+  SKU, Item Code, Product Code, Stock Code, or similar. If found, override the field.
 • quantity_case ≠ packaging config (12x750ml is packaging, not quantity).
 • Supplier name = company name only (never a person name).
 
@@ -371,6 +403,9 @@ Key reminders:
   Output format MUST include % sign: "43%" not 43, "40.0%" not 40.0.
   If a column exists with a numeric value between 1 and 99 that looks like an
   alcohol percentage, extract it as alcohol_percent.
+• supplier_reference: MANDATORY — scan EVERY column for Ref, Reference, Offer Ref,
+  Offer No, SKU, Item Code, Product Code, Stock Code, Art No, Supplier Code, or
+  any alphanumeric code associated with the product. If found, override the field.
 • quantity_case ≠ packaging config (12x750ml is packaging, not quantity).
 • Supplier name = company name only (never a person name).
 • Skip header/subtotal rows; extract only product offer rows.
