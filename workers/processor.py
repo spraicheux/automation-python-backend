@@ -150,13 +150,13 @@ async def process_offer(payload, job_id: str):
                         f"Row {idx} raw data before cleaning: {merged_data.get('product_name')} | {merged_data.get('brand')}")
 
                     safe_data = {
-                        'product_name': merged_data.get('product_name'),
-                        'product_key': merged_data.get('product_key'),
-                        'brand': merged_data.get('brand'),
+                        'product_name': merged_data.get('product_name') or "Not Found",
+                        'product_key': merged_data.get('product_key') or "Not Found",
+                        'brand': merged_data.get('brand') or "Not Found",
                         'category': merged_data.get('category'),
                         'sub_category': merged_data.get('sub_category'),
-                        'packaging': merged_data.get('packaging'),
-                        'packaging_raw': merged_data.get('packaging_raw'),
+                        'packaging': merged_data.get('packaging') or "Bottle",
+                        'packaging_raw': merged_data.get('packaging_raw') or "bottle",
                         'bottle_or_can_type': merged_data.get('bottle_or_can_type'),
                         # FIX BUG 4: use _safe_float() instead of bare float() so that
                         # None values from openai_client don't raise TypeError and silently
@@ -166,8 +166,8 @@ async def process_offer(payload, job_id: str):
                         'cases_per_pallet': merged_data.get('cases_per_pallet'),
                         'quantity_case': merged_data.get('quantity_case'),
                         'gift_box': merged_data.get('gift_box'),
-                        'refillable_status': merged_data.get('refillable_status'),
-                        'currency': merged_data.get('currency'),
+                        'refillable_status': merged_data.get('refillable_status') or "",
+                        'currency': merged_data.get('currency') or "EUR",
                         'price_per_unit': _safe_float(merged_data.get('price_per_unit'), 0),
                         'price_per_unit_eur': _safe_float(merged_data.get('price_per_unit_eur'), 0),
                         'price_per_case': _safe_float(merged_data.get('price_per_case'), 0),
@@ -179,17 +179,17 @@ async def process_offer(payload, job_id: str):
                         # numeric_fields conversion loop below.
                         'alcohol_percent': merged_data.get('alcohol_percent'),
                         'origin_country': merged_data.get('origin_country'),
-                        'supplier_country': merged_data.get('supplier_country'),
-                        'incoterm': merged_data.get('incoterm'),
-                        'location': merged_data.get('location'),
-                        'lead_time': merged_data.get('lead_time'),
+                        'supplier_country': merged_data.get('supplier_country') or "",
+                        'incoterm': merged_data.get('incoterm') or "Not Found",
+                        'location': merged_data.get('location') or "Not Found",
+                        'lead_time': merged_data.get('lead_time') or "Not Found",
                         'moq_cases': merged_data.get('moq_cases'),
                         'valid_until': merged_data.get('valid_until'),
                         'best_before_date': merged_data.get('best_before_date'),
                         'vintage': merged_data.get('vintage'),
                         'supplier_reference': merged_data.get('supplier_reference'),
                         'ean_code': merged_data.get('ean_code'),
-                        'label_language': merged_data.get('label_language'),
+                        'label_language': merged_data.get('label_language') or "EN",
                         'product_reference': merged_data.get('product_reference'),
                         # FIX BUG 2: custom_status was hardcoded as None. Extract it from
                         # the merged data so T1/T2 values extracted by the AI are passed through.
