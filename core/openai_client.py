@@ -2,12 +2,13 @@ import os
 import json
 import base64
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, List
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import logging
 import traceback
 
+# Root logging configured in entry points
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -15,6 +16,9 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# SHARED EXTRACTION RULES — used in BOTH extract_offer and Excel batch prompts
+# ──────────────────────────────────────────────────────────────────────────────
 SHARED_EXTRACTION_RULES = """
 SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - uid: Unique internal ID for each row (DO NOT generate - leave as "Not Found")
@@ -89,8 +93,12 @@ SPIRITS:
   Rum / BACARDI / Captain Morgan / Havana Club / Diplomatico / Appleton
                                        → sub_category: "Rum"
   Tequila / Mezcal                     → sub_category: "Tequila"
-  Cognac / Brandy / Armagnac / HENNESSY / REMY MARTIN / MARTELL / COURVOISIER
-                                       → sub_category: "Brandy"
+  Cognac / HENNESSY / REMY MARTIN / MARTELL / COURVOISIER / CAMUS / HINE / DELAMAIN / HARDY
+                                       → sub_category: "Cognac"
+  Brandy / Armagnac (non-Cognac)       → sub_category: "Brandy"
+  NOTE: If the word "Cognac" appears in the product name or category label, ALWAYS use
+        sub_category: "Cognac" — NEVER "Brandy". Cognac is a protected designation of
+        origin and must not be grouped under the generic "Brandy" sub_category.
   Liqueur / BAILEYS / KAHLUA / COINTREAU / AMARETTO / CAMPARI / APEROL
                                        → sub_category: "Liqueur"
   Absinthe                             → sub_category: "Absinthe"
@@ -209,7 +217,19 @@ IMPORTANT RULES:
 6. DO NOT use null for any field - always use "Not Found" for missing values.
 7. Use AI to intelligently match values to fields - if something in email matches a field, extract it.
 
-PRICE INTERPRETATION:
+UNIT_VOLUME_ML — CRITICAL PARSING RULE:
+- Always convert volume to millilitres (ml).
+- The suffix after a number is ALWAYS a unit letter, NEVER a digit:
+  "l" means LITRES, not the digit 1.
+- "0,7l" → 0.7 litres → unit_volume_ml: 700   ← NOT 0.71
+- "0.7l" → 0.7 litres → unit_volume_ml: 700   ← NOT 0.71
+- "1l"   → 1 litre   → unit_volume_ml: 1000
+- "1,5l" → 1.5 litres → unit_volume_ml: 1500
+- "70cl" → 700ml, "75cl" → 750ml, "100cl" → 1000ml
+- "700ml" → 700ml (no conversion needed)
+- NEVER append the unit letter to the number. Always convert to ml as a pure integer.
+
+
 - "15.95eur" → price_per_case: 15.95 (when no /btl or /cs suffix, assume per case)
 - "11,40eur/btl" → price_per_unit: 11.40
 - "32,50eur/cs" → price_per_case: 32.50
