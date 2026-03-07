@@ -356,7 +356,7 @@ async def extract_offer(text: str) -> dict:
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=20000
+                max_tokens=16000
             )
 
             content = response.choices[0].message.content
@@ -525,7 +525,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0,
-                            max_tokens=20000,
+                            max_tokens=16000,
                             top_p=1.0,
                             frequency_penalty=0.0,
                             presence_penalty=0.0
@@ -762,7 +762,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             ],
                         }
                     ],
-                    max_tokens=20000,
+                    max_tokens=16000,
                 )
                 logger.info("Image processed with OpenAI")
                 return await extract_offer(response.choices[0].message.content)
