@@ -62,9 +62,7 @@ async def process_offer(payload, job_id: str):
         uid = str(uuid.uuid4())
         extracted_data = {}
         all_products = []
-        processed_keys = set()  # For deduplication
         valid_count = 0
-        duplicate_count = 0
 
         redis_manager.set_job_status(job_id, "processing")
 
@@ -268,30 +266,15 @@ async def process_offer(payload, job_id: str):
 
                     offer_dict = offer.model_dump(mode='json')
 
-                    # Validation & Deduplication
-                    if is_valid_offer(offer_dict):
-                        p_key = offer_dict.get('product_key', '')
-                        if p_key not in processed_keys:
-                            processed_keys.add(p_key)
-                            offers.append(offer_dict)
-                            valid_count += 1
-                            # Sequential Webhook Dispatch - Structured product collection for visibility
-                            logger.info(f"Dispatching sequential webhook for product: {offer_dict['product_name']}")
-                            send_consolidated_webhook(
-                                job_id=job_id,
-                                payload_type="single_row",
-                                data={"product": offer_dict},
-                                delivery_id=f"{job_id}_{valid_count}"
-                            )
-                        else:
-                            duplicate_count += 1
-                            brand = offer_dict.get('brand', 'Not Found')
-                            p_name = offer_dict.get('product_name', 'Not Found')
-                            logger.info(f"Skipping duplicate product in sheet: {brand} | {p_name} (Key: {p_key})")
-                    else:
-                        brand = offer_dict.get('brand', 'Not Found')
-                        p_name = offer_dict.get('product_name', 'Not Found')
-                        logger.warning(f"Skipping row {idx} - Invalid/Incomplete commercial data: {brand} | {p_name}")
+                    offers.append(offer_dict)
+                    valid_count += 1
+                    logger.info(f"Dispatching sequential webhook for product: {offer_dict['product_name']}")
+                    send_consolidated_webhook(
+                        job_id=job_id,
+                        payload_type="single_row",
+                        data={"product": offer_dict},
+                        delivery_id=f"{job_id}_{valid_count}"
+                    )
 
                 except Exception as e:
                     error_trace = traceback.format_exc()
@@ -415,17 +398,14 @@ async def process_offer(payload, job_id: str):
                 )
 
                 offer_dict = offer.model_dump(mode='json')
-                if is_valid_offer(offer_dict):
-                    offers.append(offer_dict)
-                    logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
-                    send_consolidated_webhook(
-                        job_id=job_id,
-                        payload_type="single_row",
-                        data={"product": offer_dict},
-                        delivery_id=f"{job_id}_single"
-                    )
-                else:
-                    logger.warning(f"Single offer extraction failed validation: {offer_dict.get('product_name')}")
+                offers.append(offer_dict)
+                logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
+                send_consolidated_webhook(
+                    job_id=job_id,
+                    payload_type="single_row",
+                    data={"product": offer_dict},
+                    delivery_id=f"{job_id}_single"
+                )
 
             except Exception as e:
                 error_trace = traceback.format_exc()
@@ -437,7 +417,6 @@ async def process_offer(payload, job_id: str):
                     "error": str(e),
                     "error_trace": error_trace,
                     "extracted_data": extracted_data,
-                    "duplicate_count": duplicate_count,
                     "source_data": {
                         "supplier_name": payload.supplier_name,
                         "supplier_email": payload.supplier_email,
@@ -457,7 +436,6 @@ async def process_offer(payload, job_id: str):
             "job_id": job_id,
             "status": "done",
             "total_products": len(offers),
-            "duplicate_count": duplicate_count,
             "products": offers,
             "source_info": {
                 "supplier": payload.supplier_name,
