@@ -43,8 +43,10 @@ class OfferItem(BaseModel):
     date_received: datetime
     best_before_date: Optional[str] = None
     vintage: Optional[str] = None
-    supplier_name: str
-    supplier_email: str
+    supplier_name: Optional[str] = None
+    supplier_email: Optional[str] = None
+    sender_email:Optional[str] = None
+    sender_name: Optional[str] = None
     supplier_reference: Optional[str] = None
     source_channel: str
     source_message_id: str
