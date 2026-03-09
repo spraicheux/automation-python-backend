@@ -81,7 +81,7 @@ def _resolve_supplier_email(payload) -> str:
       1. payload.supplier_email — Make extracted this from email/WA metadata
       2. "Not Found"            — sender_email is NOT used as supplier email
     """
-    _missing = [None, ""]
+    _missing = [None, "", "Not Found"]
     email = getattr(payload, 'supplier_email', None)
     if email not in _missing:
         return str(email)
@@ -284,7 +284,7 @@ async def process_offer(payload, job_id: str):
                         'ean_code': merged_data.get('ean_code'),
                         'label_language': merged_data.get('label_language') or "EN",
                         'product_reference': merged_data.get('product_reference'),
-                        'custom_status': merged_data.get('custom_status'),
+                        'custom_status': merged_data.get('custom_status') if merged_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                         'supplier_name': merged_data.get('supplier_name'),
                         'error_flags': merged_data.get('error_flags', []),
                     }
@@ -350,8 +350,8 @@ async def process_offer(payload, job_id: str):
                         vintage=safe_data['vintage'],
                         supplier_name=_resolve_supplier_name(_sup_name, payload),
                         supplier_email=_sup_email,
-                        sender_name=getattr(payload, 'sender_name', None),
-                        sender_email=getattr(payload, 'sender_email', None),
+                        sender_name=payload.sender_name,
+                        sender_email=payload.sender_email,
                         supplier_reference=safe_data['supplier_reference'],
                         source_channel=payload.source_channel,
                         source_message_id=payload.source_message_id,
@@ -430,7 +430,7 @@ async def process_offer(payload, job_id: str):
                     'ean_code': extracted_data.get('ean_code'),
                     'label_language': extracted_data.get('label_language') or "EN",
                     'product_reference': extracted_data.get('product_reference'),
-                    'custom_status': extracted_data.get('custom_status'),
+                    'custom_status': extracted_data.get('custom_status') if extracted_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                     'supplier_name': extracted_data.get('supplier_name'),
                     'error_flags': extracted_data.get('error_flags', []),
                 }
@@ -493,8 +493,8 @@ async def process_offer(payload, job_id: str):
                     vintage=safe_data['vintage'],
                     supplier_name=_resolve_supplier_name(_sup_name, payload),
                     supplier_email=_sup_email,
-                    sender_name=getattr(payload, 'sender_name', None),
-                    sender_email=getattr(payload, 'sender_email', None),
+                    sender_name=payload.sender_name,
+                    sender_email=payload.sender_email,
                     supplier_reference=safe_data['supplier_reference'],
                     source_channel=payload.source_channel,
                     source_message_id=payload.source_message_id,
