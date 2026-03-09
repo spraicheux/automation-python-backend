@@ -57,6 +57,101 @@ def _safe_float(value, default=None):
         return default
 
 
+def _resolve_supplier_name(ai_name, payload) -> str:
+    """Return the best available supplier name.
+
+    Priority:
+      1. payload.supplier_name  — Make extracted this from email body / WhatsApp text
+      2. ai_name                — AI extracted from attached file (PDF/Excel)
+      3. "Not Found"            — sender info is NOT used (sender ≠ supplier)
+    """
+    _missing = [None, "", "Not Found"]
+    pname = getattr(payload, 'supplier_name', None)
+    if pname not in _missing:
+        return str(pname)
+    if ai_name not in _missing:
+        return str(ai_name)
+    return "Not Found"
+
+
+def _resolve_supplier_email(payload) -> str:
+    """Return the best available supplier email.
+
+    Priority:
+      1. payload.supplier_email — Make extracted this from email/WA metadata
+      2. "Not Found"            — sender_email is NOT used as supplier email
+    """
+    _missing = [None, ""]
+    email = getattr(payload, 'supplier_email', None)
+    if email not in _missing:
+        return str(email)
+    return "Not Found"
+
+
+# Approximate fixed fallback exchange rates (used only when fx_rate is absent)
+_FALLBACK_FX = {
+    "USD": 0.92,   # 1 USD ≈ 0.92 EUR
+    "GBP": 1.17,   # 1 GBP ≈ 1.17 EUR
+    "CHF": 1.05,   # 1 CHF ≈ 1.05 EUR
+    "EUR": 1.0,
+}
+
+# Currency symbol → ISO code mapping
+_CURRENCY_SYMBOLS = {
+    "€": "EUR",
+    "$": "USD",
+    "£": "GBP",
+    "₣": "CHF",
+}
+
+
+def _normalize_currency_and_prices(safe_data: dict) -> dict:
+    """Detect currency from sign characters and populate EUR price fields.
+
+    Logic:
+    1. If currency is already a known non-EUR code (USD/GBP/…), convert to EUR.
+    2. If currency still looks like a symbol (€/$), resolve to ISO code.
+    3. Populate price_per_unit_eur and price_per_case_eur:
+       - If currency == EUR: EUR fields = native price fields.
+       - Otherwise: EUR = native * fx_rate (using AI-provided fx_rate or fallback)
+    """
+    currency = (safe_data.get('currency') or 'EUR').strip()
+
+    # Resolve symbol to ISO code
+    if currency in _CURRENCY_SYMBOLS:
+        currency = _CURRENCY_SYMBOLS[currency]
+
+    # Normalise to uppercase
+    currency = currency.upper()
+    if currency not in _FALLBACK_FX:
+        currency = 'EUR'  # Unknown symbols → default EUR
+
+    safe_data['currency'] = currency
+
+    # Determine fx_rate: use AI-provided rate, or if it's 1.0/invalid, use fallback
+    ai_fx = safe_data.get('fx_rate') or 1.0
+    try:
+        ai_fx = float(ai_fx)
+    except (TypeError, ValueError):
+        ai_fx = 1.0
+
+    # If AI didn't provide a meaningful rate for non-EUR, use table fallback
+    fx = ai_fx if (currency == 'EUR' or ai_fx != 1.0) else _FALLBACK_FX.get(currency, 1.0)
+    safe_data['fx_rate'] = fx
+
+    pu  = safe_data.get('price_per_unit')  or 0.0
+    pc  = safe_data.get('price_per_case')  or 0.0
+
+    if currency == 'EUR':
+        safe_data['price_per_unit_eur'] = round(pu, 4)
+        safe_data['price_per_case_eur'] = round(pc, 4)
+    else:
+        safe_data['price_per_unit_eur'] = round(pu * fx, 4)
+        safe_data['price_per_case_eur'] = round(pc * fx, 4)
+
+    return safe_data
+
+
 async def process_offer(payload, job_id: str):
     try:
         uid = str(uuid.uuid4())
@@ -189,9 +284,9 @@ async def process_offer(payload, job_id: str):
                         'ean_code': merged_data.get('ean_code'),
                         'label_language': merged_data.get('label_language') or "EN",
                         'product_reference': merged_data.get('product_reference'),
-                        # FIX BUG 2: custom_status was hardcoded as None. Extract it from
-                        # the merged data so T1/T2 values extracted by the AI are passed through.
                         'custom_status': merged_data.get('custom_status'),
+                        'supplier_name': merged_data.get('supplier_name'),
+                        'error_flags': merged_data.get('error_flags', []),
                     }
 
                     # Convert numeric fields
@@ -205,6 +300,18 @@ async def process_offer(payload, job_id: str):
                                 safe_data[field] = float(safe_data[field])
                             except (ValueError, TypeError):
                                 safe_data[field] = None
+
+                    safe_data['alcohol_percent'] = (
+                        float(str(safe_data['alcohol_percent']).replace('%', '').strip())
+                        if safe_data.get('alcohol_percent') not in [None, '', 'Not Found']
+                        else None
+                    )
+
+                    # ── Currency normalisation & EUR conversion ──────────────
+                    safe_data = _normalize_currency_and_prices(safe_data)
+
+                    _sup_name  = safe_data.get('supplier_name')
+                    _sup_email = _resolve_supplier_email(payload)
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -241,12 +348,8 @@ async def process_offer(payload, job_id: str):
                         date_received=datetime.utcnow(),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
-                        supplier_name=(
-                            safe_data['supplier_name']
-                            if safe_data.get('supplier_name') not in [None, "Not Found", ""]
-                            else payload.supplier_name
-                        ),
-                        supplier_email=payload.supplier_email,
+                        supplier_name=_resolve_supplier_name(_sup_name, payload),
+                        supplier_email=_sup_email,
                         supplier_reference=safe_data['supplier_reference'],
                         source_channel=payload.source_channel,
                         source_message_id=payload.source_message_id,
@@ -325,12 +428,12 @@ async def process_offer(payload, job_id: str):
                     'ean_code': extracted_data.get('ean_code'),
                     'label_language': extracted_data.get('label_language') or "EN",
                     'product_reference': extracted_data.get('product_reference'),
-                    # FIX BUG 2: pass extracted custom_status instead of hardcoded None.
                     'custom_status': extracted_data.get('custom_status'),
+                    'supplier_name': extracted_data.get('supplier_name'),
+                    'error_flags': extracted_data.get('error_flags', []),
                 }
 
                 # Convert numeric fields
-                # FIX BUG 1: alcohol_percent removed — it is a string "40%" not a number.
                 numeric_fields = ['cases_per_pallet', 'quantity_case', 'moq_cases']
                 for field in numeric_fields:
                     if safe_data[field] is not None:
@@ -338,6 +441,18 @@ async def process_offer(payload, job_id: str):
                             safe_data[field] = float(safe_data[field])
                         except (ValueError, TypeError):
                             safe_data[field] = None
+
+                safe_data['alcohol_percent'] = (
+                    float(str(safe_data['alcohol_percent']).replace('%', '').strip())
+                    if safe_data.get('alcohol_percent') not in [None, '', 'Not Found']
+                    else None
+                )
+
+                # ── Currency normalisation & EUR conversion ──────────────
+                safe_data = _normalize_currency_and_prices(safe_data)
+
+                _sup_name  = safe_data.get('supplier_name')
+                _sup_email = _resolve_supplier_email(payload)
 
                 offer = OfferItem(
                     uid=uid,
@@ -362,11 +477,7 @@ async def process_offer(payload, job_id: str):
                     price_per_case_eur=safe_data['price_per_case_eur'],
                     fx_rate=safe_data['fx_rate'],
                     fx_date=safe_data['fx_date'],
-                    alcohol_percent=(
-                        float(str(safe_data['alcohol_percent']).replace('%', '').strip())
-                        if safe_data.get('alcohol_percent') not in [None, '', 'Not Found']
-                        else None
-                    ),
+                    alcohol_percent=safe_data.get('alcohol_percent'),
                     origin_country=safe_data['origin_country'],
                     supplier_country=safe_data['supplier_country'],
                     incoterm=safe_data['incoterm'],
@@ -378,8 +489,8 @@ async def process_offer(payload, job_id: str):
                     date_received=datetime.utcnow(),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],
-                    supplier_name=payload.supplier_name,
-                    supplier_email=payload.supplier_email,
+                    supplier_name=_resolve_supplier_name(_sup_name, payload),
+                    supplier_email=_sup_email,
                     supplier_reference=safe_data['supplier_reference'],
                     source_channel=payload.source_channel,
                     source_message_id=payload.source_message_id,
@@ -388,8 +499,7 @@ async def process_offer(payload, job_id: str):
                     attachment_count=len(payload.attachments) if payload.attachments else 0,
                     confidence_score=0.95,
                     needs_manual_review=False,
-                    error_flags=[],
-                    # FIX BUG 2: pass extracted custom_status instead of hardcoded None.
+                    error_flags=safe_data['error_flags'] if isinstance(safe_data.get('error_flags'), list) else [],
                     custom_status=safe_data['custom_status'],
                     processing_version="2.0.0",
                     ean_code=safe_data['ean_code'],
