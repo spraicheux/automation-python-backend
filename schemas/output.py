@@ -48,9 +48,9 @@ class OfferItem(BaseModel):
     sender_email:Optional[str] = None
     sender_name: Optional[str] = None
     supplier_reference: Optional[str] = None
-    source_channel: str
-    source_message_id: str
-    source_filename: str
+    source_channel: str = Field(default="")
+    source_message_id: str = Field(default="")
+    source_filename: str = Field(default="")
     attachment_filenames: List[str] = Field(default_factory=list)
     attachment_count: int = Field(default=0)
     confidence_score: float = Field(default=0.85)

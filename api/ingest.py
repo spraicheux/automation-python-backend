@@ -1,11 +1,14 @@
 from uuid import uuid4
 
+import logging
 from fastapi import APIRouter, Body
 from fastapi import UploadFile, File, Form, Request
 from typing import List, Optional
 from schemas.ingest import IngestRequest
 from workers.celery_tasks import process_document_task
 from core.redis_client import redis_manager
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -50,6 +53,9 @@ async def ingest(
     if files:
         for file in files:
             file_bytes = await file.read()
+            if not file_bytes or not file.filename or file.filename.lower() in ("empty", ""):
+                logger.info(f"Skipping empty file attachment: {file.filename!r}")
+                continue
             attachments.append({
                 "fileName": file.filename,
                 "contentType": file.content_type,
