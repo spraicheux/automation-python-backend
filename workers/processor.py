@@ -1,4 +1,5 @@
 import uuid
+import re
 import traceback
 from datetime import datetime
 
@@ -317,7 +318,29 @@ async def process_offer(payload, job_id: str):
                     # ── Currency normalisation & EUR conversion ──────────────
                     safe_data = _normalize_currency_and_prices(safe_data)
 
-                    _sup_name  = safe_data.get('supplier_name')
+                    # ── Parse units_per_case & unit_volume_ml from packaging ──
+                    # packaging (e.g. "12x100cl") is always the authoritative
+                    # source. Override whatever the AI put in units_per_case
+                    # (which is often the price) and unit_volume_ml.
+                    _pkg_str = str(safe_data.get('packaging') or '')
+                    _pkg_m = re.search(
+                        r'(\d+)\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(cl|ml|l)',
+                        _pkg_str, re.IGNORECASE
+                    )
+                    if _pkg_m:
+                        _pu = int(_pkg_m.group(1))
+                        _pv = float(_pkg_m.group(2).replace(',', '.'))
+                        _pu_unit = _pkg_m.group(3).lower()
+                        safe_data['units_per_case'] = float(_pu)
+                        safe_data['unit_volume_ml'] = (
+                            _pv * 10 if _pu_unit == 'cl' else
+                            _pv * 1000 if _pu_unit == 'l' else _pv
+                        )
+                        logger.debug(
+                            f"Row {idx}: packaging '{_pkg_str}' → "
+                            f"units_per_case={_pu}, unit_volume_ml={safe_data['unit_volume_ml']}"
+                        )
+
                     _sup_email = _resolve_supplier_email(payload)
 
                     offer = OfferItem(
