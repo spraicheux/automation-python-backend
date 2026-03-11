@@ -341,6 +341,7 @@ async def process_offer(payload, job_id: str):
                             f"units_per_case={_pu}, unit_volume_ml={safe_data['unit_volume_ml']}"
                         )
 
+                    _sup_name  = safe_data.get('supplier_name')
                     _sup_email = _resolve_supplier_email(payload)
 
                     offer = OfferItem(
