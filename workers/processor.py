@@ -233,14 +233,21 @@ async def process_offer(payload, job_id: str):
         offers = []
 
         if all_products:
-            # Process each product from Excel
             logger.info(f"Processing {len(all_products)} products from Excel for job {job_id}")
 
             for idx, product_data in enumerate(all_products):
                 try:
                     merged_data = {**extracted_data, **product_data}
+
+                    if merged_data.get('product_key') in [None, '', 'Not Found']:
+                        logger.warning(
+                            f"Row {idx} skipped — product_key not found: "
+                            f"name={merged_data.get('product_name')!r}"
+                        )
+                        continue
+
                     logger.debug(
-                        f"Row {idx} raw data before cleaning: {merged_data.get('product_name')} | {merged_data.get('brand')}")
+                        f"Row {idx} raw data: {merged_data.get('product_name')} | {merged_data.get('brand')}")
 
                     safe_data = {
                         'product_name': merged_data.get('product_name') or "Not Found",
