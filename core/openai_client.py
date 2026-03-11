@@ -921,6 +921,32 @@ def clean_product_data(product: dict) -> dict:
         if field in cleaned_product and cleaned_product[field] == 0:
             cleaned_product[field] = None
 
+    import re as _re
+    packaging_val = str(cleaned_product.get('packaging') or '')
+    _pkg_match = _re.search(
+        r'(\d+)\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(cl|ml|l)',
+        packaging_val,
+        _re.IGNORECASE
+    )
+    if _pkg_match:
+        _pkg_units    = int(_pkg_match.group(1))
+        _pkg_vol_num  = float(_pkg_match.group(2).replace(',', '.'))
+        _pkg_vol_unit = _pkg_match.group(3).lower()
+
+        if _pkg_vol_unit == 'cl':
+            _pkg_vol_ml = _pkg_vol_num * 10
+        elif _pkg_vol_unit == 'l':
+            _pkg_vol_ml = _pkg_vol_num * 1000
+        else:
+            _pkg_vol_ml = _pkg_vol_num
+
+        cleaned_product['units_per_case'] = float(_pkg_units)
+        cleaned_product['unit_volume_ml']  = _pkg_vol_ml
+        logger.debug(
+            f"packaging parser: '{packaging_val}' → "
+            f"units_per_case={_pkg_units}, unit_volume_ml={_pkg_vol_ml}"
+        )
+
     return cleaned_product
 
 
