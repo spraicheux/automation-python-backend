@@ -217,8 +217,22 @@ IMPORTANT RULES:
 6. DO NOT use null for any field - always use "Not Found" for missing values.
 7. Use AI to intelligently match values to fields - if something in email matches a field, extract it.
 
+UNITS_PER_CASE — CRITICAL PARSING RULE:
+- The format NxVOLUME (e.g. "6x70cl", "12x100cl", "24x50cl") means N units per case of the given volume.
+- units_per_case is ALWAYS the number BEFORE the "x". NEVER use the price or any other number.
+- unit_volume_ml is ALWAYS derived from the volume AFTER the "x".
+- Examples:
+  "6x70cl"   → units_per_case: 6,  unit_volume_ml: 700
+  "12x100cl" → units_per_case: 12, unit_volume_ml: 1000
+  "6x75cl"   → units_per_case: 6,  unit_volume_ml: 750
+  "24x50cl"  → units_per_case: 24, unit_volume_ml: 500
+- The number after "at" is ALWAYS the price — NEVER units_per_case.
+- Example: "4180 cs Absolut 6x70cl at 29 euro"
+    → quantity_case: 4180, units_per_case: 6, unit_volume_ml: 700, price_per_case: 29, currency: "EUR"
+  NEVER set units_per_case to 29 or 69 — those are prices.
+
 UNIT_VOLUME_ML — CRITICAL PARSING RULE:
-- Always convert volume to millilitres (ml).
+- Always convert volume to milliliters (ml).
 - The suffix after a number is ALWAYS a unit letter, NEVER a digit:
   "l" means LITRES, not the digit 1.
 - "0,7l" → 0.7 litres → unit_volume_ml: 700   ← NOT 0.71
@@ -311,6 +325,8 @@ COMMON PATTERNS IN OFFERS:
 - "T1" or "T2" (anywhere) → custom_status: "T1" or "T2"
 - "REF" → refillable_status: "REF"
 - "NRF" → refillable_status: "NRF"
+- "4180 cs Absolut 6x70cl at 29 euro" → quantity_case: 4180, units_per_case: 6, unit_volume_ml: 700, price_per_case: 29, currency: "EUR"
+- "2007 cs Absolut 12x100cl at 69 euro" → quantity_case: 2007, units_per_case: 12, unit_volume_ml: 1000, price_per_case: 69, currency: "EUR"
 
 REMEMBER:
 - When in doubt, use "Not Found".
