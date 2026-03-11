@@ -24,19 +24,13 @@ def is_valid_offer(offer_dict: dict) -> bool:
     if not name or name in ["Not Found", "Unknown", "Row", ""]:
         return False
 
-    if name.lower().startswith('row '):  # Skip generic placeholders
+    if name.lower().startswith('row '):
         return False
-
-    # Check for minimal commercial data
-    # FIX BUG 5: openai_client now returns None (not 0) for missing prices.
-    # None == 0 is always False in Python, so the original check would silently
-    # pass products with no price. Check for both None and 0.
     price_unit = offer_dict.get('price_per_unit')
     price_case = offer_dict.get('price_per_case')
     unit_is_empty = price_unit is None or price_unit == 0
     case_is_empty = price_case is None or price_case == 0
     if unit_is_empty and case_is_empty:
-        # If no price is found, it's often a false positive or truncated data
         logger.debug(f"Offer {name} rejected: No price data found.")
         return False
 
@@ -44,12 +38,6 @@ def is_valid_offer(offer_dict: dict) -> bool:
 
 
 def _safe_float(value, default=None):
-    """Safely convert a value to float, returning default if conversion fails.
-
-    FIX BUG 4: openai_client now returns None for missing numeric fields.
-    bare float(None) raises TypeError causing the whole product to be silently
-    skipped. This helper handles None, empty string, and invalid values safely.
-    """
     if value is None or value == "" or value == "Not Found":
         return default
     try:

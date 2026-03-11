@@ -217,29 +217,19 @@ IMPORTANT RULES:
 6. DO NOT use null for any field - always use "Not Found" for missing values.
 7. Use AI to intelligently match values to fields - if something in email matches a field, extract it.
 
-PACKAGING FORMAT LAW — HIGHEST PRIORITY, NO EXCEPTIONS:
-The packaging field uses the format NxVOLUMEunit (e.g. "12x100cl", "6x70cl", "24x50cl", "6x750ml").
-This format ALWAYS means: N bottles/cans of VOLUME each per case.
-MANDATORY MAPPING:
-  - The number LEFT of the "x"  → units_per_case  (ALWAYS. No exception.)
-  - The number RIGHT of the "x" → unit_volume_ml  (after unit conversion)
-STRICTLY FORBIDDEN:
-  - NEVER put a price into units_per_case.
-  - NEVER put quantity_case into units_per_case.
-  - The word "at" introduces a price, NOT a quantity. The number after "at" is ALWAYS price_per_case.
-
-CONCRETE EXAMPLES — memorize these exactly:
-  "4180 cs Absolut 6x70cl at 29 euro"
-      quantity_case=4180, packaging="6x70cl", units_per_case=6, unit_volume_ml=700, price_per_case=29
-      WRONG: units_per_case=29 (that is the PRICE) or units_per_case=4180 (that is QUANTITY)
-
-  "2007 cs Absolut 12x100cl at 69 euro"
-      quantity_case=2007, packaging="12x100cl", units_per_case=12, unit_volume_ml=1000, price_per_case=69
-      WRONG: units_per_case=69 (that is the PRICE) or units_per_case=2007 (that is QUANTITY)
-
-  "6x75cl"  → units_per_case=6,  unit_volume_ml=750
-  "24x50cl" → units_per_case=24, unit_volume_ml=500
-  "6x700ml" → units_per_case=6,  unit_volume_ml=700
+UNITS_PER_CASE — CRITICAL PARSING RULE:
+- The format NxVOLUME (e.g. "6x70cl", "12x100cl", "24x50cl") means N units per case of the given volume.
+- units_per_case is ALWAYS the number BEFORE the "x". NEVER use the price or any other number.
+- unit_volume_ml is ALWAYS derived from the volume AFTER the "x".
+- Examples:
+  "6x70cl"   → units_per_case: 6,  unit_volume_ml: 700
+  "12x100cl" → units_per_case: 12, unit_volume_ml: 1000
+  "6x75cl"   → units_per_case: 6,  unit_volume_ml: 750
+  "24x50cl"  → units_per_case: 24, unit_volume_ml: 500
+- The number after "at" is ALWAYS the price — NEVER units_per_case.
+- Example: "4180 cs Absolut 6x70cl at 29 euro"
+    → quantity_case: 4180, units_per_case: 6, unit_volume_ml: 700, price_per_case: 29, currency: "EUR"
+  NEVER set units_per_case to 29 or 69 — those are prices.
 
 UNIT_VOLUME_ML — CRITICAL PARSING RULE:
 - Always convert volume to milliliters (ml).
@@ -930,32 +920,14 @@ def clean_product_data(product: dict) -> dict:
     for field in numeric_fields_never_zero:
         if field in cleaned_product and cleaned_product[field] == 0:
             cleaned_product[field] = None
-
     import re as _re
-    packaging_val = str(cleaned_product.get('packaging') or '')
-    _pkg_match = _re.search(
-        r'(\d+)\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(cl|ml|l)',
-        packaging_val,
-        _re.IGNORECASE
-    )
-    if _pkg_match:
-        _pkg_units    = int(_pkg_match.group(1))
-        _pkg_vol_num  = float(_pkg_match.group(2).replace(',', '.'))
-        _pkg_vol_unit = _pkg_match.group(3).lower()
-
-        if _pkg_vol_unit == 'cl':
-            _pkg_vol_ml = _pkg_vol_num * 10
-        elif _pkg_vol_unit == 'l':
-            _pkg_vol_ml = _pkg_vol_num * 1000
-        else:
-            _pkg_vol_ml = _pkg_vol_num
-
-        cleaned_product['units_per_case'] = float(_pkg_units)
-        cleaned_product['unit_volume_ml']  = _pkg_vol_ml
-        logger.debug(
-            f"packaging parser: '{packaging_val}' → "
-            f"units_per_case={_pkg_units}, unit_volume_ml={_pkg_vol_ml}"
-        )
+    packaging_str = cleaned_product.get('packaging') or ''
+    pkg_match = _re.search(r'(\d+)\s*[xX]\s*\d+', packaging_str)
+    if pkg_match:
+        correct_units = float(pkg_match.group(1))
+        current_units = cleaned_product.get('units_per_case')
+        if current_units != correct_units:
+            cleaned_product['units_per_case'] = correct_units
 
     return cleaned_product
 
