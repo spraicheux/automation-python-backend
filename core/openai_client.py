@@ -338,19 +338,20 @@ REMEMBER:
 
 
 async def extract_offer(text: str) -> dict:
-    logger.info(f"extract_offer called with text length: {len(text)}")
-    logger.debug(f"extract_offer text preview: {text[:200]}...")
+    logger.info(f"[extract_offer] ===== START =====")
+    logger.info(f"[extract_offer] Input text length: {len(text)} chars")
+    logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
 
     CHUNK_SIZE = 25000
 
-    text_chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)] if len(text) > CHUNK_SIZE else [
-        text]
-    logger.info(f"Split input text into {len(text_chunks)} chunk(s).")
+    text_chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)] if len(text) > CHUNK_SIZE else [text]
+    logger.info(f"[extract_offer] Split into {len(text_chunks)} chunk(s) — CHUNK_SIZE={CHUNK_SIZE}")
 
     all_products = []
 
     for idx, chunk in enumerate(text_chunks):
-        logger.info(f"Processing chunk {idx + 1} of {len(text_chunks)}...")
+        logger.info(f"[extract_offer] ----- Chunk {idx + 1}/{len(text_chunks)} START — length: {len(chunk)} chars -----")
+        logger.info(f"[extract_offer] Chunk {idx + 1} content preview (first 200 chars): {chunk[:200]!r}")
 
         prompt = f"""
         You are extracting commercial alcohol offers from text.
@@ -366,7 +367,7 @@ async def extract_offer(text: str) -> dict:
         """
 
         try:
-            logger.info("Calling OpenAI API for text extraction chunk...")
+            logger.info(f"[extract_offer] Chunk {idx + 1}: Calling OpenAI API — model=gpt-4o, max_tokens=16000, temperature=0.0")
             response = await client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": prompt}],
@@ -376,16 +377,37 @@ async def extract_offer(text: str) -> dict:
             )
 
             content = response.choices[0].message.content
-            logger.info(f"OpenAI response received for chunk {idx + 1}, length: {len(content)}")
+            logger.info(f"[extract_offer] Chunk {idx + 1}: OpenAI response received — response length: {len(content)} chars")
+            logger.info(f"[extract_offer] Chunk {idx + 1}: Raw AI response preview (first 500 chars): {content[:500]!r}")
 
             result = json.loads(content)
             products = result.get('products', [])
+            logger.info(f"[extract_offer] Chunk {idx + 1}: AI returned {len(products)} product(s) in JSON")
 
             cleaned_products = []
-            for product in products:
+            for p_idx, product in enumerate(products):
+                logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}/{len(products)}: === AI RAW VALUES ===")
+                logger.info(f"[extract_offer]   product_name    = {product.get('product_name')!r}")
+                logger.info(f"[extract_offer]   brand           = {product.get('brand')!r}")
+                logger.info(f"[extract_offer]   packaging       = {product.get('packaging')!r}")
+                logger.info(f"[extract_offer]   units_per_case  = {product.get('units_per_case')!r}  <-- watch this")
+                logger.info(f"[extract_offer]   unit_volume_ml  = {product.get('unit_volume_ml')!r}")
+                logger.info(f"[extract_offer]   quantity_case   = {product.get('quantity_case')!r}")
+                logger.info(f"[extract_offer]   price_per_case  = {product.get('price_per_case')!r}")
+                logger.info(f"[extract_offer]   price_per_unit  = {product.get('price_per_unit')!r}")
+                logger.info(f"[extract_offer]   currency        = {product.get('currency')!r}")
+                logger.info(f"[extract_offer]   incoterm        = {product.get('incoterm')!r}")
+                logger.info(f"[extract_offer]   location        = {product.get('location')!r}")
+                logger.info(f"[extract_offer]   custom_status   = {product.get('custom_status')!r}")
+                logger.info(f"[extract_offer]   supplier_name   = {product.get('supplier_name')!r}")
+                logger.info(f"[extract_offer]   alcohol_percent = {product.get('alcohol_percent')!r}")
+                logger.info(f"[extract_offer]   origin_country  = {product.get('origin_country')!r}")
+                logger.info(f"[extract_offer]   error_flags     = {product.get('error_flags')!r}")
+
                 # Clean product nulls
                 for key in product:
                     if product[key] is None:
+                        logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}: field '{key}' is None — replacing with 'Not Found'")
                         numeric_fields = [
                             'unit_volume_ml', 'units_per_case', 'cases_per_pallet',
                             'quantity_case', 'price_per_unit', 'price_per_unit_eur',
@@ -397,26 +419,42 @@ async def extract_offer(text: str) -> dict:
                         else:
                             product[key] = "Not Found"
 
+                logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}: passing to clean_product_data()")
                 cleaned_product = clean_product_data(product)
+
+                logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}: === AFTER clean_product_data ===")
+                logger.info(f"[extract_offer]   product_name    = {cleaned_product.get('product_name')!r}")
+                logger.info(f"[extract_offer]   packaging       = {cleaned_product.get('packaging')!r}")
+                logger.info(f"[extract_offer]   units_per_case  = {cleaned_product.get('units_per_case')}  <-- should match packaging N")
+                logger.info(f"[extract_offer]   unit_volume_ml  = {cleaned_product.get('unit_volume_ml')}")
+                logger.info(f"[extract_offer]   quantity_case   = {cleaned_product.get('quantity_case')}")
+                logger.info(f"[extract_offer]   price_per_case  = {cleaned_product.get('price_per_case')}")
+                logger.info(f"[extract_offer]   price_per_unit  = {cleaned_product.get('price_per_unit')}")
+                logger.info(f"[extract_offer]   incoterm        = {cleaned_product.get('incoterm')!r}")
+                logger.info(f"[extract_offer]   custom_status   = {cleaned_product.get('custom_status')!r}")
+                logger.info(f"[extract_offer]   supplier_name   = {cleaned_product.get('supplier_name')!r}")
+
                 cleaned_products.append(cleaned_product)
 
             all_products.extend(cleaned_products)
-            logger.info(f"Chunk {idx + 1} yielded {len(cleaned_products)} products.")
+            logger.info(f"[extract_offer] Chunk {idx + 1}: done — yielded {len(cleaned_products)} product(s). Running total: {len(all_products)}")
 
         except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error in extract_offer for chunk {idx + 1}: {e}")
+            logger.error(f"[extract_offer] Chunk {idx + 1}: JSON decode error: {e}")
             continue
         except Exception as e:
-            logger.error(f"Error extracting from text chunk {idx + 1}: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"[extract_offer] Chunk {idx + 1}: Unexpected error: {e}")
+            logger.error(f"[extract_offer] Traceback: {traceback.format_exc()}")
             continue
 
-    logger.info(f"extract_offer completed successfully. Total products aggregated: {len(all_products)}")
+    logger.info(f"[extract_offer] ===== END — total products aggregated: {len(all_products)} =====")
     return {"products": all_products}
 
 
 async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]:
-    logger.info(f"extract_from_file called with file_path: {file_path}, content_type: {content_type}")
+    logger.info(f"[extract_from_file] ===== START =====")
+    logger.info(f"[extract_from_file] file_path: {file_path!r}")
+    logger.info(f"[extract_from_file] content_type: {content_type!r}")
 
     try:
         text_content = ""
@@ -427,65 +465,68 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
             'application/vnd.ms-excel.sheet.macroEnabled.12',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.macroEnabled.12'
         ] or file_path.lower().endswith(('.xlsx', '.xls', '.xlsm')):
-            logger.info("Processing Excel file...")
+            logger.info(f"[extract_from_file] Detected file type: EXCEL")
             try:
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
                     file_ext = os.path.splitext(file_path)[1].lower()
-                    logger.info(f"File exists, size: {file_size} bytes, extension: {file_ext}")
+                    logger.info(f"[extract_from_file] File exists — size: {file_size} bytes, extension: {file_ext!r}")
 
                     if file_ext == '.xlsm':
-                        logger.info("Processing XLSM (Macro-Enabled Excel) file...")
+                        logger.info(f"[extract_from_file] Subtype: XLSM (Macro-Enabled Excel)")
                 else:
-                    logger.error(f"File does not exist: {file_path}")
+                    logger.error(f"[extract_from_file] File does NOT exist at path: {file_path!r}")
                     return {"error": f"File not found: {file_path}"}
 
-                logger.info("Reading Excel file with pandas...")
+                logger.info(f"[extract_from_file] Reading Excel with pandas...")
 
                 try:
                     if file_path.lower().endswith('.xls'):
+                        logger.info(f"[extract_from_file] Using engine: xlrd")
                         df = pd.read_excel(file_path, engine='xlrd')
                     elif file_path.lower().endswith('.xlsm'):
+                        logger.info(f"[extract_from_file] Using engine: openpyxl (xlsm)")
                         df = pd.read_excel(file_path, engine='openpyxl')
                     else:
+                        logger.info(f"[extract_from_file] Using engine: openpyxl (xlsx)")
                         df = pd.read_excel(file_path, engine='openpyxl')
                 except Exception as read_error:
-                    logger.warning(f"Primary read method failed: {read_error}")
-                    logger.info("Trying fallback read method...")
+                    logger.warning(f"[extract_from_file] Primary read failed: {read_error}")
+                    logger.info(f"[extract_from_file] Trying fallback pd.read_excel() without engine...")
                     df = pd.read_excel(file_path)
 
-                logger.info(f"Excel file loaded successfully. Shape: {df.shape}")
-                logger.info(f"Columns: {list(df.columns)}")
+                logger.info(f"[extract_from_file] Excel loaded — shape: {df.shape}, columns: {list(df.columns)}")
 
-                # Log first few rows for debugging
                 if len(df) > 0:
-                    logger.debug(f"First 3 rows:\n{df.head(3).to_string()}")
+                    logger.debug(f"[extract_from_file] First 3 rows:\n{df.head(3).to_string()}")
                 else:
-                    logger.warning("DataFrame is empty after loading")
+                    logger.warning(f"[extract_from_file] DataFrame is empty after loading")
 
                 if df.empty:
-                    logger.warning("Excel file is empty")
+                    logger.warning(f"[extract_from_file] Excel file is empty — returning error")
                     return {"error": "Excel file is empty"}
 
                 total_rows = len(df)
-                logger.info(f"Total rows in Excel: {total_rows}")
+                logger.info(f"[extract_from_file] Total rows to process: {total_rows}")
 
-                logger.debug(f"DataFrame dtypes:\n{df.dtypes}")
+                logger.debug(f"[extract_from_file] DataFrame dtypes:\n{df.dtypes}")
 
                 for col in df.columns:
                     sample_data = df[col].head(3).tolist()
-                    logger.debug(f"Column '{col}' sample data: {sample_data}")
+                    logger.debug(f"[extract_from_file] Column '{col}' sample: {sample_data}")
 
                 batch_size = 6
                 all_extracted_products = []
                 processed_row_count = 0
+                total_batches = (total_rows + batch_size - 1) // batch_size
+                logger.info(f"[extract_from_file] Will process {total_rows} rows in {total_batches} batch(es) of up to {batch_size} rows each")
 
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
                     batch_df = df.iloc[batch_start:batch_end]
+                    batch_num = batch_start // batch_size + 1
 
-                    logger.info(
-                        f"Processing batch {batch_start // batch_size + 1}: rows {batch_start} to {batch_end - 1} ({len(batch_df)} rows)")
+                    logger.info(f"[extract_from_file] ----- Batch {batch_num}/{total_batches}: rows {batch_start}–{batch_end - 1} ({len(batch_df)} rows) -----")
 
                     data_rows = []
                     for idx, row in batch_df.iterrows():
@@ -497,6 +538,9 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             else:
                                 row_dict[col] = str(value)
                         data_rows.append(row_dict)
+
+                    logger.info(f"[extract_from_file] Batch {batch_num}: built {len(data_rows)} row dict(s) for AI")
+                    logger.info(f"[extract_from_file] Batch {batch_num}: raw rows sent to AI: {json.dumps(data_rows)[:600]!r}")
 
                     batch_text = f"""
                     You are extracting commercial alcohol product data from Excel rows.
@@ -526,10 +570,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     }}
                     """
 
-                    logger.debug(f"Batch text length: {len(batch_text)}")
+                    logger.info(f"[extract_from_file] Batch {batch_num}: prompt length: {len(batch_text)} chars")
 
                     try:
-                        logger.info(f"Calling OpenAI API for batch {batch_start // batch_size + 1}...")
+                        logger.info(f"[extract_from_file] Batch {batch_num}: Calling OpenAI API — model=gpt-4o, max_tokens=16000")
                         response = await client.chat.completions.create(
                             model="gpt-4o",
                             messages=[
@@ -548,11 +592,11 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         )
 
                         content = response.choices[0].message.content
-                        logger.info(f"Batch {batch_start // batch_size + 1} OpenAI response length: {len(content)}")
+                        logger.info(f"[extract_from_file] Batch {batch_num}: OpenAI response received — length: {len(content)} chars")
+                        logger.info(f"[extract_from_file] Batch {batch_num}: Raw AI response preview (first 500 chars): {content[:500]!r}")
 
                         if not content.strip().endswith('}'):
-                            logger.warning(
-                                f"Batch {batch_start // batch_size + 1}: JSON appears incomplete, attempting repair")
+                            logger.warning(f"[extract_from_file] Batch {batch_num}: JSON looks incomplete — attempting bracket repair")
                             json_start = content.find('{')
                             if json_start != -1:
                                 open_braces = 0
@@ -564,63 +608,85 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                         close_braces += 1
                                         if close_braces == open_braces:
                                             content = content[json_start:json_start + i + 1]
-                                            logger.info(
-                                                f"Batch {batch_start // batch_size + 1}: Repaired JSON, new length: {len(content)}")
+                                            logger.info(f"[extract_from_file] Batch {batch_num}: JSON repaired — new length: {len(content)} chars")
                                             break
 
                         try:
                             result = json.loads(content)
-                            logger.info(f"Batch {batch_start // batch_size + 1} JSON parsed successfully")
+                            logger.info(f"[extract_from_file] Batch {batch_num}: JSON parsed successfully")
 
                             if isinstance(result, dict) and 'products' in result:
                                 batch_products = result['products']
-                                logger.info(
-                                    f"Batch {batch_start // batch_size + 1} extracted {len(batch_products)} products from 'products' key")
+                                logger.info(f"[extract_from_file] Batch {batch_num}: AI returned {len(batch_products)} product(s) (expected {len(batch_df)})")
 
                                 if len(batch_products) != len(batch_df):
-                                    logger.warning(
-                                        f"Batch {batch_start // batch_size + 1}: Expected {len(batch_df)} products but got {len(batch_products)}. Attempting to salvage...")
+                                    logger.warning(f"[extract_from_file] Batch {batch_num}: COUNT MISMATCH — expected {len(batch_df)}, got {len(batch_products)}")
                                     if len(batch_products) < len(batch_df):
                                         missing_count = len(batch_df) - len(batch_products)
+                                        logger.warning(f"[extract_from_file] Batch {batch_num}: Padding {missing_count} missing product(s) with defaults")
                                         for i in range(missing_count):
                                             default_product = clean_product_data({})
-                                            default_product[
-                                                'product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
+                                            default_product['product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
                                             batch_products.append(default_product)
+                                            logger.warning(f"[extract_from_file] Batch {batch_num}: Added placeholder for row {batch_start + len(batch_products) + i + 1}")
 
                                 cleaned_batch_products = []
-                                for product in batch_products:
+                                for p_idx, product in enumerate(batch_products):
+                                    logger.info(f"[extract_from_file] Batch {batch_num}, Product {p_idx + 1}/{len(batch_products)}: === AI RAW VALUES ===")
+                                    logger.info(f"[extract_from_file]   product_name    = {product.get('product_name')!r}")
+                                    logger.info(f"[extract_from_file]   brand           = {product.get('brand')!r}")
+                                    logger.info(f"[extract_from_file]   packaging       = {product.get('packaging')!r}")
+                                    logger.info(f"[extract_from_file]   units_per_case  = {product.get('units_per_case')!r}  <-- watch this")
+                                    logger.info(f"[extract_from_file]   unit_volume_ml  = {product.get('unit_volume_ml')!r}")
+                                    logger.info(f"[extract_from_file]   quantity_case   = {product.get('quantity_case')!r}")
+                                    logger.info(f"[extract_from_file]   price_per_case  = {product.get('price_per_case')!r}")
+                                    logger.info(f"[extract_from_file]   price_per_unit  = {product.get('price_per_unit')!r}")
+                                    logger.info(f"[extract_from_file]   currency        = {product.get('currency')!r}")
+                                    logger.info(f"[extract_from_file]   incoterm        = {product.get('incoterm')!r}")
+                                    logger.info(f"[extract_from_file]   custom_status   = {product.get('custom_status')!r}")
+                                    logger.info(f"[extract_from_file]   supplier_name   = {product.get('supplier_name')!r}")
+                                    logger.info(f"[extract_from_file]   alcohol_percent = {product.get('alcohol_percent')!r}")
+                                    logger.info(f"[extract_from_file] Batch {batch_num}, Product {p_idx + 1}: passing to clean_product_data()")
                                     cleaned_product = clean_product_data(product)
+                                    logger.info(f"[extract_from_file] Batch {batch_num}, Product {p_idx + 1}: === AFTER clean_product_data ===")
+                                    logger.info(f"[extract_from_file]   product_name    = {cleaned_product.get('product_name')!r}")
+                                    logger.info(f"[extract_from_file]   packaging       = {cleaned_product.get('packaging')!r}")
+                                    logger.info(f"[extract_from_file]   units_per_case  = {cleaned_product.get('units_per_case')}  <-- should match packaging N")
+                                    logger.info(f"[extract_from_file]   unit_volume_ml  = {cleaned_product.get('unit_volume_ml')}")
+                                    logger.info(f"[extract_from_file]   quantity_case   = {cleaned_product.get('quantity_case')}")
+                                    logger.info(f"[extract_from_file]   price_per_case  = {cleaned_product.get('price_per_case')}")
                                     cleaned_batch_products.append(cleaned_product)
 
                                 all_extracted_products.extend(cleaned_batch_products)
                                 processed_row_count += len(batch_df)
+                                logger.info(f"[extract_from_file] Batch {batch_num}: complete — added {len(cleaned_batch_products)} product(s). Running total: {len(all_extracted_products)}")
 
                                 if cleaned_batch_products:
-                                    logger.debug(
-                                        f"First product in batch: {json.dumps(cleaned_batch_products[0], indent=2)[:300]}...")
+                                    logger.debug(f"[extract_from_file] Batch {batch_num}: first product sample: {json.dumps(cleaned_batch_products[0], indent=2)[:300]}...")
+
                             elif isinstance(result, list):
-                                logger.info(
-                                    f"Batch {batch_start // batch_size + 1}: Found direct list with {len(result)} items")
+                                logger.info(f"[extract_from_file] Batch {batch_num}: AI returned a direct LIST with {len(result)} item(s) (expected {len(batch_df)})")
                                 if len(result) != len(batch_df):
-                                    logger.warning(
-                                        f"Batch {batch_start // batch_size + 1}: List count mismatch. Expected {len(batch_df)}, got {len(result)}")
+                                    logger.warning(f"[extract_from_file] Batch {batch_num}: List count mismatch — expected {len(batch_df)}, got {len(result)}")
                                     if len(result) < len(batch_df):
                                         missing_count = len(batch_df) - len(result)
+                                        logger.warning(f"[extract_from_file] Batch {batch_num}: Padding {missing_count} missing product(s)")
                                         for i in range(missing_count):
                                             default_product = clean_product_data({})
                                             default_product['product_name'] = f"Row {batch_start + len(result) + i + 1}"
                                             result.append(default_product)
 
                                 cleaned_batch_products = []
-                                for product in result:
+                                for p_idx, product in enumerate(result):
+                                    logger.info(f"[extract_from_file] Batch {batch_num} (list), Product {p_idx + 1}: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}")
                                     cleaned_product = clean_product_data(product)
+                                    logger.info(f"[extract_from_file] Batch {batch_num} (list), Product {p_idx + 1} CLEANED: units_per_case={cleaned_product.get('units_per_case')}, price_per_case={cleaned_product.get('price_per_case')}")
                                     cleaned_batch_products.append(cleaned_product)
                                 all_extracted_products.extend(cleaned_batch_products)
                                 processed_row_count += len(batch_df)
+                                logger.info(f"[extract_from_file] Batch {batch_num} (list): complete — running total: {len(all_extracted_products)}")
                             else:
-                                logger.warning(
-                                    f"Batch {batch_start // batch_size + 1}: Unexpected format, creating default products")
+                                logger.warning(f"[extract_from_file] Batch {batch_num}: Unexpected JSON format (type={type(result)}) — creating {len(batch_df)} default product(s)")
                                 for i in range(len(batch_df)):
                                     default_product = clean_product_data({})
                                     default_product['product_name'] = f"Row {batch_start + i + 1}"
@@ -628,16 +694,15 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 processed_row_count += len(batch_df)
 
                         except json.JSONDecodeError as e:
-                            logger.error(f"JSON parse error in batch {batch_start // batch_size + 1}: {e}")
-                            logger.error(
-                                f"Batch {batch_start // batch_size + 1} raw response (first 500 chars): {content[:500]}")
-                            logger.error(
-                                f"Batch {batch_start // batch_size + 1} raw response (last 500 chars): {content[-500:]}")
+                            logger.error(f"[extract_from_file] Batch {batch_num}: JSON parse error: {e}")
+                            logger.error(f"[extract_from_file] Batch {batch_num}: raw response first 500 chars: {content[:500]!r}")
+                            logger.error(f"[extract_from_file] Batch {batch_num}: raw response last 500 chars: {content[-500:]!r}")
 
                             try:
                                 import re
                                 json_pattern = r'\{.*\}'
                                 matches = re.findall(json_pattern, content, re.DOTALL)
+                                logger.info(f"[extract_from_file] Batch {batch_num}: regex salvage found {len(matches)} match(es)")
                                 if matches:
                                     for match in matches:
                                         try:
@@ -649,8 +714,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                                         missing_count = len(batch_df) - len(batch_products)
                                                         for i in range(missing_count):
                                                             default_product = clean_product_data({})
-                                                            default_product[
-                                                                'product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
+                                                            default_product['product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
                                                             batch_products.append(default_product)
 
                                                     cleaned_batch_products = []
@@ -659,13 +723,12 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                                         cleaned_batch_products.append(cleaned_product)
                                                     all_extracted_products.extend(cleaned_batch_products)
                                                     processed_row_count += len(batch_df)
-                                                    logger.warning(
-                                                        f"Batch {batch_start // batch_size + 1}: Salvaged {len(cleaned_batch_products)} products from regex")
+                                                    logger.warning(f"[extract_from_file] Batch {batch_num}: Salvaged {len(cleaned_batch_products)} product(s) via regex")
                                                     break
                                         except:
                                             continue
                             except Exception as salvage_error:
-                                logger.error(f"Failed to salvage JSON: {salvage_error}")
+                                logger.error(f"[extract_from_file] Batch {batch_num}: Salvage FAILED: {salvage_error}")
                                 for i in range(len(batch_df)):
                                     default_product = clean_product_data({})
                                     default_product['product_name'] = f"Row {batch_start + i + 1}"
@@ -673,33 +736,31 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 processed_row_count += len(batch_df)
 
                     except Exception as e:
-                        logger.error(f"Error extracting batch {batch_start // batch_size + 1}: {e}")
+                        logger.error(f"[extract_from_file] Batch {batch_num}: OpenAI call FAILED: {e}")
+                        logger.error(f"[extract_from_file] Batch {batch_num}: {traceback.format_exc()}")
                         for i in range(len(batch_df)):
                             default_product = clean_product_data({})
                             default_product['product_name'] = f"Row {batch_start + i + 1}"
                             all_extracted_products.append(default_product)
                         processed_row_count += len(batch_df)
 
-                logger.info(f"Total products extracted from all batches: {len(all_extracted_products)}")
-                logger.info(f"Total rows processed: {processed_row_count} of {total_rows}")
+                logger.info(f"[extract_from_file] All batches complete — total products: {len(all_extracted_products)}, rows processed: {processed_row_count}/{total_rows}")
 
                 if len(all_extracted_products) != total_rows:
-                    logger.warning(
-                        f"Product count mismatch! Excel has {total_rows} rows but extracted {len(all_extracted_products)} products")
+                    logger.warning(f"[extract_from_file] PRODUCT/ROW MISMATCH — Excel rows: {total_rows}, products extracted: {len(all_extracted_products)}")
                     if len(all_extracted_products) < total_rows:
                         missing_count = total_rows - len(all_extracted_products)
-                        logger.warning(f"Adding {missing_count} default products to match row count")
+                        logger.warning(f"[extract_from_file] Padding {missing_count} missing product(s) with defaults")
                         for i in range(missing_count):
                             default_product = clean_product_data({})
                             default_product['product_name'] = f"Missing Row {len(all_extracted_products) + i + 1}"
                             all_extracted_products.append(default_product)
 
                 if all_extracted_products:
-                    logger.debug(
-                        f"Sample extracted products (first 2): {json.dumps(all_extracted_products[:2], indent=2)}")
-                    logger.info(f"Total extracted products after fixes: {len(all_extracted_products)}")
+                    logger.debug(f"[extract_from_file] Sample extracted products (first 2): {json.dumps(all_extracted_products[:2], indent=2)}")
+                    logger.info(f"[extract_from_file] Total extracted products after all fixes: {len(all_extracted_products)}")
                 else:
-                    logger.warning("No products extracted from any batch, trying fallback...")
+                    logger.warning(f"[extract_from_file] No products extracted from any batch — trying fallback text extraction")
                     simplified_rows = []
                     for i in range(min(10, len(df))):
                         row = df.iloc[i]
@@ -710,9 +771,9 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         simplified_rows.append(row_dict)
 
                     text_content = f"Excel with {total_rows} rows. Sample data:\n{json.dumps(simplified_rows, indent=2)}"
-                    logger.info(f"Fallback text content length: {len(text_content)}")
+                    logger.info(f"[extract_from_file] Fallback text length: {len(text_content)} chars — calling extract_offer()")
                     fallback_result = await extract_offer(text_content)
-                    logger.info(f"Fallback extraction result type: {type(fallback_result)}")
+                    logger.info(f"[extract_from_file] Fallback extraction result type: {type(fallback_result)}")
                     return fallback_result
 
                 if all_extracted_products:
@@ -724,42 +785,51 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         'batches_processed': (total_rows + batch_size - 1) // batch_size,
                         'original_rows': total_rows
                     }
-                    logger.info(f"extract_from_file completed successfully with {len(all_extracted_products)} products")
+                    logger.info(f"[extract_from_file] ===== END EXCEL — returning {len(all_extracted_products)} products =====")
                     return result
                 else:
+                    logger.error(f"[extract_from_file] No products could be extracted from the Excel file")
                     return {"error": "No products could be extracted from the Excel file"}
 
             except Exception as e:
-                logger.error(f"Error reading Excel file: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"[extract_from_file] Excel processing FAILED: {e}")
+                logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                 text_content = f"Excel file - error reading: {str(e)}"
                 return {"error": f"Excel read error: {str(e)}"}
 
         elif content_type == 'application/pdf':
-            logger.info("Processing PDF file...")
+            logger.info(f"[extract_from_file] Detected file type: PDF")
             try:
                 import PyPDF2
                 with open(file_path, 'rb') as file:
                     pdf_reader = PyPDF2.PdfReader(file)
+                    num_pages = len(pdf_reader.pages)
+                    logger.info(f"[extract_from_file] PDF has {num_pages} page(s)")
                     text_content = ""
-                    for page in pdf_reader.pages:
-                        text_content += page.extract_text()
-                logger.info(f"PDF extracted, text length: {len(text_content)}")
+                    for page_num, page in enumerate(pdf_reader.pages):
+                        page_text = page.extract_text()
+                        logger.info(f"[extract_from_file] PDF page {page_num + 1}/{num_pages}: extracted {len(page_text)} chars")
+                        logger.info(f"[extract_from_file] PDF page {page_num + 1} content preview: {page_text[:300]!r}")
+                        text_content += page_text
+                logger.info(f"[extract_from_file] PDF extraction complete — total text length: {len(text_content)} chars")
+                logger.info(f"[extract_from_file] PDF full text preview (first 500 chars): {text_content[:500]!r}")
             except ImportError:
-                logger.error("PyPDF2 not installed for PDF processing")
+                logger.error(f"[extract_from_file] PyPDF2 is NOT installed — cannot process PDF")
                 text_content = "PDF processing requires PyPDF2 library"
                 return {"error": "PyPDF2 not installed"}
             except Exception as e:
-                logger.error(f"Error reading PDF file: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"[extract_from_file] PDF read FAILED: {e}")
+                logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                 text_content = f"PDF file - error reading: {str(e)}"
                 return {"error": f"PDF read error: {str(e)}"}
 
         elif 'image' in content_type:
-            logger.info("Processing image file...")
+            logger.info(f"[extract_from_file] Detected file type: IMAGE (content_type={content_type!r})")
             try:
                 with open(file_path, "rb") as image_file:
                     base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+                logger.info(f"[extract_from_file] Image base64 encoded — length: {len(base64_image)} chars")
+                logger.info(f"[extract_from_file] Calling OpenAI vision API for image extraction...")
 
                 response = await client.chat.completions.create(
                     model="gpt-4o",
@@ -780,47 +850,55 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     ],
                     max_tokens=16000,
                 )
-                logger.info("Image processed with OpenAI")
-                return await extract_offer(response.choices[0].message.content)
+                image_response_text = response.choices[0].message.content
+                logger.info(f"[extract_from_file] Image OpenAI response length: {len(image_response_text)} chars")
+                logger.info(f"[extract_from_file] Image response preview: {image_response_text[:400]!r}")
+                logger.info(f"[extract_from_file] Passing image response to extract_offer() for structured extraction")
+                return await extract_offer(image_response_text)
 
             except Exception as e:
-                logger.error(f"Error extracting from image: {e}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
+                logger.error(f"[extract_from_file] Image processing FAILED: {e}")
+                logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                 return {"error": f"Image processing error: {str(e)}"}
 
         else:
-            logger.info(f"Processing text file with content_type: {content_type}")
+            logger.info(f"[extract_from_file] Detected file type: TEXT (content_type={content_type!r})")
             try:
                 with open(file_path, 'r', encoding='utf-8') as file:
                     text_content = file.read()
-                logger.info(f"Text file read, length: {len(text_content)}")
+                logger.info(f"[extract_from_file] Text file read with utf-8 — length: {len(text_content)} chars")
             except:
                 try:
                     with open(file_path, 'r', encoding='latin-1') as file:
                         text_content = file.read()
-                    logger.info(f"Text file read with latin-1 encoding, length: {len(text_content)}")
+                    logger.info(f"[extract_from_file] Text file read with latin-1 fallback — length: {len(text_content)} chars")
                 except Exception as e:
-                    logger.error(f"Error reading text file: {e}")
-                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    logger.error(f"[extract_from_file] Text file read FAILED: {e}")
+                    logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                     return {"error": f"Text file read error: {str(e)}"}
 
         if text_content:
-            logger.info(f"Calling extract_offer with text content length: {len(text_content)}")
+            logger.info(f"[extract_from_file] Passing text to extract_offer() — length: {len(text_content)} chars")
+            logger.info(f"[extract_from_file] Text preview (first 300 chars): {text_content[:300]!r}")
             result = await extract_offer(text_content)
-            logger.info(f"extract_offer returned result type: {type(result)}")
+            logger.info(f"[extract_from_file] extract_offer() returned — result type: {type(result)}")
             return result
         else:
-            logger.warning("No text content extracted from file")
+            logger.warning(f"[extract_from_file] No text content was extracted from file — aborting")
             return {"error": "No content extracted from file"}
 
     except Exception as e:
-        logger.error(f"Error extracting from file: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"[extract_from_file] CRITICAL error: {e}")
+        logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
         return {"error": f"General extraction error: {str(e)}"}
 
 
 def clean_product_data(product: dict) -> dict:
     """Clean up product data to ensure it matches schema exactly"""
+    logger.info(f"[clean_product_data] ===== START =====")
+    logger.info(f"[clean_product_data] Input product keys: {list(product.keys())}")
+    logger.info(f"[clean_product_data] Input: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}")
+
     schema_fields = {
         'uid': "Not Found",
         'product_key': "Not Found",
@@ -879,6 +957,7 @@ def clean_product_data(product: dict) -> dict:
 
             # Convert None, empty strings, null, and 0 to appropriate default
             if value in [None, "Not Found", "", "null", 0, "0"]:
+                logger.info(f"[clean_product_data] Field '{field}': value={value!r} is empty/zero — using default: {default_value!r}")
                 cleaned_product[field] = default_value
             else:
                 numeric_keys = [
@@ -894,7 +973,9 @@ def clean_product_data(product: dict) -> dict:
                             cleaned_product[field] = float(value)
                         else:
                             cleaned_product[field] = float(value)
-                    except (ValueError, TypeError):
+                        logger.info(f"[clean_product_data] Field '{field}': {value!r} → {cleaned_product[field]} (converted to float)")
+                    except (ValueError, TypeError) as conv_err:
+                        logger.warning(f"[clean_product_data] Field '{field}': could NOT convert {value!r} to float ({conv_err}) — setting to None")
                         cleaned_product[field] = None  # Use None for failed conversions
                 elif isinstance(default_value, list):
                     cleaned_product[field] = value if isinstance(value, list) else []
@@ -903,12 +984,12 @@ def clean_product_data(product: dict) -> dict:
                 else:
                     cleaned_product[field] = str(value) if value is not None else default_value
         else:
+            logger.info(f"[clean_product_data] Field '{field}': NOT in product — using default: {default_value!r}")
             cleaned_product[field] = default_value
 
     if cleaned_product['product_key'] in ["Not Found"] and cleaned_product['product_name'] not in ["Not Found"]:
-        product_key = str(cleaned_product['product_name']).replace(' ', '_').replace('/', '_').replace('&',
-                                                                                                       '_').replace('.',
-                                                                                                                    '').upper()
+        product_key = str(cleaned_product['product_name']).replace(' ', '_').replace('/', '_').replace('&', '_').replace('.', '').upper()
+        logger.info(f"[clean_product_data] product_key was 'Not Found' — auto-generated: {product_key!r}")
         cleaned_product['product_key'] = product_key
 
     # Convert any 0 values to None for numeric fields that shouldn't have 0 as a valid value
@@ -919,55 +1000,76 @@ def clean_product_data(product: dict) -> dict:
 
     for field in numeric_fields_never_zero:
         if field in cleaned_product and cleaned_product[field] == 0:
+            logger.warning(f"[clean_product_data] Field '{field}' is 0 — treating as Not Found (None)")
             cleaned_product[field] = None
+
+    # ── Packaging-derived correction ──────────────────────────────────────────
+    # If the packaging field contains NxVOLUME (e.g. "6x70cl", "12x100cl"),
+    # the number BEFORE the "x" is units_per_case — always.
+    # The model sometimes puts the price there instead; this corrects it.
     import re as _re
     packaging_str = cleaned_product.get('packaging') or ''
+    logger.info(f"[clean_product_data] Packaging correction check: packaging='{packaging_str}', current units_per_case={cleaned_product.get('units_per_case')}")
     pkg_match = _re.search(r'(\d+)\s*[xX]\s*\d+', packaging_str)
     if pkg_match:
         correct_units = float(pkg_match.group(1))
         current_units = cleaned_product.get('units_per_case')
         if current_units != correct_units:
+            logger.warning(f"[clean_product_data] PACKAGING CORRECTION TRIGGERED!")
+            logger.warning(f"[clean_product_data]   packaging='{packaging_str}'")
+            logger.warning(f"[clean_product_data]   AI gave units_per_case={current_units} (WRONG — likely the price)")
+            logger.warning(f"[clean_product_data]   Correct units_per_case from packaging N = {correct_units}")
+            logger.warning(f"[clean_product_data]   Overriding units_per_case: {current_units} → {correct_units}")
             cleaned_product['units_per_case'] = correct_units
+        else:
+            logger.info(f"[clean_product_data] Packaging check OK: units_per_case={current_units} already matches packaging N={correct_units}")
+    else:
+        if packaging_str and packaging_str not in ("Not Found", "Bottle", "bottle"):
+            logger.info(f"[clean_product_data] No NxVOL pattern found in packaging='{packaging_str}' — no correction applied")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    logger.info(f"[clean_product_data] ===== END =====")
+    logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}")
 
     return cleaned_product
 
 
 def parse_buffer_data(buffer_data: dict) -> bytes:
-    logger.debug(f"parse_buffer_data called with buffer_data type: {type(buffer_data)}")
+    logger.info(f"[parse_buffer_data] ===== START — input type: {type(buffer_data)} =====")
 
     if isinstance(buffer_data, dict) and buffer_data.get('type') == 'Buffer':
         try:
             data_bytes = bytes(buffer_data['data'])
-            logger.debug(f"Parsed Buffer type, length: {len(data_bytes)} bytes")
+            logger.info(f"[parse_buffer_data] Parsed Buffer type — {len(data_bytes)} bytes")
             return data_bytes
         except Exception as e:
-            logger.error(f"Error parsing Buffer type: {e}")
+            logger.error(f"[parse_buffer_data] Failed to parse Buffer type: {e}")
             return b''
     elif isinstance(buffer_data, dict) and 'data' in buffer_data:
         try:
             if isinstance(buffer_data['data'], str):
                 data_bytes = base64.b64decode(buffer_data['data'])
-                logger.debug(f"Parsed base64 string, length: {len(data_bytes)} bytes")
+                logger.info(f"[parse_buffer_data] Parsed base64 string — {len(data_bytes)} bytes")
                 return data_bytes
             elif isinstance(buffer_data['data'], list):
                 data_bytes = bytes(buffer_data['data'])
-                logger.debug(f"Parsed list data, length: {len(data_bytes)} bytes")
+                logger.info(f"[parse_buffer_data] Parsed list data — {len(data_bytes)} bytes")
                 return data_bytes
             else:
-                logger.warning(f"Unexpected data type in buffer_data['data']: {type(buffer_data['data'])}")
+                logger.warning(f"[parse_buffer_data] Unexpected data type in buffer_data['data']: {type(buffer_data['data'])}")
                 return b''
         except Exception as e:
-            logger.error(f"Error parsing buffer_data with 'data' key: {e}")
+            logger.error(f"[parse_buffer_data] Failed to parse buffer_data with 'data' key: {e}")
             return b''
     elif isinstance(buffer_data, str):
         try:
             data_bytes = base64.b64decode(buffer_data)
-            logger.debug(f"Parsed base64 string directly, length: {len(data_bytes)} bytes")
+            logger.info(f"[parse_buffer_data] Parsed base64 string directly — {len(data_bytes)} bytes")
             return data_bytes
         except Exception as e:
-            logger.error(f"Error parsing base64 string: {e}")
+            logger.error(f"[parse_buffer_data] Failed to parse base64 string: {e}")
             return b''
     else:
-        logger.warning(f"Unexpected buffer_data type: {type(buffer_data)}")
-        logger.debug(f"buffer_data value: {buffer_data}")
+        logger.warning(f"[parse_buffer_data] Unexpected buffer_data type: {type(buffer_data)}")
+        logger.debug(f"[parse_buffer_data] buffer_data value: {buffer_data}")
         return b''
