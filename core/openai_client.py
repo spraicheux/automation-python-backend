@@ -38,7 +38,7 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - cases_per_pallet: Number of cases per pallet.
 - quantity_case: Number of cases offered or ordered.
 - bottle_or_can_type: Packaging type (bottle/can/other).
-- price_per_unit: Unit price.
+- price_per_unit: Unit (bottle) price.
 - price_per_case: Case price.
 - currency: Currency (EUR, USD, GBP...).
 - price_per_unit_eur: Unit price converted into EUR.
@@ -49,6 +49,7 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - port: Port of loading/destination if applicable.
 - lead_time: Lead time or availability.
 - supplier_name: Name of the supplier company (leave as "Not Found" only if truly absent).
+- supplier_email: Email address of the sender/supplier extracted from "De:" or "From:" header.
 - supplier_reference: Supplier offer reference.
 - supplier_country: Supplier's country.
 - offer_date: Date of the offer (leave as "Not Found").
@@ -63,10 +64,10 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - best_before_date: Best before date (date or 'fresh').
 - label_language: Languages on label (e.g. 'UK text', 'SA label').
 - ean_code: EAN product barcode.
-- gift_box: Indicates if product includes gift box (GBX).
+- gift_box: Indicates if product includes gift box (GBX) or not (NGB). See RULE 9.
 - refillable_status: REF or NRF. Use "Not Found" if not stated.
 - custom_status: T1 or T2 customs status. Use "Not Found" if not stated.
-- moq_cases: Minimum order quantity stated in the offer.
+- moq_cases: Minimum order quantity stated in the offer (in cases).
 
 ══════════════════════════════════════════════════════════════════════
 RULE 1 — CUSTOM STATUS (T1 / T2)  ⚠️ HIGHEST PRIORITY
@@ -159,6 +160,19 @@ NEVER use: person names, email addresses, sales desk names, or email usernames.
 If truly not found after exhaustive search → supplier_name: "Not Found"
 
 ══════════════════════════════════════════════════════════════════════
+RULE 4b — SUPPLIER EMAIL — FROM / DE HEADER  ⚠️
+══════════════════════════════════════════════════════════════════════
+Extract the sender's email address into supplier_email.
+Look for:
+  - "De: Name <email@domain.com>" → extract email@domain.com
+  - "From: Name <email@domain.com>" → extract email@domain.com
+  - "De: Name email@domain.com" → extract email@domain.com
+  - Email in signature block (e.g. "sales@elixemarket.com")
+The supplier_email is the SENDER's email, not any recipient.
+Apply the SAME email to ALL products from the same offer.
+If not found → supplier_email: "Not Found"
+
+══════════════════════════════════════════════════════════════════════
 RULE 5 — ERROR FLAGS
 ══════════════════════════════════════════════════════════════════════
 Populate error_flags as a list of strings describing extraction issues.
@@ -171,6 +185,8 @@ Add a flag for each of the following situations (use clear English):
 - "quantity_case not explicitly stated" — when quantity was missing
 - "incoterm not found" — when no incoterm was present
 - "multiple incoterms detected — row duplicated" — when rows were split
+- "price_per_case calculated from price_per_unit x units_per_case" — when calculated
+- "price_per_unit calculated from price_per_case / units_per_case" — when calculated
 - Any other notable extraction issue or ambiguity
 If no issues → error_flags: []
 
@@ -184,6 +200,116 @@ If a product has multiple incoterms (e.g. "EXW RIGA / DAP LOENDERSLOOT",
 - Add "multiple incoterms detected — row duplicated" to error_flags on each row.
 - If only one incoterm found → single row as normal.
 - If no incoterm found → incoterm: "Not Found", location: "Not Found".
+⚠️ DO NOT create extra rows for any other reason.
+
+══════════════════════════════════════════════════════════════════════
+RULE 7 — COMPOUND LOCATION — PRESERVE FULL STRING  ⚠️ CRITICAL
+══════════════════════════════════════════════════════════════════════
+When the location references multiple warehouses or places joined by "/" or "and" or "&",
+you MUST preserve the FULL compound string EXACTLY for ALL products from that offer.
+
+Examples:
+  "DAP LOENDERSLOOT / NEWCORP" → location: "LOENDERSLOOT / NEWCORP" for EVERY product
+  "EXW AMSTERDAM / ROTTERDAM"  → location: "AMSTERDAM / ROTTERDAM" for EVERY product
+
+NEVER split the compound location or assign different parts to different products.
+ALL products from the same offer get the SAME compound location string.
+This rule applies even if one product seems to fit one location better.
+
+══════════════════════════════════════════════════════════════════════
+RULE 8 — PRICE IDENTIFICATION AND CALCULATION  ⚠️ CRITICAL
+══════════════════════════════════════════════════════════════════════
+
+STEP 1 — DETECT CURRENCY from symbol (scan the full text):
+  - "€" or "EUR" or "eur" or "euro" or "Euros" → currency: "EUR"
+  - "$" or "USD" or "usd" or "US$"             → currency: "USD"
+  - "£" or "GBP" or "gbp"                      → currency: "GBP"
+  Apply the detected currency to ALL products in the offer.
+
+STEP 2 — IDENTIFY PRICE TYPE using explicit suffixes:
+  - "/btl", "/bottle", "per bottle", "EUR/btl", "per btl", "€/btl" → price is PRICE PER UNIT (bottle)
+    → put value in price_per_unit, leave price_per_case for calculation
+  - "/cs", "/case", "per case", "EUR/cs", "USD/cs", "per cs"       → price is PRICE PER CASE
+    → put value in price_per_case, leave price_per_unit for calculation
+  - No suffix or ambiguous → default to price_per_case
+
+STEP 3 — CALCULATE the missing price (ALWAYS do this when units_per_case is known):
+  - If price_per_unit is known AND units_per_case is known AND price_per_case is missing:
+    → price_per_case = ROUND(price_per_unit × units_per_case, 2)
+    → add "price_per_case calculated from price_per_unit x units_per_case" to error_flags
+  - If price_per_case is known AND units_per_case is known AND price_per_unit is missing:
+    → price_per_unit = ROUND(price_per_case / units_per_case, 2)
+    → add "price_per_unit calculated from price_per_case / units_per_case" to error_flags
+
+EXAMPLES:
+  "ABERFELDY 18YO 6/700/43/REF/GBX/T2 €90.30" — context is EUR/btl (per bottle list):
+    → price_per_unit: 90.30, currency: "EUR", units_per_case: 6
+    → price_per_case = 90.30 × 6 = 541.80
+
+  "USD194/cs Exwork Loendersloot" — explicitly per case:
+    → price_per_case: 194.00, currency: "USD"
+    → price_per_unit = 194.00 / 12 = 16.17  (if 12 bottles per case)
+
+  "11,40eur/btl" → price_per_unit: 11.40, currency: "EUR"
+  "32,50eur/cs"  → price_per_case: 32.50, currency: "EUR"
+
+══════════════════════════════════════════════════════════════════════
+RULE 9 — GIFT BOX / NON GIFT BOX  ⚠️
+══════════════════════════════════════════════════════════════════════
+Scan the product name and product code for gift box indicators:
+  - "GBX" or "GB" or "Gift Box" or "gift box" → gift_box: "GBX"
+  - "NGB" or "NGBX" or "NGB/T" or "non gift box" or "no gift box" → gift_box: "NGB"
+  - "IBC" (individual box carton) → gift_box: "IBC"
+  - "STD" (standard, no gift box implied) → gift_box: "NGB"
+  - Not stated → gift_box: "Not Found"
+NEVER default to "Not Found" when GBX, NGB, NGBX, IBC, or STD is present.
+NOTE: "NGB" is NOT the same as gift_box — it means NO gift box.
+
+══════════════════════════════════════════════════════════════════════
+RULE 10 — LEAD TIME AND AVAILABILITY  ⚠️
+══════════════════════════════════════════════════════════════════════
+Extract lead time and availability status into the lead_time field:
+  - "ON FLOOR"                          → lead_time: "ON FLOOR"
+  - "ON FLOOR (No Escrow)"              → lead_time: "ON FLOOR (No Escrow)"
+  - "on floor" (any case)               → lead_time: "ON FLOOR"
+  - "6 weeks" or "6 weeks LT"           → lead_time: "6 weeks"
+  - "Lead time ~ 3 weeks"               → lead_time: "3 weeks"
+  - "Lead time ~3 weeks/One time offer" → lead_time: "3 weeks / One time offer"
+  - If not stated → lead_time: "Not Found"
+IMPORTANT: If the same lead time applies to multiple products (e.g. stated in header),
+apply it to ALL products in the offer.
+
+══════════════════════════════════════════════════════════════════════
+RULE 11 — MOQ (MINIMUM ORDER QUANTITY)  ⚠️
+══════════════════════════════════════════════════════════════════════
+Extract MOQ (minimum order quantity) into moq_cases.
+Look for:
+  - "MOQ X cases", "MOQ: X cs", "MOQ X"
+  - "minimum order quantity X", "min order X cases"
+  - "min X cs", "min. X cases"
+Store the numeric value (in cases) in moq_cases.
+If MOQ is stated in pallets (e.g. "~ 2 pll of each SKU"), do NOT store in moq_cases
+  — this is pallet info, not a case MOQ. Leave moq_cases as "Not Found".
+If not found → moq_cases: "Not Found"
+Also populate min_order_quantity_case with the same value as moq_cases.
+
+══════════════════════════════════════════════════════════════════════
+RULE 12 — STRICT PRODUCT COUNT  ⚠️ CRITICAL — NO HALLUCINATION
+══════════════════════════════════════════════════════════════════════
+Extract EXACTLY the number of distinct product lines in the offer. NO MORE, NO LESS.
+DO NOT create extra rows for:
+  - Section headers (e.g. "Whisky", "Rum", "Gin", "Beer")
+  - Footer lines, brand lists, signature blocks
+  - Subtotals, totals, or summary rows
+  - Repeated or duplicate descriptions of the same product
+  - General promotional text ("we work with all major brands...")
+
+The ONLY valid reason to create MORE rows than product lines is Rule 6
+(multiple incoterms per product → one row per incoterm).
+
+If an offer lists exactly 3 products → output EXACTLY 3 rows (no more, no less).
+If an offer lists exactly 7 products → output EXACTLY 7 rows.
+Count carefully before outputting.
 
 ══════════════════════════════════════════════════════════════════════
 SUPPLIER REFERENCE — OVERRIDE RULE  ⚠️
@@ -201,7 +327,7 @@ CRITICAL RULES FOR MISSING VALUES
 2. For numeric fields, if the value is missing, return "Not Found" - NOT 0.
 3. 0 should NEVER be used as a default for missing numeric values. 0 is ONLY used when "0" appears explicitly in the source.
 4. If a numeric field has value 0, that means "Not Found" - treat it as "Not Found".
-5. Do NOT calculate or derive values that aren't directly stated. Only extract what is explicitly written.
+5. Do NOT calculate or derive values that aren't directly stated — EXCEPTION: Rule 8 price calculations are REQUIRED.
 6. For "12x750ml" -> units_per_case = 12, unit_volume_ml = 750. Do NOT create a quantity_case value from this.
 7. If you see "12x750ml" and no other quantity information, quantity_case must be "Not Found", NOT 233 or any other number.
 8. cases_per_pallet must be "Not Found" unless pallet quantity is explicitly written (e.g., "60 cases per pallet", "60 cs/pallet").
@@ -211,7 +337,7 @@ CRITICAL RULES FOR MISSING VALUES
 IMPORTANT RULES:
 1. Extract ALL products mentioned in the text. Return one object per product in the 'products' array.
 2. CAPTURE FULL NAMES: 'Baileys Original' is the product_name, not just 'Original'.
-3. If you find multiple quantities/prices for one product, create separate entries if they look like distinct offers.
+3. If a product has MULTIPLE INCOTERMS, create separate entries — one per incoterm (Rule 6).
 4. If a field is NOT FOUND or doesn't exist, use "Not Found" (NOT null and NOT 0).
 5. DO NOT leave string fields as empty string "" - if missing, use "Not Found".
 6. DO NOT use null for any field - always use "Not Found" for missing values.
@@ -243,10 +369,13 @@ UNIT_VOLUME_ML — CRITICAL PARSING RULE:
 - "700ml" → 700ml (no conversion needed)
 - NEVER append the unit letter to the number. Always convert to ml as a pure integer.
 
-
-- "15.95eur" → price_per_case: 15.95 (when no /btl or /cs suffix, assume per case)
+PRICE IDENTIFICATION — REFER TO RULE 8 ABOVE FOR FULL DETAILS:
+- "15.95eur" (no suffix) → price_per_case: 15.95 (default: no suffix = per case)
 - "11,40eur/btl" → price_per_unit: 11.40
 - "32,50eur/cs" → price_per_case: 32.50
+- "EUR/btl" context: all prices in that column are per bottle
+- "Price/Btle" or "EUR/btl" column header → ALL values in that column are price_per_unit
+- ALWAYS calculate the counterpart (case↔unit) using Rule 8.
 
 QUANTITY EXTRACTION:
 - "960 cs" → quantity_case: 960
@@ -289,6 +418,7 @@ INCOTERM & LOCATION:
 - Example: "FCA Prague" → incoterm: "FCA", location: "Prague"
 - If no incoterm or location found, return "Not Found".
 - MULTIPLE INCOTERMS: See RULE 6 above — create separate rows.
+- COMPOUND LOCATIONS: See RULE 7 above — NEVER split compound locations.
 
 DATE FIELDS:
 - "9/2026", "8/2026" → best_before_date: "2026-09-01", "2026-08-01"
@@ -313,11 +443,15 @@ COMMON PATTERNS IN OFFERS:
 - "24x50cl cans" → units_per_case: 24, unit_volume_ml: 500, bottle_or_can_type: "can"
 - "960 cs" → quantity_case: 960
 - "98,5€" → price_per_case: 98.5, currency: "EUR"
-- "11,40eur/btl" → price_per_unit: 11.40, currency: "EUR"
+- "11,40eur/btl" → price_per_unit: 11.40, currency: "EUR" → price_per_case = 11.40 × units_per_case
 - "EXW Loendersloot" → incoterm: "EXW", location: "Loendersloot bonded warehouse in Netherlands"
 - "DAP LOE" → incoterm: "DAP", location: "Loendersloot bonded warehouse in Netherlands"
-- "EXW RIGA / DAP LOENDERSLOOT" → TWO rows: one EXW/RIGA, one DAP/LOENDERSLOOT
+- "DAP LOENDERSLOOT / NEWCORP" → incoterm: "DAP", location: "LOENDERSLOOT / NEWCORP" (ALL products)
+- "EXW RIGA / DAP LOENDERSLOOT" → TWO rows: one EXW/RIGA, one DAP/LOENDERSLOOT (Rule 6)
 - "5 weeks LT" → lead_time: "5 weeks"
+- "ON FLOOR" → lead_time: "ON FLOOR"
+- "ON FLOOR (No Escrow)" → lead_time: "ON FLOOR (No Escrow)"
+- "Lead time ~ 3 weeks" → lead_time: "3 weeks"
 - "BBD 03.06.2026" → best_before_date: "2026-06-03"
 - "fresh" → best_before_date: "fresh"
 - "UK text" → label_language: "EN"
@@ -325,13 +459,28 @@ COMMON PATTERNS IN OFFERS:
 - "T1" or "T2" (anywhere) → custom_status: "T1" or "T2"
 - "REF" → refillable_status: "REF"
 - "NRF" → refillable_status: "NRF"
+- "GBX" or "GB" → gift_box: "GBX"
+- "NGB" or "NGBX" → gift_box: "NGB"
+- "IBC" → gift_box: "IBC"
+- "STD" → gift_box: "NGB"
 - "4180 cs Absolut 6x70cl at 29 euro" → quantity_case: 4180, units_per_case: 6, unit_volume_ml: 700, price_per_case: 29, currency: "EUR"
 - "2007 cs Absolut 12x100cl at 69 euro" → quantity_case: 2007, units_per_case: 12, unit_volume_ml: 1000, price_per_case: 69, currency: "EUR"
+- Column header "Price/Btle" or "EUR/btl" → ALL prices in that column are price_per_unit → calculate price_per_case = price × units_per_case
+- "MOQ 50 cs" → moq_cases: 50
+
+FINAL CHECKS BEFORE OUTPUTTING:
+1. Count the products in your output — it must match the number of product lines in the offer.
+   (Exception: Rule 6 — one extra row per additional incoterm only.)
+2. Every product with both price_per_unit and units_per_case must also have price_per_case.
+3. Every product with both price_per_case and units_per_case must also have price_per_unit.
+4. All products from the same offer share the same: supplier_name, supplier_email,
+   incoterm, location, currency, custom_status (unless per-product differences are explicit).
+5. Compound locations (X / Y) must appear IDENTICALLY on ALL rows.
 
 REMEMBER:
 - When in doubt, use "Not Found".
 - Never invent numbers.
-- Only extract what is explicitly stated.
+- Only extract what is explicitly stated (Rule 8 price calculations are the only permitted derivation).
 - If a value is 0, that means "Not Found" - treat as "Not Found".
 - Use "Not Found" for ALL missing fields - both strings AND numbers.
 """
@@ -359,6 +508,11 @@ async def extract_offer(text: str) -> dict:
 
         Extract ALL products from the text. Return a JSON object with a 'products' array containing ALL products found.
         If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
+
+        CRITICAL: Extract ONLY the actual product lines. Do NOT create rows for section headers
+        (like "Whisky", "Rum", "Gin"), brand lists, footers, or promotional text.
+        Count the product lines carefully — your output must contain exactly that many rows
+        (plus duplicates only for multiple incoterms per Rule 6).
 
         {SHARED_EXTRACTION_RULES}
 
@@ -400,8 +554,11 @@ async def extract_offer(text: str) -> dict:
                 logger.info(f"[extract_offer]   location        = {product.get('location')!r}")
                 logger.info(f"[extract_offer]   custom_status   = {product.get('custom_status')!r}")
                 logger.info(f"[extract_offer]   supplier_name   = {product.get('supplier_name')!r}")
+                logger.info(f"[extract_offer]   supplier_email  = {product.get('supplier_email')!r}")
                 logger.info(f"[extract_offer]   alcohol_percent = {product.get('alcohol_percent')!r}")
                 logger.info(f"[extract_offer]   origin_country  = {product.get('origin_country')!r}")
+                logger.info(f"[extract_offer]   gift_box        = {product.get('gift_box')!r}")
+                logger.info(f"[extract_offer]   moq_cases       = {product.get('moq_cases')!r}")
                 logger.info(f"[extract_offer]   error_flags     = {product.get('error_flags')!r}")
 
                 # Clean product nulls
@@ -433,6 +590,9 @@ async def extract_offer(text: str) -> dict:
                 logger.info(f"[extract_offer]   incoterm        = {cleaned_product.get('incoterm')!r}")
                 logger.info(f"[extract_offer]   custom_status   = {cleaned_product.get('custom_status')!r}")
                 logger.info(f"[extract_offer]   supplier_name   = {cleaned_product.get('supplier_name')!r}")
+                logger.info(f"[extract_offer]   supplier_email  = {cleaned_product.get('supplier_email')!r}")
+                logger.info(f"[extract_offer]   gift_box        = {cleaned_product.get('gift_box')!r}")
+                logger.info(f"[extract_offer]   moq_cases       = {cleaned_product.get('moq_cases')}")
 
                 cleaned_products.append(cleaned_product)
 
@@ -645,7 +805,9 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                     logger.info(f"[extract_from_file]   incoterm        = {product.get('incoterm')!r}")
                                     logger.info(f"[extract_from_file]   custom_status   = {product.get('custom_status')!r}")
                                     logger.info(f"[extract_from_file]   supplier_name   = {product.get('supplier_name')!r}")
+                                    logger.info(f"[extract_from_file]   supplier_email  = {product.get('supplier_email')!r}")
                                     logger.info(f"[extract_from_file]   alcohol_percent = {product.get('alcohol_percent')!r}")
+                                    logger.info(f"[extract_from_file]   gift_box        = {product.get('gift_box')!r}")
                                     logger.info(f"[extract_from_file] Batch {batch_num}, Product {p_idx + 1}: passing to clean_product_data()")
                                     cleaned_product = clean_product_data(product)
                                     logger.info(f"[extract_from_file] Batch {batch_num}, Product {p_idx + 1}: === AFTER clean_product_data ===")
@@ -655,6 +817,8 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                     logger.info(f"[extract_from_file]   unit_volume_ml  = {cleaned_product.get('unit_volume_ml')}")
                                     logger.info(f"[extract_from_file]   quantity_case   = {cleaned_product.get('quantity_case')}")
                                     logger.info(f"[extract_from_file]   price_per_case  = {cleaned_product.get('price_per_case')}")
+                                    logger.info(f"[extract_from_file]   price_per_unit  = {cleaned_product.get('price_per_unit')}")
+                                    logger.info(f"[extract_from_file]   gift_box        = {cleaned_product.get('gift_box')!r}")
                                     cleaned_batch_products.append(cleaned_product)
 
                                 all_extracted_products.extend(cleaned_batch_products)
@@ -798,29 +962,142 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 return {"error": f"Excel read error: {str(e)}"}
 
         elif content_type == 'application/pdf':
-            logger.info(f"[extract_from_file] Detected file type: PDF")
+            # ── PDF: process in page batches for accuracy ──────────────────
+            logger.info(f"[extract_from_file] Detected file type: PDF — will process in page batches")
+            PAGES_PER_BATCH = 5  # pages per AI call (tunable)
             try:
                 import PyPDF2
                 with open(file_path, 'rb') as file:
                     pdf_reader = PyPDF2.PdfReader(file)
                     num_pages = len(pdf_reader.pages)
                     logger.info(f"[extract_from_file] PDF has {num_pages} page(s)")
-                    text_content = ""
+
+                    # Collect (page_num, text) pairs
+                    pages_text = []
                     for page_num, page in enumerate(pdf_reader.pages):
-                        page_text = page.extract_text()
+                        page_text = page.extract_text() or ""
                         logger.info(f"[extract_from_file] PDF page {page_num + 1}/{num_pages}: extracted {len(page_text)} chars")
-                        logger.info(f"[extract_from_file] PDF page {page_num + 1} content preview: {page_text[:300]!r}")
-                        text_content += page_text
-                logger.info(f"[extract_from_file] PDF extraction complete — total text length: {len(text_content)} chars")
-                logger.info(f"[extract_from_file] PDF full text preview (first 500 chars): {text_content[:500]!r}")
+                        pages_text.append((page_num + 1, page_text))
+
+                total_pages = len(pages_text)
+                total_pdf_batches = (total_pages + PAGES_PER_BATCH - 1) // PAGES_PER_BATCH
+                logger.info(f"[extract_from_file] PDF: {total_pages} page(s) → {total_pdf_batches} batch(es) of up to {PAGES_PER_BATCH} pages")
+
+                all_pdf_products = []
+
+                for batch_idx in range(total_pdf_batches):
+                    start_page = batch_idx * PAGES_PER_BATCH
+                    end_page = min(start_page + PAGES_PER_BATCH, total_pages)
+                    batch_pages = pages_text[start_page:end_page]
+                    batch_num = batch_idx + 1
+
+                    combined_text = "\n\n".join(
+                        f"--- PAGE {pn} ---\n{pt}" for pn, pt in batch_pages
+                    )
+                    logger.info(f"[extract_from_file] PDF Batch {batch_num}/{total_pdf_batches}: pages {start_page + 1}–{end_page}, text length {len(combined_text)} chars")
+                    logger.info(f"[extract_from_file] PDF Batch {batch_num} preview (first 300 chars): {combined_text[:300]!r}")
+
+                    prompt = f"""
+You are extracting commercial alcohol offers from a PDF document (pages {start_page + 1} to {end_page} of {total_pages}).
+Return JSON ONLY, no explanation.
+
+Extract ALL product lines from the text below.
+Return a JSON object with a 'products' array.
+
+CRITICAL: Extract ONLY actual product lines. Do NOT create rows for:
+- Section headers (e.g. "Whisky", "Rum", "Gin")
+- Brand marketing lists (pages listing brand names the company works with)
+- Footer / signature blocks / unsubscribe links
+- Repeated items that are the same product
+
+If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
+
+{SHARED_EXTRACTION_RULES}
+
+PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
+{combined_text}
+"""
+
+                    try:
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: calling OpenAI — model=gpt-4o, max_tokens=16000")
+                        response = await client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "You are a professional data extraction expert. "
+                                        "Extract commercial alcohol product offers from PDF text. "
+                                        "Return ONLY valid JSON with a 'products' array. "
+                                        "Do NOT include section headers, brand lists, or footer text as products. "
+                                        "Only extract actual product offer lines."
+                                    )
+                                },
+                                {"role": "user", "content": prompt}
+                            ],
+                            response_format={"type": "json_object"},
+                            temperature=0.0,
+                            max_tokens=16000,
+                            top_p=1.0,
+                            frequency_penalty=0.0,
+                            presence_penalty=0.0
+                        )
+
+                        content = response.choices[0].message.content
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: response received — {len(content)} chars")
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: preview: {content[:400]!r}")
+
+                        result = json.loads(content)
+                        batch_products = result.get('products', [])
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: AI returned {len(batch_products)} product(s)")
+
+                        cleaned_batch = []
+                        for p_idx, product in enumerate(batch_products):
+                            logger.info(f"[extract_from_file] PDF Batch {batch_num}, Product {p_idx + 1}: product_name={product.get('product_name')!r}, price_per_unit={product.get('price_per_unit')!r}, price_per_case={product.get('price_per_case')!r}, units_per_case={product.get('units_per_case')!r}, gift_box={product.get('gift_box')!r}")
+
+                            # Null cleanup
+                            for key in list(product.keys()):
+                                if product[key] is None:
+                                    product[key] = "Not Found"
+
+                            cleaned_product = clean_product_data(product)
+                            logger.info(f"[extract_from_file] PDF Batch {batch_num}, Product {p_idx + 1} CLEANED: price_per_unit={cleaned_product.get('price_per_unit')}, price_per_case={cleaned_product.get('price_per_case')}, gift_box={cleaned_product.get('gift_box')!r}")
+                            cleaned_batch.append(cleaned_product)
+
+                        all_pdf_products.extend(cleaned_batch)
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: done — added {len(cleaned_batch)}. Running total: {len(all_pdf_products)}")
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"[extract_from_file] PDF Batch {batch_num}: JSON decode error: {e}")
+                        # Fallback: send the batch text through extract_offer
+                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: falling back to extract_offer()")
+                        fallback = await extract_offer(combined_text)
+                        all_pdf_products.extend(fallback.get('products', []))
+                    except Exception as e:
+                        logger.error(f"[extract_from_file] PDF Batch {batch_num}: error: {e}")
+                        logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
+
+                logger.info(f"[extract_from_file] PDF processing complete — total products: {len(all_pdf_products)}")
+
+                if all_pdf_products:
+                    return {
+                        'products': all_pdf_products,
+                        'total_products': len(all_pdf_products),
+                        'file_type': 'pdf',
+                        'processed_in_batches': True,
+                        'batches_processed': total_pdf_batches,
+                        'original_pages': total_pages
+                    }
+                else:
+                    logger.warning(f"[extract_from_file] No products extracted from PDF — returning empty result")
+                    return {"products": [], "error": "No products extracted from PDF"}
+
             except ImportError:
                 logger.error(f"[extract_from_file] PyPDF2 is NOT installed — cannot process PDF")
-                text_content = "PDF processing requires PyPDF2 library"
                 return {"error": "PyPDF2 not installed"}
             except Exception as e:
                 logger.error(f"[extract_from_file] PDF read FAILED: {e}")
                 logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
-                text_content = f"PDF file - error reading: {str(e)}"
                 return {"error": f"PDF read error: {str(e)}"}
 
         elif 'image' in content_type:
@@ -897,7 +1174,7 @@ def clean_product_data(product: dict) -> dict:
     """Clean up product data to ensure it matches schema exactly"""
     logger.info(f"[clean_product_data] ===== START =====")
     logger.info(f"[clean_product_data] Input product keys: {list(product.keys())}")
-    logger.info(f"[clean_product_data] Input: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}")
+    logger.info(f"[clean_product_data] Input: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}, price_per_unit={product.get('price_per_unit')!r}")
 
     schema_fields = {
         'uid': "Not Found",
@@ -929,6 +1206,7 @@ def clean_product_data(product: dict) -> dict:
         'port': "Not Found",
         'lead_time': "Not Found",
         'supplier_name': "Not Found",
+        'supplier_email': "Not Found",
         'supplier_reference': "Not Found",
         'supplier_country': "Not Found",
         'offer_date': "Not Found",
@@ -1003,10 +1281,7 @@ def clean_product_data(product: dict) -> dict:
             logger.warning(f"[clean_product_data] Field '{field}' is 0 — treating as Not Found (None)")
             cleaned_product[field] = None
 
-    # ── Packaging-derived correction ──────────────────────────────────────────
-    # If the packaging field contains NxVOLUME (e.g. "6x70cl", "12x100cl"),
-    # the number BEFORE the "x" is units_per_case — always.
-    # The model sometimes puts the price there instead; this corrects it.
+
     import re as _re
     packaging_str = cleaned_product.get('packaging') or ''
     logger.info(f"[clean_product_data] Packaging correction check: packaging='{packaging_str}', current units_per_case={cleaned_product.get('units_per_case')}")
@@ -1028,8 +1303,60 @@ def clean_product_data(product: dict) -> dict:
             logger.info(f"[clean_product_data] No NxVOL pattern found in packaging='{packaging_str}' — no correction applied")
     # ─────────────────────────────────────────────────────────────────────────
 
+    units = cleaned_product.get('units_per_case')
+    ppu = cleaned_product.get('price_per_unit')
+    ppc = cleaned_product.get('price_per_case')
+
+    if units and isinstance(units, (int, float)) and units > 0:
+
+        if ppu and isinstance(ppu, (int, float)) and ppu > 0:
+            if not ppc or not isinstance(ppc, (int, float)) or ppc <= 0:
+                calculated_ppc = round(ppu * units, 2)
+                logger.info(
+                    f"[clean_product_data] PRICE CALC (unit→case): "
+                    f"{ppu} × {units} = {calculated_ppc}"
+                )
+                cleaned_product['price_per_case'] = calculated_ppc
+                # Add flag if not already present
+                flags = cleaned_product.get('error_flags') or []
+                flag_text = "price_per_case calculated from price_per_unit x units_per_case"
+                if flag_text not in flags:
+                    flags.append(flag_text)
+                    cleaned_product['error_flags'] = flags
+
+        if ppc and isinstance(ppc, (int, float)) and ppc > 0:
+            if not ppu or not isinstance(ppu, (int, float)) or ppu <= 0:
+                calculated_ppu = round(ppc / units, 2)
+                logger.info(
+                    f"[clean_product_data] PRICE CALC (case→unit): "
+                    f"{ppc} / {units} = {calculated_ppu}"
+                )
+                cleaned_product['price_per_unit'] = calculated_ppu
+                flags = cleaned_product.get('error_flags') or []
+                flag_text = "price_per_unit calculated from price_per_case / units_per_case"
+                if flag_text not in flags:
+                    flags.append(flag_text)
+                    cleaned_product['error_flags'] = flags
+
+    ppu = cleaned_product.get('price_per_unit')
+    ppc = cleaned_product.get('price_per_case')
+    logger.info(f"[clean_product_data] After price calc: price_per_unit={ppu}, price_per_case={ppc}")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    moq = cleaned_product.get('moq_cases')
+    moq_min = cleaned_product.get('min_order_quantity_case')
+    if moq and isinstance(moq, (int, float)) and moq > 0:
+        if not moq_min or not isinstance(moq_min, (int, float)) or moq_min <= 0:
+            cleaned_product['min_order_quantity_case'] = moq
+            logger.info(f"[clean_product_data] Synced min_order_quantity_case from moq_cases: {moq}")
+    elif moq_min and isinstance(moq_min, (int, float)) and moq_min > 0:
+        if not moq or not isinstance(moq, (int, float)) or moq <= 0:
+            cleaned_product['moq_cases'] = moq_min
+            logger.info(f"[clean_product_data] Synced moq_cases from min_order_quantity_case: {moq_min}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     logger.info(f"[clean_product_data] ===== END =====")
-    logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}")
+    logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}, supplier_email={cleaned_product.get('supplier_email')!r}, gift_box={cleaned_product.get('gift_box')!r}, moq_cases={cleaned_product.get('moq_cases')}")
 
     return cleaned_product
 
