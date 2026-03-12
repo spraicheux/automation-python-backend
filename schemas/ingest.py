@@ -13,8 +13,8 @@ class Attachment(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    supplier_email: str
-    supplier_name: str
+    supplier_email: Optional[str] = None
+    supplier_name: Optional[str] = None
     source_filename: Optional[str] = None
     source_message_id: Optional[str] = None
     source_channel: Optional[str] = None

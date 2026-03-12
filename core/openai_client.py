@@ -287,6 +287,7 @@ Look for:
   - "MOQ X cases", "MOQ: X cs", "MOQ X"
   - "minimum order quantity X", "min order X cases"
   - "min X cs", "min. X cases"
+  - "MOQ:"
 Store the numeric value (in cases) in moq_cases.
 If MOQ is stated in pallets (e.g. "~ 2 pll of each SKU"), do NOT store in moq_cases
   — this is pallet info, not a case MOQ. Leave moq_cases as "Not Found".
