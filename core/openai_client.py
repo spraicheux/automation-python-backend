@@ -187,6 +187,7 @@ Add a flag for each of the following situations (use clear English):
 - "multiple incoterms detected — row duplicated" — when rows were split
 - "price_per_case calculated from price_per_unit x units_per_case" — when calculated
 - "price_per_unit calculated from price_per_case / units_per_case" — when calculated
+- "MOQ in bottles, not cases" — when MOQ is given in bottles instead of cases
 - Any other notable extraction issue or ambiguity
 If no issues → error_flags: []
 
@@ -285,10 +286,14 @@ RULE 11 — MOQ (MINIMUM ORDER QUANTITY)  ⚠️
 Extract MOQ (minimum order quantity) into moq_cases.
 Look for:
   - "MOQ X cases", "MOQ: X cs", "MOQ X"
-  - "minimum order quantity X", "min order X cases"
-  - "min X cs", "min. X cases"
-  - "MOQ:"
-Store the numeric value (in cases) in moq_cases.
+  - "MOQ X bottles", "MOQ: X btls", "MOQ X btls"
+  - "minimum order quantity X", "min order X cases", "min order X bottles"
+  - "min X cs", "min. X cases", "min X bottles"
+  - "MOQ:" followed by a number
+Extract the numeric value, ignoring thousand separators (e.g., "14,352" → 14352).
+Store the numeric value in moq_cases.
+If the unit is explicitly "bottles" or "btls" (not cases), store the numeric value AND add the error flag:
+  "MOQ in bottles, not cases" to the error_flags list.
 If MOQ is stated in pallets (e.g. "~ 2 pll of each SKU"), do NOT store in moq_cases
   — this is pallet info, not a case MOQ. Leave moq_cases as "Not Found".
 If not found → moq_cases: "Not Found"

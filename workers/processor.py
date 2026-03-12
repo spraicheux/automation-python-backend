@@ -63,17 +63,20 @@ def _resolve_supplier_name(ai_name, payload) -> str:
     return "Not Found"
 
 
-def _resolve_supplier_email(payload) -> str:
+def _resolve_supplier_email(payload, ai_email=None) -> str:
     """Return the best available supplier email.
 
     Priority:
       1. payload.supplier_email — Make extracted this from email/WA metadata
-      2. "Not Found"            — sender_email is NOT used as supplier email
+      2. ai_email                — AI extracted from attached file (PDF/Excel)
+      3. "Not Found"
     """
     _missing = [None, "", "Not Found"]
-    email = getattr(payload, 'supplier_email', None)
-    if email not in _missing:
-        return str(email)
+    pemail = getattr(payload, 'supplier_email', None)
+    if pemail not in _missing:
+        return str(pemail)
+    if ai_email not in _missing:
+        return str(ai_email)
     return "Not Found"
 
 
@@ -139,6 +142,71 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
         safe_data['price_per_case_eur'] = round(pc * fx, 4)
 
     return safe_data
+
+
+def _apply_offer_defaults(data: dict) -> dict:
+    """
+    Replace AI's 'Not Found' with the proper default value according to the OfferItem schema.
+    For optional fields with default None, 'Not Found' becomes None.
+    For fields with a non‑None default (e.g. "Bottle", "NRF", "EUR"), that default is applied.
+    """
+    defaults = {
+        # fields with non‑None defaults (keep 'Not Found' only if it is the default)
+        'product_name': "Not Found",
+        'product_key': "Not Found",
+        'brand': "Not Found",
+        'packaging': "Bottle",
+        'packaging_raw': "bottle",
+        'refillable_status': "NRF",
+        'currency': "EUR",
+        'incoterm': "Not Found",
+        'location': "Not Found",
+        'lead_time': "Not Found",
+        'source_channel': "",
+        'source_message_id': "",
+        'source_filename': "",
+        'label_language': "EN",
+        'processing_version': "1.0.0",  # will be overridden in OfferItem
+
+        # optional fields (should become None when missing)
+        'category': None,
+        'sub_category': None,
+        'bottle_or_can_type': None,
+        'cases_per_pallet': None,
+        'quantity_case': None,
+        'gift_box': None,
+        'alcohol_percent': None,
+        'origin_country': None,
+        'supplier_country': "",
+        'moq_cases': None,
+        'valid_until': None,
+        'best_before_date': None,
+        'vintage': None,
+        'supplier_name': None,
+        'supplier_email': None,
+        'sender_name': None,
+        'sender_email': None,
+        'supplier_reference': None,
+        'custom_status': None,
+        'ean_code': None,
+        'product_reference': None,
+
+        # fx and price fields (already handled by _safe_float, but we keep them here for completeness)
+        'fx_date': None,
+        'fx_rate': 1.0,
+        'price_per_unit': 0,
+        'price_per_unit_eur': 0,
+        'price_per_case': 0,
+        'price_per_case_eur': 0,
+        'unit_volume_ml': 0,
+        'units_per_case': 0,
+    }
+
+    for field, default in defaults.items():
+        if field in data:
+            if data[field] == "Not Found" or data[field] is None:
+                data[field] = default
+    return data
 
 
 async def process_offer(payload, job_id: str):
@@ -247,9 +315,6 @@ async def process_offer(payload, job_id: str):
                         'packaging': merged_data.get('packaging') or "Bottle",
                         'packaging_raw': merged_data.get('packaging_raw') or "bottle",
                         'bottle_or_can_type': merged_data.get('bottle_or_can_type'),
-                        # FIX BUG 4: use _safe_float() instead of bare float() so that
-                        # None values from openai_client don't raise TypeError and silently
-                        # skip the entire product.
                         'unit_volume_ml': _safe_float(merged_data.get('unit_volume_ml'), 0),
                         'units_per_case': _safe_float(merged_data.get('units_per_case'), 0),
                         'cases_per_pallet': merged_data.get('cases_per_pallet'),
@@ -263,9 +328,6 @@ async def process_offer(payload, job_id: str):
                         'price_per_case_eur': _safe_float(merged_data.get('price_per_case_eur'), 0),
                         'fx_rate': _safe_float(merged_data.get('fx_rate'), 1.0),
                         'fx_date': merged_data.get('fx_date'),
-                        # FIX BUG 1: alcohol_percent is now a string like "40%" from
-                        # openai_client. Keep it as a string here — do NOT put it in the
-                        # numeric_fields conversion loop below.
                         'alcohol_percent': merged_data.get('alcohol_percent'),
                         'origin_country': merged_data.get('origin_country'),
                         'supplier_country': merged_data.get('supplier_country') or "",
@@ -273,6 +335,8 @@ async def process_offer(payload, job_id: str):
                         'location': merged_data.get('location') or "Not Found",
                         'lead_time': merged_data.get('lead_time') or "Not Found",
                         'moq_cases': merged_data.get('moq_cases'),
+                        'min_order_quantity_case': merged_data.get('min_order_quantity_case'),
+                        'port': merged_data.get('port') or "Not Found",
                         'valid_until': merged_data.get('valid_until'),
                         'best_before_date': merged_data.get('best_before_date'),
                         'vintage': merged_data.get('vintage'),
@@ -282,14 +346,12 @@ async def process_offer(payload, job_id: str):
                         'product_reference': merged_data.get('product_reference'),
                         'custom_status': merged_data.get('custom_status') if merged_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                         'supplier_name': merged_data.get('supplier_name'),
+                        'supplier_email': merged_data.get('supplier_email'),  # AI extracted email
                         'error_flags': merged_data.get('error_flags', []),
                     }
 
-                    # Convert numeric fields
-                    # FIX BUG 1: alcohol_percent removed from this list. It is now a string
-                    # like "40%" returned by openai_client. float("40%") raises ValueError
-                    # which caused it to always be set to None. Keep it as a string.
-                    numeric_fields = ['cases_per_pallet', 'quantity_case', 'moq_cases']
+                    # Convert numeric fields (except those already handled by _safe_float)
+                    numeric_fields = ['cases_per_pallet', 'quantity_case', 'moq_cases', 'min_order_quantity_case']
                     for field in numeric_fields:
                         if safe_data[field] is not None:
                             try:
@@ -303,13 +365,13 @@ async def process_offer(payload, job_id: str):
                         else None
                     )
 
+                    # Apply OfferItem defaults (convert "Not Found" to None or the proper default)
+                    safe_data = _apply_offer_defaults(safe_data)
+
                     # ── Currency normalisation & EUR conversion ──────────────
                     safe_data = _normalize_currency_and_prices(safe_data)
 
                     # ── Parse units_per_case & unit_volume_ml from packaging ──
-                    # packaging (e.g. "12x100cl") is always the authoritative
-                    # source. Override whatever the AI put in units_per_case
-                    # (which is often the price) and unit_volume_ml.
                     _pkg_str = str(safe_data.get('packaging') or '')
                     _pkg_m = re.search(
                         r'(\d+)\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(cl|ml|l)',
@@ -330,7 +392,7 @@ async def process_offer(payload, job_id: str):
                         )
 
                     _sup_name  = safe_data.get('supplier_name')
-                    _sup_email = _resolve_supplier_email(payload)
+                    _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -417,15 +479,11 @@ async def process_offer(payload, job_id: str):
                     'packaging': extracted_data.get('packaging') or "Bottle",
                     'packaging_raw': extracted_data.get('packaging_raw') or "bottle",
                     'bottle_or_can_type': extracted_data.get('bottle_or_can_type'),
-                    # FIX BUG 4: use _safe_float() for all numeric fields.
                     'unit_volume_ml': _safe_float(extracted_data.get('unit_volume_ml'), 0),
                     'units_per_case': _safe_float(extracted_data.get('units_per_case'), 0),
                     'cases_per_pallet': extracted_data.get('cases_per_pallet'),
                     'quantity_case': extracted_data.get('quantity_case'),
                     'gift_box': extracted_data.get('gift_box'),
-                    # FIX BUG 3: the original defaulted to "NRF" when refillable_status
-                    # was blank. openai_client now returns "" for absent fields.
-                    # Defaulting to "NRF" violates the business rule: never assume NRF.
                     'refillable_status': extracted_data.get('refillable_status') or "",
                     'currency': extracted_data.get('currency') or "EUR",
                     'price_per_unit': _safe_float(extracted_data.get('price_per_unit'), 0),
@@ -434,7 +492,6 @@ async def process_offer(payload, job_id: str):
                     'price_per_case_eur': _safe_float(extracted_data.get('price_per_case_eur'), 0),
                     'fx_rate': _safe_float(extracted_data.get('fx_rate'), 1.0),
                     'fx_date': extracted_data.get('fx_date'),
-                    # FIX BUG 1: keep alcohol_percent as string — do not convert to float.
                     'alcohol_percent': extracted_data.get('alcohol_percent'),
                     'origin_country': extracted_data.get('origin_country'),
                     'supplier_country': extracted_data.get('supplier_country') or "",
@@ -442,6 +499,8 @@ async def process_offer(payload, job_id: str):
                     'location': extracted_data.get('location') or "Not Found",
                     'lead_time': extracted_data.get('lead_time') or "Not Found",
                     'moq_cases': extracted_data.get('moq_cases'),
+                    'min_order_quantity_case': extracted_data.get('min_order_quantity_case'),
+                    'port': extracted_data.get('port') or "Not Found",
                     'valid_until': extracted_data.get('valid_until'),
                     'best_before_date': extracted_data.get('best_before_date'),
                     'vintage': extracted_data.get('vintage'),
@@ -451,11 +510,12 @@ async def process_offer(payload, job_id: str):
                     'product_reference': extracted_data.get('product_reference'),
                     'custom_status': extracted_data.get('custom_status') if extracted_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                     'supplier_name': extracted_data.get('supplier_name'),
+                    'supplier_email': extracted_data.get('supplier_email'),  # AI extracted email
                     'error_flags': extracted_data.get('error_flags', []),
                 }
 
                 # Convert numeric fields
-                numeric_fields = ['cases_per_pallet', 'quantity_case', 'moq_cases']
+                numeric_fields = ['cases_per_pallet', 'quantity_case', 'moq_cases', 'min_order_quantity_case']
                 for field in numeric_fields:
                     if safe_data[field] is not None:
                         try:
@@ -469,11 +529,12 @@ async def process_offer(payload, job_id: str):
                     else None
                 )
 
-                # ── Currency normalisation & EUR conversion ──────────────
+                safe_data = _apply_offer_defaults(safe_data)
+
                 safe_data = _normalize_currency_and_prices(safe_data)
 
                 _sup_name  = safe_data.get('supplier_name')
-                _sup_email = _resolve_supplier_email(payload)
+                _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
 
                 offer = OfferItem(
                     uid=uid,
