@@ -148,7 +148,7 @@ def _apply_offer_defaults(data: dict) -> dict:
     """
     Replace AI's 'Not Found' with the proper default value according to the OfferItem schema.
     For optional fields with default None, 'Not Found' becomes None.
-    For fields with a non‑None default (e.g. "Bottle", "NRF", "EUR"), that default is applied.
+    For fields with a non‑None default (e.g. "Bottle", "EUR"), that default is applied.
     """
     defaults = {
         # fields with non‑None defaults (keep 'Not Found' only if it is the default)
@@ -157,7 +157,7 @@ def _apply_offer_defaults(data: dict) -> dict:
         'brand': "Not Found",
         'packaging': "Bottle",
         'packaging_raw': "bottle",
-        'refillable_status': "NRF",
+        'refillable_status': "",
         'currency': "EUR",
         'incoterm': "Not Found",
         'location': "Not Found",

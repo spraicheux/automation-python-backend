@@ -188,6 +188,7 @@ Add a flag for each of the following situations (use clear English):
 - "price_per_case calculated from price_per_unit x units_per_case" — when calculated
 - "price_per_unit calculated from price_per_case / units_per_case" — when calculated
 - "MOQ in bottles, not cases" — when MOQ is given in bottles instead of cases
+- "brand name corrected" — when a brand name spelling was corrected to its official form
 - Any other notable extraction issue or ambiguity
 If no issues → error_flags: []
 
@@ -316,6 +317,105 @@ The ONLY valid reason to create MORE rows than product lines is Rule 6
 If an offer lists exactly 3 products → output EXACTLY 3 rows (no more, no less).
 If an offer lists exactly 7 products → output EXACTLY 7 rows.
 Count carefully before outputting.
+
+══════════════════════════════════════════════════════════════════════
+RULE 13 — BRAND AND PRODUCT NAME CORRECTION  ⚠️ CRITICAL
+══════════════════════════════════════════════════════════════════════
+You MUST correct misspelled or truncated brand names to their OFFICIAL commercial spelling.
+This is essential for product deduplication and price comparison across offers.
+
+Apply corrections ALWAYS, regardless of how the brand appears in the source text.
+Add "brand name corrected" to error_flags whenever you make a correction.
+
+MANDATORY CORRECTIONS (non-exhaustive — apply your knowledge for all spirits/wine/beer brands):
+
+WHISKY / WHISKEY:
+  "Ballantine"         → brand: "Ballantine's",   correct the apostrophe
+  "Ballantines"        → brand: "Ballantine's"
+  "Jack Daniel"        → brand: "Jack Daniel's",  correct the apostrophe
+  "Jack Daniels"       → brand: "Jack Daniel's"
+  "Johnnie Walker"     → brand: "Johnnie Walker"  (correct — no change)
+  "Johnny Walker"      → brand: "Johnnie Walker"  (common misspelling)
+  "Chivas"             → brand: "Chivas Regal"    (if no other qualifier present)
+  "Grants"             → brand: "Grant's"
+  "Dewar"              → brand: "Dewar's"
+  "Dewars"             → brand: "Dewar's"
+  "Teachers"           → brand: "Teacher's"
+  "Famous Grouse"      → brand: "The Famous Grouse"
+  "Laphroig"           → brand: "Laphroaig"
+  "Glenfidich"         → brand: "Glenfiddich"
+  "Oban"               → brand: "Oban"            (correct — no change)
+  "Makers Mark"        → brand: "Maker's Mark"
+  "Knob Creek"         → brand: "Knob Creek"      (correct — no change)
+  "Woodford"           → brand: "Woodford Reserve" (if no other qualifier)
+  "Jim Beam"           → brand: "Jim Beam"         (correct — no change)
+
+COGNAC / BRANDY:
+  "Hennesy"            → brand: "Hennessy"
+  "Hennessey"          → brand: "Hennessy"
+  "Remy"               → brand: "Rémy Martin"
+  "Remy Martin"        → brand: "Rémy Martin"     (add accent)
+  "Remy Martin"        → brand: "Rémy Martin"
+  "Courvoisier"        → brand: "Courvoisier"     (correct — no change)
+  "Martell"            → brand: "Martell"         (correct — no change)
+
+VODKA:
+  "Absolut"            → brand: "Absolut"         (correct — no change; NOT "Absolute")
+  "Absolute"           → brand: "Absolut"
+  "Smirnof"            → brand: "Smirnoff"
+  "Grey Goose"         → brand: "Grey Goose"      (correct — no change)
+  "Belvedeer"          → brand: "Belvedere"
+  "Ciroc"              → brand: "Cîroc"
+
+GIN:
+  "Tanquerey"          → brand: "Tanqueray"
+  "Hendricks"          → brand: "Hendrick's"
+  "Beefeaters"         → brand: "Beefeater"
+  "Gordons"            → brand: "Gordon's"
+  "Bombay"             → brand: "Bombay Sapphire" (if no other qualifier)
+
+RUM:
+  "Bacardi"            → brand: "Bacardí"         (add accent if source has none)
+  "Captain Morgan"     → brand: "Captain Morgan"  (correct — no change)
+  "Havana"             → brand: "Havana Club"     (if no other qualifier)
+  "Diplomatico"        → brand: "Diplomático"
+
+LIQUEUR:
+  "Baileys"            → brand: "Baileys"         (correct — no change)
+  "Bailey's"           → brand: "Baileys"         (remove apostrophe — official spelling)
+  "Kahlua"             → brand: "Kahlúa"
+  "Cointreau"          → brand: "Cointreau"       (correct — no change)
+  "Malibu"             → brand: "Malibu"          (correct — no change)
+  "Tia Maria"          → brand: "Tia Maria"       (correct — no change)
+  "Disarono"           → brand: "Disaronno"
+  "Jagermeister"       → brand: "Jägermeister"
+  "Sambuca"            → brand: "Sambuca"         (correct — no change; check for brand name e.g. Molinari)
+
+BEER:
+  "Heineken"           → brand: "Heineken"        (correct — no change)
+  "Stella"             → brand: "Stella Artois"   (if no other qualifier)
+  "Budweiser"          → brand: "Budweiser"       (correct — no change)
+  "Corona"             → brand: "Corona"          (correct — no change)
+  "Guiness"            → brand: "Guinness"
+  "Peroni"             → brand: "Peroni"          (correct — no change)
+
+CHAMPAGNE / SPARKLING:
+  "Moet"               → brand: "Moët & Chandon"  (if no other qualifier)
+  "Moët"               → brand: "Moët & Chandon"
+  "Veuve Clicquot"     → brand: "Veuve Clicquot"  (correct — no change)
+  "Dom Perignon"       → brand: "Dom Pérignon"    (add accent)
+  "Cristal"            → brand: "Louis Roederer Cristal" (if context is Champagne)
+  "Bollinger"          → brand: "Bollinger"       (correct — no change)
+  "Laurent Perrier"    → brand: "Laurent-Perrier"
+
+GENERAL RULE FOR BRAND CORRECTIONS:
+- If a brand is missing its possessive apostrophe (e.g. "Ballantine" → "Ballantine's"), ADD it.
+- If a brand has a common accent that was omitted (e.g. "Remy Martin" → "Rémy Martin"), ADD it.
+- If a brand name is a well-known partial (e.g. "Chivas" without "Regal"), complete it ONLY if
+  no additional qualifier is present in the product name that would indicate a specific sub-brand.
+- When in doubt about the correct official spelling, use your knowledge of the alcohol industry
+  to apply the most widely recognised commercial brand name.
+- ALWAYS add "brand name corrected" to error_flags when you make any correction.
 
 ══════════════════════════════════════════════════════════════════════
 SUPPLIER REFERENCE — OVERRIDE RULE  ⚠️
@@ -473,6 +573,8 @@ COMMON PATTERNS IN OFFERS:
 - "2007 cs Absolut 12x100cl at 69 euro" → quantity_case: 2007, units_per_case: 12, unit_volume_ml: 1000, price_per_case: 69, currency: "EUR"
 - Column header "Price/Btle" or "EUR/btl" → ALL prices in that column are price_per_unit → calculate price_per_case = price × units_per_case
 - "MOQ 50 cs" → moq_cases: 50
+- "Ballantine" or "Ballantines" → brand: "Ballantine's" + add "brand name corrected" to error_flags
+- "Jack Daniel" or "Jack Daniels" → brand: "Jack Daniel's" + add "brand name corrected" to error_flags
 
 FINAL CHECKS BEFORE OUTPUTTING:
 1. Count the products in your output — it must match the number of product lines in the offer.
@@ -482,6 +584,7 @@ FINAL CHECKS BEFORE OUTPUTTING:
 4. All products from the same offer share the same: supplier_name, supplier_email,
    incoterm, location, currency, custom_status (unless per-product differences are explicit).
 5. Compound locations (X / Y) must appear IDENTICALLY on ALL rows.
+6. Review every brand name against Rule 13 — correct any misspellings before outputting.
 
 REMEMBER:
 - When in doubt, use "Not Found".
@@ -489,6 +592,7 @@ REMEMBER:
 - Only extract what is explicitly stated (Rule 8 price calculations are the only permitted derivation).
 - If a value is 0, that means "Not Found" - treat as "Not Found".
 - Use "Not Found" for ALL missing fields - both strings AND numbers.
+- ALWAYS correct brand names to their official spelling per Rule 13.
 """
 
 
@@ -519,6 +623,9 @@ async def extract_offer(text: str) -> dict:
         (like "Whisky", "Rum", "Gin"), brand lists, footers, or promotional text.
         Count the product lines carefully — your output must contain exactly that many rows
         (plus duplicates only for multiple incoterms per Rule 6).
+
+        CRITICAL: Apply Rule 13 to correct all brand names to their official commercial spelling
+        before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's".
 
         {SHARED_EXTRACTION_RULES}
 
@@ -716,6 +823,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     Extract EXACTLY {len(batch_df)} products from this data.
                     If a product has MULTIPLE INCOTERMS, create one row per incoterm (duplicate all other fields).
 
+                    CRITICAL: Apply Rule 13 to correct all brand names to their official commercial
+                    spelling before outputting. E.g. "Ballantine" → "Ballantine's",
+                    "Jack Daniel" → "Jack Daniel's", "Hennesy" → "Hennessy", etc.
+
                     {json.dumps(data_rows, indent=2)}
 
                     {SHARED_EXTRACTION_RULES}
@@ -745,7 +856,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             messages=[
                                 {
                                     "role": "system",
-                                    "content": f"You are a professional data extraction expert. You extract commercial alcohol product data from Excel. Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults."
+                                    "content": f"You are a professional data extraction expert. You extract commercial alcohol product data from Excel. Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. ALWAYS correct brand names to their official spelling per Rule 13 (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
                                 },
                                 {"role": "user", "content": batch_text}
                             ],
@@ -1018,6 +1129,9 @@ CRITICAL: Extract ONLY actual product lines. Do NOT create rows for:
 
 If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
 
+CRITICAL: Apply Rule 13 to correct all brand names to their official commercial spelling
+before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's".
+
 {SHARED_EXTRACTION_RULES}
 
 PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
@@ -1036,7 +1150,9 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                                         "Extract commercial alcohol product offers from PDF text. "
                                         "Return ONLY valid JSON with a 'products' array. "
                                         "Do NOT include section headers, brand lists, or footer text as products. "
-                                        "Only extract actual product offer lines."
+                                        "Only extract actual product offer lines. "
+                                        "ALWAYS correct brand names to their official spelling per Rule 13 "
+                                        "(e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
                                     )
                                 },
                                 {"role": "user", "content": prompt}
@@ -1121,7 +1237,7 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                             "role": "user",
                             "content": [
                                 {"type": "text",
-                                 "text": "Extract all commercial alcohol offers from this image. Return a JSON object with a 'products' array following the standard schema."},
+                                 "text": "Extract all commercial alcohol offers from this image. Return a JSON object with a 'products' array following the standard schema. ALWAYS correct brand names to their official spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."},
                                 {
                                     "type": "image_url",
                                     "image_url": {
