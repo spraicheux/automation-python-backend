@@ -668,7 +668,7 @@ async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
 
-    CHUNK_SIZE = 25000
+    CHUNK_SIZE = 8000
 
     text_chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)] if len(text) > CHUNK_SIZE else [text]
     logger.info(f"[extract_offer] Split into {len(text_chunks)} chunk(s) — CHUNK_SIZE={CHUNK_SIZE}")
