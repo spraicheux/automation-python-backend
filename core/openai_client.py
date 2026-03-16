@@ -597,6 +597,15 @@ REMEMBER:
 
 
 def _salvage_truncated_json(content: str, chunk_label: str) -> list:
+    """
+    When OpenAI returns a response that is cut off mid-JSON (token limit hit),
+    this function extracts all COMPLETE product objects that were written before
+    the truncation point.
+
+    Strategy: walk the products array character by character tracking brace depth.
+    Every time depth returns to 0 we have a complete product object — collect it.
+    This is the ONLY way to recover data from a truncated JSON response.
+    """
     try:
         # Find the start of the products array
         products_key_pos = content.find('"products"')
@@ -609,12 +618,14 @@ def _salvage_truncated_json(content: str, chunk_label: str) -> list:
             logger.warning(f"[_salvage_truncated_json] {chunk_label}: products array '[' not found")
             return []
 
+        # Walk from the '[' collecting complete objects
         pos = array_start + 1
         text = content
         length = len(text)
         salvaged = []
 
         while pos < length:
+            # Skip whitespace and commas between objects
             while pos < length and text[pos] in ' \t\n\r,':
                 pos += 1
 
@@ -624,6 +635,7 @@ def _salvage_truncated_json(content: str, chunk_label: str) -> list:
             if text[pos] != '{':
                 break  # We hit something unexpected — stop
 
+            # Track braces to find the end of this complete object
             depth = 0
             obj_start = pos
             obj_end = -1
@@ -639,6 +651,7 @@ def _salvage_truncated_json(content: str, chunk_label: str) -> list:
                         break
 
             if obj_end == -1:
+                # This object was cut off — stop here, it's incomplete
                 logger.info(f"[_salvage_truncated_json] {chunk_label}: incomplete object at pos {obj_start} — stopping")
                 break
 
@@ -650,7 +663,7 @@ def _salvage_truncated_json(content: str, chunk_label: str) -> list:
             except json.JSONDecodeError as parse_err:
                 logger.warning(f"[_salvage_truncated_json] {chunk_label}: could not parse individual object: {parse_err}")
 
-            pos = obj_end
+            pos = obj_end  # advance past this object
 
         logger.warning(
             f"[_salvage_truncated_json] {chunk_label}: salvaged {len(salvaged)} complete product(s) "
@@ -668,10 +681,36 @@ async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
 
-    CHUNK_SIZE = 8000
+    # ── LINE-BASED CHUNKING ────────────────────────────────────────────────────
+    # Split input by lines (never cuts a product line in half) and batch
+    # ~20 body lines per chunk — same principle as Excel row batching and PDF
+    # page batching. Each chunk produces ~15–20 products → well within the
+    # 16K output token limit even with compact JSON.
+    #
+    # The first HEADER_LINES of the text (supplier name, email, date, subject)
+    # are prepended to EVERY chunk so the AI always has supplier context,
+    # even in chunks 2, 3, etc.
+    # ─────────────────────────────────────────────────────────────────────────
+    LINES_PER_CHUNK = 20   # ~15–20 product lines per API call
+    HEADER_LINES    = 8    # lines containing From/De, subject, date — kept in every chunk
 
-    text_chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)] if len(text) > CHUNK_SIZE else [text]
-    logger.info(f"[extract_offer] Split into {len(text_chunks)} chunk(s) — CHUNK_SIZE={CHUNK_SIZE}")
+    all_lines    = text.splitlines(keepends=True)
+    header_block = ''.join(all_lines[:HEADER_LINES])
+    body_lines   = all_lines[HEADER_LINES:]
+
+    if len(body_lines) <= LINES_PER_CHUNK:
+        text_chunks = [text]
+    else:
+        text_chunks = [
+            header_block + ''.join(body_lines[i:i + LINES_PER_CHUNK])
+            for i in range(0, len(body_lines), LINES_PER_CHUNK)
+        ]
+
+    logger.info(
+        f"[extract_offer] Split into {len(text_chunks)} chunk(s) — "
+        f"LINES_PER_CHUNK={LINES_PER_CHUNK}, total_lines={len(all_lines)}, "
+        f"header_lines={HEADER_LINES}, body_lines={len(body_lines)}"
+    )
 
     all_products = []
 
@@ -681,7 +720,7 @@ async def extract_offer(text: str) -> dict:
 
         prompt = f"""
         You are extracting commercial alcohol offers from text.
-        Return JSON ONLY, no explanation.
+        Return COMPACT JSON ONLY (no indentation, no extra whitespace, no newlines inside the JSON), no explanation.
 
         Extract ALL products from the text. Return a JSON object with a 'products' array containing ALL products found.
         If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
