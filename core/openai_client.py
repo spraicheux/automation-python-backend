@@ -596,6 +596,73 @@ REMEMBER:
 """
 
 
+def _salvage_truncated_json(content: str, chunk_label: str) -> list:
+    try:
+        # Find the start of the products array
+        products_key_pos = content.find('"products"')
+        if products_key_pos == -1:
+            logger.warning(f"[_salvage_truncated_json] {chunk_label}: 'products' key not found in truncated response")
+            return []
+
+        array_start = content.find('[', products_key_pos)
+        if array_start == -1:
+            logger.warning(f"[_salvage_truncated_json] {chunk_label}: products array '[' not found")
+            return []
+
+        pos = array_start + 1
+        text = content
+        length = len(text)
+        salvaged = []
+
+        while pos < length:
+            while pos < length and text[pos] in ' \t\n\r,':
+                pos += 1
+
+            if pos >= length:
+                break
+
+            if text[pos] != '{':
+                break  # We hit something unexpected — stop
+
+            depth = 0
+            obj_start = pos
+            obj_end = -1
+
+            for i in range(pos, length):
+                ch = text[i]
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        obj_end = i + 1
+                        break
+
+            if obj_end == -1:
+                logger.info(f"[_salvage_truncated_json] {chunk_label}: incomplete object at pos {obj_start} — stopping")
+                break
+
+            # We have a complete object — try to parse it
+            obj_str = text[obj_start:obj_end]
+            try:
+                product = json.loads(obj_str)
+                salvaged.append(product)
+            except json.JSONDecodeError as parse_err:
+                logger.warning(f"[_salvage_truncated_json] {chunk_label}: could not parse individual object: {parse_err}")
+
+            pos = obj_end
+
+        logger.warning(
+            f"[_salvage_truncated_json] {chunk_label}: salvaged {len(salvaged)} complete product(s) "
+            f"from truncated response ({len(content)} chars)"
+        )
+        return salvaged
+
+    except Exception as e:
+        logger.error(f"[_salvage_truncated_json] {chunk_label}: salvage exception: {e}")
+        return []
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -644,7 +711,8 @@ async def extract_offer(text: str) -> dict:
             )
 
             content = response.choices[0].message.content
-            logger.info(f"[extract_offer] Chunk {idx + 1}: OpenAI response received — response length: {len(content)} chars")
+            finish_reason = response.choices[0].finish_reason
+            logger.info(f"[extract_offer] Chunk {idx + 1}: OpenAI response received — response length: {len(content)} chars, finish_reason: {finish_reason!r}")
             logger.info(f"[extract_offer] Chunk {idx + 1}: Raw AI response preview (first 500 chars): {content[:500]!r}")
 
             result = json.loads(content)
@@ -713,8 +781,37 @@ async def extract_offer(text: str) -> dict:
             logger.info(f"[extract_offer] Chunk {idx + 1}: done — yielded {len(cleaned_products)} product(s). Running total: {len(all_products)}")
 
         except json.JSONDecodeError as e:
-            logger.error(f"[extract_offer] Chunk {idx + 1}: JSON decode error: {e}")
+            # ── TRUNCATION SALVAGE ────────────────────────────────────────────
+            # Root cause: the JSON output exceeded the max_tokens limit (16,384 for gpt-4o)
+            # and was cut off mid-response. The original code discarded everything.
+            # Fix: extract all COMPLETE product objects that were written before the cutoff.
+            logger.error(f"[extract_offer] Chunk {idx + 1}: JSON decode error (likely token-limit truncation): {e}")
+            logger.info(f"[extract_offer] Chunk {idx + 1}: attempting truncation salvage on {len(content)} chars...")
+
+            salvaged_products = _salvage_truncated_json(content, f"Chunk {idx + 1}")
+
+            if salvaged_products:
+                logger.warning(
+                    f"[extract_offer] Chunk {idx + 1}: salvage SUCCESS — recovered {len(salvaged_products)} product(s). "
+                    f"Some products at the end of the offer may be missing due to truncation."
+                )
+                cleaned_salvaged = []
+                for p_idx, product in enumerate(salvaged_products):
+                    # Same null-cleanup as the normal path
+                    for key in list(product.keys()):
+                        if product[key] is None:
+                            product[key] = "Not Found"
+                    logger.info(f"[extract_offer] Chunk {idx + 1}, Salvaged product {p_idx + 1}: product_name={product.get('product_name')!r}")
+                    cleaned_product = clean_product_data(product)
+                    cleaned_salvaged.append(cleaned_product)
+
+                all_products.extend(cleaned_salvaged)
+                logger.info(f"[extract_offer] Chunk {idx + 1}: salvage complete — running total now: {len(all_products)}")
+            else:
+                logger.error(f"[extract_offer] Chunk {idx + 1}: salvage found 0 complete products — chunk yields nothing")
+            # ─────────────────────────────────────────────────────────────────
             continue
+
         except Exception as e:
             logger.error(f"[extract_offer] Chunk {idx + 1}: Unexpected error: {e}")
             logger.error(f"[extract_offer] Traceback: {traceback.format_exc()}")
