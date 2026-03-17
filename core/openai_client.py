@@ -300,6 +300,13 @@ If MOQ is stated in pallets (e.g. "~ 2 pll of each SKU"), do NOT store in moq_ca
 If not found → moq_cases: "Not Found"
 Also populate min_order_quantity_case with the same value as moq_cases.
 
+⚠️ CRITICAL — DO NOT CONFUSE quantity_case WITH moq_cases ⚠️
+- quantity_case = the NUMBER OF CASES being OFFERED or AVAILABLE in this offer (e.g. "960 cs", "500 cases available")
+- moq_cases     = the MINIMUM ORDER QUANTITY the supplier requires to place an order (must be preceded by "MOQ", "min order", "minimum" etc.)
+- These are COMPLETELY DIFFERENT fields. NEVER copy quantity_case into moq_cases.
+- If the offer says "960 cs" with NO "MOQ" or "minimum" keyword → quantity_case: 960, moq_cases: "Not Found"
+- If there is NO explicit MOQ keyword in the text → moq_cases MUST be "Not Found". No exceptions.
+
 ══════════════════════════════════════════════════════════════════════
 RULE 12 — STRICT PRODUCT COUNT  ⚠️ CRITICAL — NO HALLUCINATION
 ══════════════════════════════════════════════════════════════════════
@@ -519,6 +526,9 @@ QUANTITY_CASE - CRITICAL RULE:
 - "12x750ml" describes the packaging format (12 bottles of 750ml per case), not how many cases are being offered.
 - If quantity_case is not explicitly stated, it must be "Not Found".
 - If quantity_case = 0, that means "Not Found" - treat as "Not Found".
+- ⚠️ quantity_case is NEVER the same as moq_cases. quantity_case is the number of cases in this offer.
+  moq_cases is the minimum the buyer must order. Only populate moq_cases if "MOQ" or "minimum order" is explicitly written.
+  A plain "960 cs" line means quantity_case: 960 and moq_cases: "Not Found" — NOT moq_cases: 960.
 
 INCOTERM & LOCATION:
 - Example: "FCA Prague" → incoterm: "FCA", location: "Prague"
@@ -1600,6 +1610,12 @@ def clean_product_data(product: dict) -> dict:
     ppc = cleaned_product.get('price_per_case')
     logger.info(f"[clean_product_data] After price calc: price_per_unit={ppu}, price_per_case={ppc}")
     # ─────────────────────────────────────────────────────────────────────────
+
+    # MOQ SYNC: only populate min_order_quantity_case from moq_cases.
+    # We intentionally do NOT sync moq_cases from min_order_quantity_case,
+    # because min_order_quantity_case can be incorrectly populated with
+    # quantity_case by the AI, and propagating it back would cause
+    # quantity_case values to appear in moq_cases.
     moq = cleaned_product.get('moq_cases')
     moq_min = cleaned_product.get('min_order_quantity_case')
     if moq and isinstance(moq, (int, float)) and moq > 0:
