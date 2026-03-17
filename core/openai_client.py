@@ -1600,17 +1600,12 @@ def clean_product_data(product: dict) -> dict:
     ppc = cleaned_product.get('price_per_case')
     logger.info(f"[clean_product_data] After price calc: price_per_unit={ppu}, price_per_case={ppc}")
     # ─────────────────────────────────────────────────────────────────────────
-
     moq = cleaned_product.get('moq_cases')
     moq_min = cleaned_product.get('min_order_quantity_case')
     if moq and isinstance(moq, (int, float)) and moq > 0:
         if not moq_min or not isinstance(moq_min, (int, float)) or moq_min <= 0:
             cleaned_product['min_order_quantity_case'] = moq
             logger.info(f"[clean_product_data] Synced min_order_quantity_case from moq_cases: {moq}")
-    elif moq_min and isinstance(moq_min, (int, float)) and moq_min > 0:
-        if not moq or not isinstance(moq, (int, float)) or moq <= 0:
-            cleaned_product['moq_cases'] = moq_min
-            logger.info(f"[clean_product_data] Synced moq_cases from min_order_quantity_case: {moq_min}")
     # ─────────────────────────────────────────────────────────────────────────
 
     logger.info(f"[clean_product_data] ===== END =====")
