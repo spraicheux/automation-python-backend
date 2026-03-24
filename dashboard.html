@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Offer Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #181c27;
+      --card:      #1e2333;
+      --border:    #2a3045;
+      --accent:    #4f8ef7;
+      --accent-dim:#1e3a6e;
+      --green:     #34d399;
+      --amber:     #fbbf24;
+      --red:       #f87171;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --pill:      #252d40;
+      --sidebar-w: 300px;
+      --header-h:  60px;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── HEADER ── */
+    header {
+      height: var(--header-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: grid; place-items: center;
+      flex-shrink: 0;
+    }
+    .logo-icon svg { width: 18px; height: 18px; }
+    header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+    header h1 span { color: var(--muted); font-weight: 400; }
+    .header-right {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .stat-chip {
+      background: var(--pill);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .stat-chip b { color: var(--text); font-weight: 500; }
+
+    /* ── LAYOUT ── */
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      height: calc(100vh - var(--header-h));
+    }
+
+    /* ── SIDEBAR ── */
+    aside {
+      width: var(--sidebar-w);
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .aside-head {
+      padding: 16px 16px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .aside-head h2 {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .search-wrap {
+      position: relative;
+    }
+    .search-wrap svg {
+      position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
+      width: 14px; height: 14px; color: var(--muted);
+    }
+    #source-search {
+      width: 100%;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px 7px 30px;
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s;
+    }
+    #source-search:focus { border-color: var(--accent); }
+    #source-search::placeholder { color: var(--muted); }
+
+    .source-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .source-list::-webkit-scrollbar { width: 4px; }
+    .source-list::-webkit-scrollbar-track { background: transparent; }
+    .source-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .source-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background .15s, border-color .15s;
+      margin-bottom: 4px;
+    }
+    .source-item:hover { background: var(--card); }
+    .source-item.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+    }
+    .source-item-name {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .source-item-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .source-item-meta span {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+    }
+    .source-badge {
+      background: var(--pill);
+      border-radius: 10px;
+      padding: 2px 7px;
+      font-size: 10px;
+      font-family: 'DM Mono', monospace;
+      font-weight: 500;
+      color: var(--accent);
+    }
+    .source-item.active .source-badge {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .source-all {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      transition: background .15s, border-color .15s;
+    }
+    .source-all:hover { background: var(--card); }
+    .source-all.active {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+    }
+    .source-all span:first-child {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .all-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 4px 0 8px;
+    }
+
+    /* ── MAIN ── */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+    main::-webkit-scrollbar { width: 4px; }
+    main::-webkit-scrollbar-track { background: transparent; }
+    main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .main-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .main-head h2 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .main-head .count-tag {
+      background: var(--pill);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+    }
+    .load-more-wrap {
+      display: flex;
+      justify-content: center;
+      margin-top: 24px;
+    }
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 20px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn:disabled { opacity: .4; cursor: default; }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover { background: var(--card); opacity: 1; }
+
+    /* ── RECORDS GRID ── */
+    .records-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 14px;
+    }
+
+    .record-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      transition: border-color .15s, transform .15s;
+      cursor: default;
+    }
+    .record-card:hover {
+      border-color: #3a4560;
+      transform: translateY(-1px);
+    }
+
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      gap: 8px;
+    }
+    .card-product-name {
+      font-size: 13.5px;
+      font-weight: 600;
+      line-height: 1.35;
+      flex: 1;
+    }
+    .card-category {
+      flex-shrink: 0;
+      background: var(--pill);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .card-brand {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .card-brand b { color: var(--accent); font-weight: 500; }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card-field label {
+      display: block;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 2px;
+    }
+    .card-field value {
+      display: block;
+      font-size: 12.5px;
+      font-weight: 500;
+      font-family: 'DM Mono', monospace;
+    }
+    .card-field value.price { color: var(--green); }
+    .card-field value.vol   { color: var(--amber); }
+
+    .card-footer {
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .card-supplier {
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 160px;
+    }
+    .card-supplier b { color: var(--text); font-weight: 500; }
+
+    .confidence {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-family: 'DM Mono', monospace;
+    }
+    .conf-bar {
+      width: 40px; height: 4px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .conf-fill { height: 100%; border-radius: 4px; }
+
+    .review-flag {
+      font-size: 10.5px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 500;
+    }
+    .review-flag.warn  { background: rgba(251,191,36,.12); color: var(--amber); }
+    .review-flag.ok    { background: rgba(52,211,153,.10); color: var(--green); }
+
+    /* ── EMPTY / LOADING / ERROR ── */
+    .state-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      text-align: center;
+      gap: 12px;
+    }
+    .state-box svg { width: 40px; height: 40px; opacity: .4; }
+    .state-box p { font-size: 13px; }
+
+    .spinner {
+      width: 28px; height: 28px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── CHANNEL PILL ── */
+    .ch-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .ch-email    { background: rgba(79,142,247,.15); color: var(--accent); }
+    .ch-whatsapp { background: rgba(52,211,153,.12); color: var(--green); }
+    .ch-other    { background: var(--pill); color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-icon">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 7H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z"/>
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+    </svg>
+  </div>
+  <h1>Offers<span>/ Records</span></h1>
+  <div class="header-right">
+    <div class="stat-chip" id="stat-sources"><b>—</b> sources</div>
+    <div class="stat-chip" id="stat-records"><b>—</b> records</div>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- SIDEBAR -->
+  <aside>
+    <div class="aside-head">
+      <h2>Source Files</h2>
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input id="source-search" type="text" placeholder="Search sources…" />
+      </div>
+    </div>
+
+    <div class="source-list" id="source-list">
+      <div class="state-box"><div class="spinner"></div><p>Loading sources…</p></div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main>
+    <div class="main-head">
+      <h2 id="main-title">All Records</h2>
+      <div class="count-tag" id="records-count">—</div>
+    </div>
+
+    <div class="records-grid" id="records-grid">
+      <div class="state-box" style="grid-column:1/-1">
+        <div class="spinner"></div>
+        <p>Loading records…</p>
+      </div>
+    </div>
+
+    <div class="load-more-wrap" id="load-more-wrap" style="display:none">
+      <button class="btn btn-outline" id="load-more-btn" onclick="loadMoreRecords()">Load more</button>
+    </div>
+  </main>
+</div>
+
+<script>
+  // ── CONFIG ──────────────────────────────────────────
+  const API_BASE = 'https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net';
+  const PAGE_SIZE = 24;
+
+  // ── STATE ───────────────────────────────────────────
+  let allSources      = [];
+  let activeSourceId  = null;   // null = all
+  let recordsSkip     = 0;
+  let recordsTotal    = 0;
+  let loadingRecords  = false;
+
+  // ── INIT ────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    loadSources();
+    loadRecords(true);
+    document.getElementById('source-search').addEventListener('input', filterSourceList);
+  });
+
+  // ── SOURCES ─────────────────────────────────────────
+  async function loadSources() {
+    try {
+      const res  = await fetch(`${API_BASE}/api/sources?limit=200`);
+      const data = await res.json();
+      allSources = data.sources || [];
+      renderSourceList(allSources);
+      document.getElementById('stat-sources').innerHTML = `<b>${data.total ?? allSources.length}</b> sources`;
+    } catch (e) {
+      document.getElementById('source-list').innerHTML =
+        `<div class="state-box"><p>Failed to load sources.</p></div>`;
+    }
+  }
+
+  function renderSourceList(sources) {
+    const list = document.getElementById('source-list');
+    if (!sources.length) {
+      list.innerHTML = `<div class="state-box"><p>No sources found.</p></div>`;
+      return;
+    }
+
+    const totalRecords = sources.reduce((s, x) => s + (x.product_count || 0), 0);
+    let html = `
+      <div class="source-all ${activeSourceId === null ? 'active' : ''}" onclick="selectSource(null)">
+        <span>All Files</span>
+        <span class="source-badge">${sources.length}</span>
+      </div>
+      <hr class="all-divider"/>
+    `;
+
+    for (const s of sources) {
+      const name    = s.source_filename || s.sender_name || s.supplier_name || '(unnamed)';
+      const date    = s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB', {day:'2-digit',month:'short'}) : '';
+      const channel = s.source_channel || '';
+      const isActive = s.id === activeSourceId;
+      html += `
+        <div class="source-item ${isActive ? 'active' : ''}" onclick="selectSource('${s.id}', '${escHtml(name)}')">
+          <div class="source-item-name" title="${escHtml(name)}">${escHtml(name)}</div>
+          <div class="source-item-meta">
+            <span>${date}</span>
+            <span class="source-badge">${s.product_count ?? 0}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    list.innerHTML = html;
+  }
+
+  function filterSourceList() {
+    const q = document.getElementById('source-search').value.toLowerCase();
+    const filtered = allSources.filter(s => {
+      const name = (s.source_filename || s.sender_name || s.supplier_name || '').toLowerCase();
+      return name.includes(q);
+    });
+    renderSourceList(filtered);
+  }
+
+  function selectSource(id, name) {
+    activeSourceId = id;
+    document.getElementById('main-title').textContent = name || 'All Records';
+    renderSourceList(allSources.filter(s => {
+      const q = document.getElementById('source-search').value.toLowerCase();
+      return (s.source_filename || s.sender_name || s.supplier_name || '').toLowerCase().includes(q);
+    }));
+    loadRecords(true);
+  }
+
+  // ── RECORDS ─────────────────────────────────────────
+  async function loadRecords(reset = false) {
+    if (loadingRecords) return;
+    loadingRecords = true;
+
+    if (reset) {
+      recordsSkip = 0;
+      document.getElementById('records-grid').innerHTML =
+        `<div class="state-box" style="grid-column:1/-1"><div class="spinner"></div><p>Loading records…</p></div>`;
+      document.getElementById('load-more-wrap').style.display = 'none';
+    }
+
+    try {
+      let url = `${API_BASE}/api/records?skip=${recordsSkip}&limit=${PAGE_SIZE}`;
+      if (activeSourceId) url += `&source_file_id=${activeSourceId}`;
+
+      const res  = await fetch(url);
+      const data = await res.json();
+      const items = data.records || data.items || data.offer_items || [];
+      recordsTotal = data.total ?? items.length;
+
+      document.getElementById('stat-records').innerHTML   = `<b>${recordsTotal}</b> records`;
+      document.getElementById('records-count').textContent = recordsTotal.toLocaleString();
+
+      const grid = document.getElementById('records-grid');
+      if (reset) grid.innerHTML = '';
+
+      if (!items.length && reset) {
+        grid.innerHTML =
+          `<div class="state-box" style="grid-column:1/-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/>
+            </svg>
+            <p>No records found for this source.</p>
+          </div>`;
+      } else {
+        items.forEach(item => grid.insertAdjacentHTML('beforeend', recordCard(item)));
+        recordsSkip += items.length;
+        const hasMore = recordsSkip < recordsTotal;
+        const lmw = document.getElementById('load-more-wrap');
+        lmw.style.display = hasMore ? 'flex' : 'none';
+        document.getElementById('load-more-btn').disabled = false;
+      }
+    } catch (e) {
+      if (reset)
+        document.getElementById('records-grid').innerHTML =
+          `<div class="state-box" style="grid-column:1/-1"><p>Failed to load records.</p></div>`;
+    }
+
+    loadingRecords = false;
+  }
+
+  function loadMoreRecords() {
+    document.getElementById('load-more-btn').disabled = true;
+    loadRecords(false);
+  }
+
+  // ── RECORD CARD ─────────────────────────────────────
+  function recordCard(item) {
+    const name         = item.product_name  || '—';
+    const brand        = item.brand         || '';
+    const category     = item.category      || '';
+    const vol          = item.unit_volume_ml ? `${item.unit_volume_ml} ml` : '—';
+    const units        = item.units_per_case || '—';
+    const priceUnit    = item.price_per_unit_eur != null
+                         ? `€${Number(item.price_per_unit_eur).toFixed(2)}`
+                         : (item.price_per_unit != null ? `${item.currency || ''}${Number(item.price_per_unit).toFixed(2)}` : '—');
+    const priceCase    = item.price_per_case_eur != null
+                         ? `€${Number(item.price_per_case_eur).toFixed(2)}`
+                         : (item.price_per_case != null ? `${item.currency || ''}${Number(item.price_per_case).toFixed(2)}` : '—');
+    const alcohol      = item.alcohol_percent != null ? `${item.alcohol_percent}%` : '—';
+    const supplier     = item.supplier_name  || item.sender_name || '—';
+    const supplierEmail= item.supplier_email || item.sender_email || '';
+    const conf         = item.confidence_score != null ? Math.round(item.confidence_score * 100) : null;
+    const needsReview  = item.needs_manual_review;
+    const channel      = (item.source_channel || '').toLowerCase();
+
+    const confColor = conf == null ? '#64748b' : conf >= 80 ? '#34d399' : conf >= 50 ? '#fbbf24' : '#f87171';
+
+    const channelHtml = channel
+      ? `<span class="ch-pill ${channel.includes('mail') ? 'ch-email' : channel.includes('whatsapp') ? 'ch-whatsapp' : 'ch-other'}">${escHtml(channel)}</span>`
+      : '';
+
+    const reviewHtml = needsReview != null
+      ? `<span class="review-flag ${needsReview ? 'warn' : 'ok'}">${needsReview ? '⚠ Review' : '✓ OK'}</span>`
+      : '';
+
+    const confHtml = conf != null ? `
+      <div class="confidence">
+        <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confColor}"></div></div>
+        <span style="color:${confColor}">${conf}%</span>
+      </div>` : '';
+
+    return `
+    <div class="record-card">
+      <div class="card-top">
+        <div class="card-product-name">${escHtml(name)}</div>
+        ${category ? `<span class="card-category">${escHtml(category)}</span>` : ''}
+      </div>
+      ${brand ? `<div class="card-brand">by <b>${escHtml(brand)}</b>${item.vintage ? ` · <span style="color:var(--muted)">${escHtml(item.vintage)}</span>` : ''}</div>` : ''}
+      <div class="card-grid">
+        <div class="card-field">
+          <label>Price / unit</label>
+          <value class="price">${priceUnit}</value>
+        </div>
+        <div class="card-field">
+          <label>Price / case</label>
+          <value class="price">${priceCase}</value>
+        </div>
+        <div class="card-field">
+          <label>Volume</label>
+          <value class="vol">${escHtml(String(vol))}</value>
+        </div>
+        <div class="card-field">
+          <label>Units / case</label>
+          <value>${escHtml(String(units))}</value>
+        </div>
+        <div class="card-field">
+          <label>Alcohol</label>
+          <value>${escHtml(String(alcohol))}</value>
+        </div>
+        <div class="card-field">
+          <label>Origin</label>
+          <value>${escHtml(item.origin_country || '—')}</value>
+        </div>
+      </div>
+      <div class="card-footer">
+        <div class="card-supplier" title="${escHtml(supplierEmail)}">
+          <b>${escHtml(supplier)}</b>${channelHtml ? '' : ''}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          ${channelHtml}
+          ${reviewHtml}
+          ${confHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── UTILS ────────────────────────────────────────────
+  function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+</script>
+</body>
+</html>

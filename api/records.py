@@ -1,4 +1,6 @@
 import logging
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -12,40 +14,23 @@ router = APIRouter()
 
 
 @router.get("/records")
-async def get_records_by_filename(
-    filename: str = Query(..., description="The source filename to look up"),
+async def get_records(
+    skip: int = Query(0),
+    limit: int = Query(24),
+    source_file_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    source_file = (
-        db.query(SourceFileDB)
-        .filter(SourceFileDB.source_filename == filename)
-        .first()
-    )
+    query = db.query(OfferItemDB)
 
-    if not source_file:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No source file found for filename '{filename}'.",
-        )
+    if source_file_id:
+        query = query.filter(OfferItemDB.source_file_id == source_file_id)
 
-    rows = (
-        db.query(OfferItemDB)
-        .filter(OfferItemDB.source_file_id == source_file.id)
-        .all()
-    )
-
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No products found for filename '{filename}'.",
-        )
-
-    products = [row.to_dict() for row in rows]
+    total = query.count()
+    rows = query.offset(skip).limit(limit).all()
 
     return {
-        "filename": filename,
-        "source_file_id": source_file.id,
-        "job_id": source_file.job_id,
-        "total": len(products),
-        "products": products,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "records": [row.to_dict() for row in rows],
     }

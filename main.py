@@ -1,3 +1,4 @@
+from fastapi.responses import FileResponse
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -51,4 +52,8 @@ async def health():
         "service": "automation-python-backend",
         "version": "1.0.0",
     }
+
+@app.get("/", include_in_schema=False)
+async def serve_dashboard():
+    return FileResponse("dashboard.html")
 
