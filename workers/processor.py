@@ -22,6 +22,19 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
     try:
         db = get_session_factory()()
         try:
+            source_filename = offer_dict.get("source_filename") or None
+            if source_filename:
+                existing = db.query(OfferItemDB).filter(
+                    OfferItemDB.source_filename == source_filename,
+                    OfferItemDB.job_id != job_id
+                ).first()
+                if existing:
+                    logger.warning(
+                        f"DB: skipping '{offer_dict.get('product_name')}' — "
+                        f"file '{source_filename}' already processed in job {existing.job_id}"
+                    )
+                    return
+
             row = OfferItemDB(
                 uid=offer_dict.get("uid"),
                 job_id=job_id,
@@ -66,7 +79,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 sender_email=offer_dict.get("sender_email"),
                 source_channel=offer_dict.get("source_channel"),
                 source_message_id=offer_dict.get("source_message_id"),
-                source_filename=offer_dict.get("source_filename") or None,
+                source_filename=source_filename,
                 attachment_filenames=json.dumps(offer_dict.get("attachment_filenames", [])),
                 attachment_count=offer_dict.get("attachment_count"),
                 confidence_score=offer_dict.get("confidence_score"),

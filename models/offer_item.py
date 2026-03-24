@@ -2,7 +2,8 @@
 models/offer_item.py
 SQLAlchemy ORM model for extracted OfferItem rows.
 Each row is tied to `job_id` and `source_filename`.
-`source_filename` has a UNIQUE constraint so duplicate files are rejected at the DB level too.
+Multiple products from the same file share the same source_filename.
+Duplicate file detection is handled at the application level in save_offer_to_db.
 """
 from datetime import datetime
 from sqlalchemy import (
@@ -37,7 +38,6 @@ class OfferItemDB(Base):
     gift_box = Column(String(255), nullable=True)
     refillable_status = Column(String(64), nullable=True)
 
-    # Pricing
     currency = Column(String(16), nullable=True)
     price_per_unit = Column(Float, nullable=True)
     price_per_unit_eur = Column(Float, nullable=True)
@@ -46,7 +46,6 @@ class OfferItemDB(Base):
     fx_rate = Column(Float, nullable=True)
     fx_date = Column(String(64), nullable=True)
 
-    # Product details
     alcohol_percent = Column(Float, nullable=True)
     origin_country = Column(String(255), nullable=True)
     supplier_country = Column(String(255), nullable=True)
@@ -61,21 +60,16 @@ class OfferItemDB(Base):
     label_language = Column(String(32), nullable=True)
     product_reference = Column(String(255), nullable=True)
 
-    # Supplier / sender
     supplier_name = Column(String(255), nullable=True)
     supplier_email = Column(String(255), nullable=True)
     supplier_reference = Column(String(255), nullable=True)
     sender_name = Column(String(255), nullable=True)
     sender_email = Column(String(255), nullable=True)
 
-    # Source / tracking
     source_channel = Column(String(128), nullable=True)
     source_message_id = Column(String(255), nullable=True)
 
-    # ── UNIQUE on source_filename ────────────────────────────────────────────
-    # A NULL filename is allowed (e.g. plain-text emails with no attachment),
-    # but any non-NULL filename must be globally unique.
-    source_filename = Column(String(512), nullable=True, unique=True, index=True)
+    source_filename = Column(String(512), nullable=True, index=True)
 
     attachment_filenames = Column(Text, nullable=True)   # JSON array stored as text
     attachment_count = Column(Integer, nullable=True)
@@ -93,7 +87,6 @@ class OfferItemDB(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
-        # Additional composite index for job_id + filename queries
         Index("ix_offer_items_job_filename", "job_id", "source_filename"),
     )
 
