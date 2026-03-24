@@ -49,3 +49,57 @@ async def get_records_by_filename(
         "total": len(products),
         "products": products,
     }
+
+
+from sqlalchemy import func
+
+@router.get("/sources")
+async def get_sources(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    total = db.query(SourceFileDB).count()
+
+    sources = (
+        db.query(SourceFileDB)
+        .order_by(SourceFileDB.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    if not sources:
+        return {
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "sources": []
+        }
+
+    source_ids = [s.id for s in sources]
+
+    counts = (
+        db.query(
+            OfferItemDB.source_file_id,
+            func.count(OfferItemDB.uid)
+        )
+        .filter(OfferItemDB.source_file_id.in_(source_ids))
+        .group_by(OfferItemDB.source_file_id)
+        .all()
+    )
+
+    count_map = {sid: count for sid, count in counts}
+
+    result = []
+    for source in sources:
+        data = source.to_dict()
+        data["product_count"] = count_map.get(source.id, 0)
+        result.append(data)
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "sources": result
+    }
