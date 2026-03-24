@@ -1,50 +1,24 @@
 import uuid
 import re
 import json
-import sys
 import os
 import traceback
 import tempfile
 import logging
 from datetime import datetime
 
-# Belt-and-suspenders: ensure project root is on sys.path in worker processes.
-# This is needed on Azure App Service where Celery workers may be forked
-# before the sys.path fix in celery_app.py propagates.
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
-
 from core.file_download import resolve_attachment_bytes
 from schemas.output import OfferItem
 from core.openai_client import extract_offer, extract_from_file, parse_buffer_data
 from core.redis_client import redis_manager
 from core.webhook_client import send_consolidated_webhook
-
-# DB imports — loaded at module level so they're resolved before any Celery
-# task runs (avoids 'No module named models' in forked worker processes).
-try:
-    from core.database import get_session_factory
-    from models.offer_item import OfferItemDB
-    _DB_AVAILABLE = True
-except Exception as _db_import_err:
-    _DB_AVAILABLE = False
-    logging.getLogger(__name__).error(
-        f"DB modules could not be imported — DB persistence disabled: {_db_import_err}"
-    )
+from core.database import get_session_factory
+from models.offer_item import OfferItemDB
 
 logger = logging.getLogger(__name__)
 
 
 def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
-    """
-    Persist a single extracted OfferItem to the PostgreSQL database.
-    Non-fatal: logs errors without interrupting the main processing flow.
-    """
-    if not _DB_AVAILABLE:
-        logger.warning("DB: skipping save — DB modules not available")
-        return
-
     try:
         db = get_session_factory()()
         try:
