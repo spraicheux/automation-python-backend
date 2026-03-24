@@ -1,7 +1,15 @@
 import os
+import sys
 import ssl
 import socket
 from celery import Celery
+
+# Ensure the project root is on sys.path so that `models`, `workers`, `core`,
+# etc. are all importable inside Celery worker processes regardless of how
+# the worker was launched (Procfile, Azure container, local shell, etc.).
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 broker_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 result_backend = os.getenv("CELERY_RESULT_BACKEND", broker_url)
