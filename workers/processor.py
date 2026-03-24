@@ -14,29 +14,64 @@ from core.redis_client import redis_manager
 from core.webhook_client import send_consolidated_webhook
 from core.database import get_session_factory
 from models.offer_item import OfferItemDB
+from models.source_file import SourceFileDB
 
 logger = logging.getLogger(__name__)
 
 
 def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
+    """
+    Persist a single extracted OfferItem to the PostgreSQL database.
+    Non-fatal: logs errors without interrupting the main processing flow.
+
+    SourceFileDB logic:
+    - First product of a job → creates the SourceFileDB record.
+    - Subsequent products of the same job → reuses the existing SourceFileDB.
+    - Same filename in a DIFFERENT job → skipped (already processed).
+    """
     try:
         db = get_session_factory()()
         try:
             source_filename = offer_dict.get("source_filename") or None
             if source_filename:
-                existing = db.query(OfferItemDB).filter(
-                    OfferItemDB.source_filename == source_filename,
-                    OfferItemDB.job_id != job_id
+                duplicate = db.query(SourceFileDB).filter(
+                    SourceFileDB.source_filename == source_filename,
+                    SourceFileDB.job_id != job_id
                 ).first()
-                if existing:
+                if duplicate:
                     logger.warning(
                         f"DB: skipping '{offer_dict.get('product_name')}' — "
-                        f"file '{source_filename}' already processed in job {existing.job_id}"
+                        f"file '{source_filename}' already processed in job {duplicate.job_id}"
                     )
                     return
+            # ────────────────────────────────────────────────────────────────
+
+            # ── Get or create SourceFileDB for this job ──────────────────────
+            source_file = db.query(SourceFileDB).filter(
+                SourceFileDB.job_id == job_id
+            ).first()
+
+            if not source_file:
+                source_file = SourceFileDB(
+                    id=str(uuid.uuid4()),
+                    job_id=job_id,
+                    source_filename=source_filename,
+                    sender_name=offer_dict.get("sender_name"),
+                    sender_email=offer_dict.get("sender_email"),
+                    supplier_name=offer_dict.get("supplier_name"),
+                    supplier_email=offer_dict.get("supplier_email"),
+                    source_channel=offer_dict.get("source_channel"),
+                    source_message_id=offer_dict.get("source_message_id"),
+                    product_count=0,
+                )
+                db.add(source_file)
+                db.flush()  # get the id without committing yet
+                logger.info(f"DB: created SourceFileDB for job {job_id}, file='{source_filename}'")
+            # ────────────────────────────────────────────────────────────────
 
             row = OfferItemDB(
                 uid=offer_dict.get("uid"),
+                source_file_id=source_file.id,
                 job_id=job_id,
                 product_name=offer_dict.get("product_name"),
                 product_key=offer_dict.get("product_key"),
@@ -91,6 +126,9 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 date_received=offer_dict.get("date_received"),
             )
             db.add(row)
+
+            source_file.product_count += 1
+
             db.commit()
             logger.info(f"DB: saved product '{offer_dict.get('product_name')}' for job {job_id}")
         except Exception as db_err:

@@ -64,7 +64,7 @@ def init_db():
     """Create all tables defined via Base.metadata if they do not exist."""
     try:
         # Import models so their tables are registered on Base.metadata
-        import models.offer_item  # noqa: F401
+        from models import offer_item,source_file
         engine = get_engine()
         Base.metadata.create_all(bind=engine)
         logger.info("✓ Database tables verified / created")

@@ -1,90 +1,87 @@
-"""
-models/offer_item.py
-SQLAlchemy ORM model for extracted OfferItem rows.
-Each row is tied to `job_id` and `source_filename`.
-Multiple products from the same file share the same source_filename.
-Duplicate file detection is handled at the application level in save_offer_to_db.
-"""
 from datetime import datetime
-from sqlalchemy import (
-    Column, String, Float, Boolean, Integer,
-    DateTime, Text, UniqueConstraint, Index
-)
+from sqlalchemy import Column, String, Float, Boolean, Integer, DateTime, Text, Index, ForeignKey
+from sqlalchemy.orm import relationship
 from core.database import Base
 
 
 class OfferItemDB(Base):
     __tablename__ = "offer_items"
 
-    # Primary key — same uid as OfferItem Pydantic model
     uid = Column(String(64), primary_key=True)
 
-    # Job tracking
+    # FK → source_files
+    source_file_id = Column(String(64), ForeignKey("source_files.id"), nullable=True, index=True)
+    source_file    = relationship("SourceFileDB", back_populates="offer_items")
+
+    # Job tracking (kept for quick filtering without joining)
     job_id = Column(String(64), nullable=False, index=True)
 
     # Core product fields
-    product_name = Column(String(512), nullable=True)
-    product_key = Column(String(255), nullable=True)
-    brand = Column(String(255), nullable=True)
-    category = Column(String(255), nullable=True)
-    sub_category = Column(String(255), nullable=True)
-    packaging = Column(String(255), nullable=True)
-    packaging_raw = Column(String(255), nullable=True)
-    bottle_or_can_type = Column(String(255), nullable=True)
-    unit_volume_ml = Column(Float, nullable=True)
-    units_per_case = Column(Float, nullable=True)
-    cases_per_pallet = Column(Float, nullable=True)
-    quantity_case = Column(Float, nullable=True)
-    gift_box = Column(String(255), nullable=True)
-    refillable_status = Column(String(64), nullable=True)
+    product_name        = Column(String(512), nullable=True)
+    product_key         = Column(String(255), nullable=True)
+    brand               = Column(String(255), nullable=True)
+    category            = Column(String(255), nullable=True)
+    sub_category        = Column(String(255), nullable=True)
+    packaging           = Column(String(255), nullable=True)
+    packaging_raw       = Column(String(255), nullable=True)
+    bottle_or_can_type  = Column(String(255), nullable=True)
+    unit_volume_ml      = Column(Float, nullable=True)
+    units_per_case      = Column(Float, nullable=True)
+    cases_per_pallet    = Column(Float, nullable=True)
+    quantity_case       = Column(Float, nullable=True)
+    gift_box            = Column(String(255), nullable=True)
+    refillable_status   = Column(String(64), nullable=True)
 
-    currency = Column(String(16), nullable=True)
-    price_per_unit = Column(Float, nullable=True)
+    # Pricing
+    currency          = Column(String(16), nullable=True)
+    price_per_unit    = Column(Float, nullable=True)
     price_per_unit_eur = Column(Float, nullable=True)
-    price_per_case = Column(Float, nullable=True)
+    price_per_case    = Column(Float, nullable=True)
     price_per_case_eur = Column(Float, nullable=True)
-    fx_rate = Column(Float, nullable=True)
-    fx_date = Column(String(64), nullable=True)
+    fx_rate           = Column(Float, nullable=True)
+    fx_date           = Column(String(64), nullable=True)
 
-    alcohol_percent = Column(Float, nullable=True)
-    origin_country = Column(String(255), nullable=True)
-    supplier_country = Column(String(255), nullable=True)
-    incoterm = Column(String(128), nullable=True)
-    location = Column(String(255), nullable=True)
-    lead_time = Column(String(255), nullable=True)
-    moq_cases = Column(Float, nullable=True)
-    valid_until = Column(String(64), nullable=True)
-    best_before_date = Column(String(64), nullable=True)
-    vintage = Column(String(64), nullable=True)
-    ean_code = Column(String(64), nullable=True)
-    label_language = Column(String(32), nullable=True)
+    # Product details
+    alcohol_percent   = Column(Float, nullable=True)
+    origin_country    = Column(String(255), nullable=True)
+    supplier_country  = Column(String(255), nullable=True)
+    incoterm          = Column(String(128), nullable=True)
+    location          = Column(String(255), nullable=True)
+    lead_time         = Column(String(255), nullable=True)
+    moq_cases         = Column(Float, nullable=True)
+    valid_until       = Column(String(64), nullable=True)
+    best_before_date  = Column(String(64), nullable=True)
+    vintage           = Column(String(64), nullable=True)
+    ean_code          = Column(String(64), nullable=True)
+    label_language    = Column(String(32), nullable=True)
     product_reference = Column(String(255), nullable=True)
 
-    supplier_name = Column(String(255), nullable=True)
-    supplier_email = Column(String(255), nullable=True)
+    # Supplier / sender (denormalised for quick access without joining)
+    supplier_name      = Column(String(255), nullable=True)
+    supplier_email     = Column(String(255), nullable=True)
     supplier_reference = Column(String(255), nullable=True)
-    sender_name = Column(String(255), nullable=True)
-    sender_email = Column(String(255), nullable=True)
+    sender_name        = Column(String(255), nullable=True)
+    sender_email       = Column(String(255), nullable=True)
 
-    source_channel = Column(String(128), nullable=True)
+    # Source / tracking (denormalised)
+    source_channel    = Column(String(128), nullable=True)
     source_message_id = Column(String(255), nullable=True)
+    source_filename   = Column(String(512), nullable=True, index=True)
 
-    source_filename = Column(String(512), nullable=True, index=True)
-
-    attachment_filenames = Column(Text, nullable=True)   # JSON array stored as text
-    attachment_count = Column(Integer, nullable=True)
+    attachment_filenames = Column(Text, nullable=True)  # JSON array
+    attachment_count     = Column(Integer, nullable=True)
 
     # Quality / review
-    confidence_score = Column(Float, nullable=True)
+    confidence_score    = Column(Float, nullable=True)
     needs_manual_review = Column(Boolean, nullable=True)
-    error_flags = Column(Text, nullable=True)            # JSON array stored as text
-    custom_status = Column(String(128), nullable=True)
-    processing_version = Column(String(32), nullable=True)
+    error_flags         = Column(Text, nullable=True)   # JSON array
+    custom_status       = Column(String(128), nullable=True)
+    processing_version  = Column(String(32), nullable=True)
 
     # Timestamps
-    offer_date = Column(DateTime, nullable=True)
+    offer_date    = Column(DateTime, nullable=True)
     date_received = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     __table_args__ = (
         Index("ix_offer_items_job_filename", "job_id", "source_filename"),
@@ -96,6 +93,7 @@ class OfferItemDB(Base):
         return {
             "uid": self.uid,
             "job_id": self.job_id,
+            "source_file_id": self.source_file_id,
             "product_name": self.product_name,
             "product_key": self.product_key,
             "brand": self.brand,
