@@ -1,5 +1,6 @@
 import uuid
 import re
+import json
 import traceback
 from datetime import datetime
 
@@ -13,6 +14,85 @@ import logging
 from core.webhook_client import send_consolidated_webhook
 
 logger = logging.getLogger(__name__)
+
+
+def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
+    """
+    Persist a single extracted OfferItem to the PostgreSQL database.
+    Non-fatal: logs errors without interrupting the main processing flow.
+    """
+    try:
+        from core.database import get_session_factory
+        from models.offer_item import OfferItemDB
+
+        factory = get_session_factory()
+        db = factory()
+        try:
+            row = OfferItemDB(
+                uid=offer_dict.get("uid"),
+                job_id=job_id,
+                product_name=offer_dict.get("product_name"),
+                product_key=offer_dict.get("product_key"),
+                brand=offer_dict.get("brand"),
+                category=offer_dict.get("category"),
+                sub_category=offer_dict.get("sub_category"),
+                packaging=offer_dict.get("packaging"),
+                packaging_raw=offer_dict.get("packaging_raw"),
+                bottle_or_can_type=offer_dict.get("bottle_or_can_type"),
+                unit_volume_ml=offer_dict.get("unit_volume_ml"),
+                units_per_case=offer_dict.get("units_per_case"),
+                cases_per_pallet=offer_dict.get("cases_per_pallet"),
+                quantity_case=offer_dict.get("quantity_case"),
+                gift_box=offer_dict.get("gift_box"),
+                refillable_status=offer_dict.get("refillable_status"),
+                currency=offer_dict.get("currency"),
+                price_per_unit=offer_dict.get("price_per_unit"),
+                price_per_unit_eur=offer_dict.get("price_per_unit_eur"),
+                price_per_case=offer_dict.get("price_per_case"),
+                price_per_case_eur=offer_dict.get("price_per_case_eur"),
+                fx_rate=offer_dict.get("fx_rate"),
+                fx_date=offer_dict.get("fx_date"),
+                alcohol_percent=offer_dict.get("alcohol_percent"),
+                origin_country=offer_dict.get("origin_country"),
+                supplier_country=offer_dict.get("supplier_country"),
+                incoterm=offer_dict.get("incoterm"),
+                location=offer_dict.get("location"),
+                lead_time=offer_dict.get("lead_time"),
+                moq_cases=offer_dict.get("moq_cases"),
+                valid_until=offer_dict.get("valid_until"),
+                best_before_date=offer_dict.get("best_before_date"),
+                vintage=offer_dict.get("vintage"),
+                ean_code=offer_dict.get("ean_code"),
+                label_language=offer_dict.get("label_language"),
+                product_reference=offer_dict.get("product_reference"),
+                supplier_name=offer_dict.get("supplier_name"),
+                supplier_email=offer_dict.get("supplier_email"),
+                supplier_reference=offer_dict.get("supplier_reference"),
+                sender_name=offer_dict.get("sender_name"),
+                sender_email=offer_dict.get("sender_email"),
+                source_channel=offer_dict.get("source_channel"),
+                source_message_id=offer_dict.get("source_message_id"),
+                source_filename=offer_dict.get("source_filename") or None,
+                attachment_filenames=json.dumps(offer_dict.get("attachment_filenames", [])),
+                attachment_count=offer_dict.get("attachment_count"),
+                confidence_score=offer_dict.get("confidence_score"),
+                needs_manual_review=offer_dict.get("needs_manual_review"),
+                error_flags=json.dumps(offer_dict.get("error_flags", [])),
+                custom_status=offer_dict.get("custom_status"),
+                processing_version=offer_dict.get("processing_version"),
+                offer_date=offer_dict.get("offer_date"),
+                date_received=offer_dict.get("date_received"),
+            )
+            db.add(row)
+            db.commit()
+            logger.info(f"DB: saved product '{offer_dict.get('product_name')}' for job {job_id}")
+        except Exception as db_err:
+            db.rollback()
+            logger.error(f"DB: failed to save product '{offer_dict.get('product_name')}' for job {job_id}: {db_err}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"DB: save_offer_to_db setup error for job {job_id}: {e}")
 
 
 def is_valid_offer(offer_dict: dict) -> bool:
@@ -454,6 +534,10 @@ async def process_offer(payload, job_id: str):
 
                     offers.append(offer_dict)
                     valid_count += 1
+
+                    # ── Persist to database ──────────────────────────────────
+                    save_offer_to_db(offer_dict, job_id)
+
                     logger.info(f"Dispatching sequential webhook for product: {offer_dict['product_name']}")
                     send_consolidated_webhook(
                         job_id=job_id,
@@ -593,6 +677,10 @@ async def process_offer(payload, job_id: str):
 
                 offer_dict = offer.model_dump(mode='json')
                 offers.append(offer_dict)
+
+                # ── Persist to database ──────────────────────────────────────
+                save_offer_to_db(offer_dict, job_id)
+
                 logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
                 send_consolidated_webhook(
                     job_id=job_id,

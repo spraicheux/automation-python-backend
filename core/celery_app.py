@@ -38,7 +38,7 @@ celery_app.conf.update(
         "visibility_timeout": 3600,
         "socket_keepalive": True,
         "socket_keepalive_options": {
-            socket.TCP_KEEPIDLE: 60,
+            # socket.TCP_KEEPIDLE: 60,
             socket.TCP_KEEPINTVL: 10,
             socket.TCP_KEEPCNT: 6,
         },
