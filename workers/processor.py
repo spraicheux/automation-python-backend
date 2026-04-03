@@ -726,13 +726,13 @@ async def process_offer(payload, job_id: str):
                 # ── Persist to database ──────────────────────────────────────
                 save_offer_to_db(offer_dict, job_id)
 
-                logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
-                send_consolidated_webhook(
-                    job_id=job_id,
-                    payload_type="single_row",
-                    data={"product": offer_dict},
-                    delivery_id=f"{job_id}_single"
-                )
+                # logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
+                # send_consolidated_webhook(
+                #     job_id=job_id,
+                #     payload_type="single_row",
+                #     data={"product": offer_dict},
+                #     delivery_id=f"{job_id}_single"
+                # )
 
             except Exception as e:
                 error_trace = traceback.format_exc()

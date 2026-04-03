@@ -69,17 +69,17 @@ def process_document_task(self, job_id: str, payload_dict: dict):
         raise self.retry(exc=exc, countdown=backoff(self.request.retries))
 
 
-@celery_app.task(bind=True, max_retries=6)
-def send_webhook_with_retry(self, job_id: str, result: dict = None):
-    """Legacy/Fallback task - now mostly handled sequentially in processor.py"""
-    from core.webhook_client import send_consolidated_webhook
-    success = send_consolidated_webhook(
-        job_id=job_id,
-        payload_type="batch_retry",
-        data={"results": result} if result else {}
-    )
-    if not success:
-        raise self.retry(countdown=30 * (2 ** self.request.retries))
+# @celery_app.task(bind=True, max_retries=6)
+# def send_webhook_with_retry(self, job_id: str, result: dict = None):
+#     """Legacy/Fallback task - now mostly handled sequentially in processor.py"""
+#     from core.webhook_client import send_consolidated_webhook
+#     success = send_consolidated_webhook(
+#         job_id=job_id,
+#         payload_type="batch_retry",
+#         data={"results": result} if result else {}
+#     )
+#     if not success:
+#         raise self.retry(countdown=30 * (2 ** self.request.retries))
 
 def backoff(retries: int) -> int:
     return 30 * (2 ** retries)
