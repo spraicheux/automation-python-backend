@@ -12,6 +12,7 @@ from api.results import router as results_router
 from api.debug import router as debug_router
 from api.records import router as records_router
 from api.sources import router as sources_router
+from api.auth import router as auth_router
 
 
 app = FastAPI(
@@ -33,6 +34,7 @@ app.include_router(results_router, prefix="/api", tags=["Result"])
 app.include_router(records_router, prefix="/api", tags=["Records"])
 app.include_router(debug_router, prefix="/debug", tags=["debug"])
 app.include_router(sources_router, prefix="/api", tags=["Sources"])
+app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 
 
 @app.on_event("startup")
