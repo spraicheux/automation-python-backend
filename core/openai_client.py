@@ -1043,15 +1043,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 logger.info(f"[extract_from_file] Batch {batch_num}: AI returned {len(batch_products)} product(s) (expected {len(batch_df)})")
 
                                 if len(batch_products) != len(batch_df):
-                                    logger.warning(f"[extract_from_file] Batch {batch_num}: COUNT MISMATCH — expected {len(batch_df)}, got {len(batch_products)}")
-                                    if len(batch_products) < len(batch_df):
-                                        missing_count = len(batch_df) - len(batch_products)
-                                        logger.warning(f"[extract_from_file] Batch {batch_num}: Padding {missing_count} missing product(s) with defaults")
-                                        for i in range(missing_count):
-                                            default_product = clean_product_data({})
-                                            default_product['product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
-                                            batch_products.append(default_product)
-                                            logger.warning(f"[extract_from_file] Batch {batch_num}: Added placeholder for row {batch_start + len(batch_products) + i + 1}")
+                                    logger.warning(
+                                        f"[extract_from_file] Batch {batch_num}: COUNT MISMATCH — expected {len(batch_df)}, "
+                                        f"got {len(batch_products)} (accepting only real products, no synthetic padding)"
+                                    )
 
                                 cleaned_batch_products = []
                                 for p_idx, product in enumerate(batch_products):
@@ -1094,14 +1089,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             elif isinstance(result, list):
                                 logger.info(f"[extract_from_file] Batch {batch_num}: AI returned a direct LIST with {len(result)} item(s) (expected {len(batch_df)})")
                                 if len(result) != len(batch_df):
-                                    logger.warning(f"[extract_from_file] Batch {batch_num}: List count mismatch — expected {len(batch_df)}, got {len(result)}")
-                                    if len(result) < len(batch_df):
-                                        missing_count = len(batch_df) - len(result)
-                                        logger.warning(f"[extract_from_file] Batch {batch_num}: Padding {missing_count} missing product(s)")
-                                        for i in range(missing_count):
-                                            default_product = clean_product_data({})
-                                            default_product['product_name'] = f"Row {batch_start + len(result) + i + 1}"
-                                            result.append(default_product)
+                                    logger.warning(
+                                        f"[extract_from_file] Batch {batch_num}: List count mismatch — expected {len(batch_df)}, "
+                                        f"got {len(result)} (accepting only real products, no synthetic padding)"
+                                    )
 
                                 cleaned_batch_products = []
                                 for p_idx, product in enumerate(result):
@@ -1113,11 +1104,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 processed_row_count += len(batch_df)
                                 logger.info(f"[extract_from_file] Batch {batch_num} (list): complete — running total: {len(all_extracted_products)}")
                             else:
-                                logger.warning(f"[extract_from_file] Batch {batch_num}: Unexpected JSON format (type={type(result)}) — creating {len(batch_df)} default product(s)")
-                                for i in range(len(batch_df)):
-                                    default_product = clean_product_data({})
-                                    default_product['product_name'] = f"Row {batch_start + i + 1}"
-                                    all_extracted_products.append(default_product)
+                                logger.warning(
+                                    f"[extract_from_file] Batch {batch_num}: Unexpected JSON format "
+                                    f"(type={type(result)}) — dropping this batch ({len(batch_df)} rows lost)"
+                                )
                                 processed_row_count += len(batch_df)
 
                         except json.JSONDecodeError as e:
@@ -1138,11 +1128,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                                 batch_products = result['products']
                                                 if isinstance(batch_products, list):
                                                     if len(batch_products) < len(batch_df):
-                                                        missing_count = len(batch_df) - len(batch_products)
-                                                        for i in range(missing_count):
-                                                            default_product = clean_product_data({})
-                                                            default_product['product_name'] = f"Row {batch_start + len(batch_products) + i + 1}"
-                                                            batch_products.append(default_product)
+                                                        logger.warning(
+                                                            f"[extract_from_file] Batch {batch_num}: salvage returned "
+                                                            f"{len(batch_products)}/{len(batch_df)} products — no synthetic padding"
+                                                        )
 
                                                     cleaned_batch_products = []
                                                     for product in batch_products:
@@ -1155,33 +1144,28 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                         except:
                                             continue
                             except Exception as salvage_error:
-                                logger.error(f"[extract_from_file] Batch {batch_num}: Salvage FAILED: {salvage_error}")
-                                for i in range(len(batch_df)):
-                                    default_product = clean_product_data({})
-                                    default_product['product_name'] = f"Row {batch_start + i + 1}"
-                                    all_extracted_products.append(default_product)
+                                logger.error(
+                                    f"[extract_from_file] Batch {batch_num}: Salvage FAILED: {salvage_error} — "
+                                    f"dropping this batch ({len(batch_df)} rows lost, no synthetic padding)"
+                                )
                                 processed_row_count += len(batch_df)
 
                     except Exception as e:
                         logger.error(f"[extract_from_file] Batch {batch_num}: OpenAI call FAILED: {e}")
                         logger.error(f"[extract_from_file] Batch {batch_num}: {traceback.format_exc()}")
-                        for i in range(len(batch_df)):
-                            default_product = clean_product_data({})
-                            default_product['product_name'] = f"Row {batch_start + i + 1}"
-                            all_extracted_products.append(default_product)
+                        logger.error(
+                            f"[extract_from_file] Batch {batch_num}: dropping this batch "
+                            f"({len(batch_df)} rows lost, no synthetic padding)"
+                        )
                         processed_row_count += len(batch_df)
 
                 logger.info(f"[extract_from_file] All batches complete — total products: {len(all_extracted_products)}, rows processed: {processed_row_count}/{total_rows}")
 
                 if len(all_extracted_products) != total_rows:
-                    logger.warning(f"[extract_from_file] PRODUCT/ROW MISMATCH — Excel rows: {total_rows}, products extracted: {len(all_extracted_products)}")
-                    if len(all_extracted_products) < total_rows:
-                        missing_count = total_rows - len(all_extracted_products)
-                        logger.warning(f"[extract_from_file] Padding {missing_count} missing product(s) with defaults")
-                        for i in range(missing_count):
-                            default_product = clean_product_data({})
-                            default_product['product_name'] = f"Missing Row {len(all_extracted_products) + i + 1}"
-                            all_extracted_products.append(default_product)
+                    logger.warning(
+                        f"[extract_from_file] PRODUCT/ROW MISMATCH — Excel rows: {total_rows}, "
+                        f"products extracted: {len(all_extracted_products)} (no synthetic padding)"
+                    )
 
                 if all_extracted_products:
                     logger.debug(f"[extract_from_file] Sample extracted products (first 2): {json.dumps(all_extracted_products[:2], indent=2)}")

@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import logging
 import requests
 import traceback
@@ -15,8 +18,6 @@ from workers.processor import process_offer
 from core.redis_client import redis_manager
 
 logger = logging.getLogger(__name__)
-
-WEBHOOK_URL = "https://hook.eu1.make.com/gxhv22brpghf60o7rjff8l8kxuoagybx"
 
 
 def get_or_create_eventloop():
@@ -51,15 +52,8 @@ def process_document_task(self, job_id: str, payload_dict: dict):
         result = redis_manager.get_job_result(job_id)
         if result:
             status = result.get("status")
-            logger.info(f"Job {job_id} finished processing with status: {status}")
-            
-            # Send a final 'job_completed' summary webhook
-            from core.webhook_client import send_consolidated_webhook
-            send_consolidated_webhook(
-                job_id=job_id,
-                payload_type="job_summary",
-                data={"status": status, "total_extracted": len(result.get("products", []))}
-            )
+            total = len(result.get("products", []))
+            logger.info(f"Job {job_id} finished processing with status: {status} ({total} products written to Excel)")
         else:
             logger.error(f"Job {job_id} finished but no result was found in RedisManager.")
 
@@ -68,18 +62,6 @@ def process_document_task(self, job_id: str, payload_dict: dict):
         redis_manager.set_job_status(job_id, "failed")
         raise self.retry(exc=exc, countdown=backoff(self.request.retries))
 
-
-# @celery_app.task(bind=True, max_retries=6)
-# def send_webhook_with_retry(self, job_id: str, result: dict = None):
-#     """Legacy/Fallback task - now mostly handled sequentially in processor.py"""
-#     from core.webhook_client import send_consolidated_webhook
-#     success = send_consolidated_webhook(
-#         job_id=job_id,
-#         payload_type="batch_retry",
-#         data={"results": result} if result else {}
-#     )
-#     if not success:
-#         raise self.retry(countdown=30 * (2 ** self.request.retries))
 
 def backoff(retries: int) -> int:
     return 30 * (2 ** retries)

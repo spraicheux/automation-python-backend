@@ -11,7 +11,7 @@ from core.file_download import resolve_attachment_bytes
 from schemas.output import OfferItem
 from core.openai_client import extract_offer, extract_from_file, parse_buffer_data
 from core.redis_client import redis_manager
-from core.webhook_client import send_consolidated_webhook
+from core.excel_client import write_offer_row
 from core.database import get_session_factory
 from models.offer_item import OfferItemDB
 from models.source_file import SourceFileDB
@@ -149,7 +149,8 @@ def is_valid_offer(offer_dict: dict) -> bool:
     if not name or name in ["Not Found", "Unknown", "Row", ""]:
         return False
 
-    if name.lower().startswith('row '):
+    name_lc = name.lower().strip()
+    if name_lc.startswith('row ') or name_lc.startswith('missing row '):
         return False
     price_unit = offer_dict.get('price_per_unit')
     price_case = offer_dict.get('price_per_case')
@@ -411,6 +412,27 @@ async def process_offer(payload, job_id: str):
                     logger.error(f"Error processing attachment {attachment.fileName}: {e}")
                     continue
 
+        # Deduplicate products extracted from multiple sources (text body + attachments,
+        # or the same product listed twice). Key on normalised name + volume + price.
+        if all_products:
+            seen_keys = set()
+            deduped = []
+            for p in all_products:
+                key = (
+                    (p.get("product_name") or "").strip().lower(),
+                    p.get("unit_volume_ml") or 0,
+                    p.get("price_per_unit") or 0,
+                    p.get("price_per_case") or 0,
+                )
+                if key in seen_keys:
+                    logger.info(f"Dedup: dropping duplicate product '{p.get('product_name')}'")
+                    continue
+                seen_keys.add(key)
+                deduped.append(p)
+            if len(deduped) != len(all_products):
+                logger.info(f"Dedup: {len(all_products)} → {len(deduped)} products")
+            all_products = deduped
+
         # Create offers
         offers = []
 
@@ -577,19 +599,23 @@ async def process_offer(payload, job_id: str):
 
                     offer_dict = offer.model_dump(mode='json')
 
+                    if not is_valid_offer(offer_dict):
+                        logger.info(
+                            f"Skipping invalid offer at row {idx}: "
+                            f"name={offer_dict.get('product_name')!r}, "
+                            f"price_unit={offer_dict.get('price_per_unit')}, "
+                            f"price_case={offer_dict.get('price_per_case')}"
+                        )
+                        continue
+
                     offers.append(offer_dict)
                     valid_count += 1
 
                     # ── Persist to database ──────────────────────────────────
                     save_offer_to_db(offer_dict, job_id)
 
-                    logger.info(f"Dispatching sequential webhook for product: {offer_dict['product_name']}")
-                    send_consolidated_webhook(
-                        job_id=job_id,
-                        payload_type="single_row",
-                        data={"product": offer_dict},
-                        delivery_id=f"{job_id}_{valid_count}"
-                    )
+                    logger.info(f"Writing product row directly to Excel: {offer_dict['product_name']}")
+                    write_offer_row(offer_dict)
 
                 except Exception as e:
                     error_trace = traceback.format_exc()
@@ -721,18 +747,22 @@ async def process_offer(payload, job_id: str):
                 )
 
                 offer_dict = offer.model_dump(mode='json')
-                offers.append(offer_dict)
 
-                # ── Persist to database ──────────────────────────────────────
-                save_offer_to_db(offer_dict, job_id)
+                if not is_valid_offer(offer_dict):
+                    logger.info(
+                        f"Skipping invalid single offer: "
+                        f"name={offer_dict.get('product_name')!r}, "
+                        f"price_unit={offer_dict.get('price_per_unit')}, "
+                        f"price_case={offer_dict.get('price_per_case')}"
+                    )
+                else:
+                    offers.append(offer_dict)
 
-                # logger.info(f"Dispatching sequential webhook for single offer: {offer_dict['product_name']}")
-                # send_consolidated_webhook(
-                #     job_id=job_id,
-                #     payload_type="single_row",
-                #     data={"product": offer_dict},
-                #     delivery_id=f"{job_id}_single"
-                # )
+                    # ── Persist to database ──────────────────────────────────
+                    save_offer_to_db(offer_dict, job_id)
+
+                    logger.info(f"Writing single offer row directly to Excel: {offer_dict['product_name']}")
+                    write_offer_row(offer_dict)
 
             except Exception as e:
                 error_trace = traceback.format_exc()
