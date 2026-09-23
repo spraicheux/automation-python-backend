@@ -6,6 +6,7 @@ import traceback
 import tempfile
 import logging
 from datetime import datetime
+from typing import Optional
 
 from core.file_download import resolve_attachment_bytes
 from schemas.output import OfferItem
@@ -257,17 +258,136 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     fx = ai_fx if (currency == 'EUR' or ai_fx != 1.0) else _FALLBACK_FX.get(currency, 1.0)
     safe_data['fx_rate'] = fx
 
-    pu  = safe_data.get('price_per_unit')  or 0.0
-    pc  = safe_data.get('price_per_case')  or 0.0
+    pu = safe_data.get('price_per_unit')
+    pc = safe_data.get('price_per_case')
 
-    if currency == 'EUR':
-        safe_data['price_per_unit_eur'] = round(pu, 4)
-        safe_data['price_per_case_eur'] = round(pc, 4)
-    else:
-        safe_data['price_per_unit_eur'] = round(pu * fx, 4)
-        safe_data['price_per_case_eur'] = round(pc * fx, 4)
+    def _conv(v):
+        if v is None:
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return round(v * fx, 4) if currency != 'EUR' else round(v, 4)
+
+    safe_data['price_per_unit_eur'] = _conv(pu)
+    safe_data['price_per_case_eur'] = _conv(pc)
 
     return safe_data
+
+
+# ─── MOQ / QUANTITY normalization ──────────────────────────────────────────────
+def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
+    """
+    Convert AI-extracted MOQ and quantity to CASES only, using units_per_case.
+    Preserves original unit; flags conversions. See RULE 0.3 in openai_client.py.
+    """
+    upc = safe_data.get('units_per_case')
+    try:
+        upc = float(upc) if upc not in (None, 0, "0", "") else None
+    except (TypeError, ValueError):
+        upc = None
+
+    def _to_float(v):
+        try:
+            return float(v) if v not in (None, "", "Not Found") else None
+        except (TypeError, ValueError):
+            return None
+
+    # ── MOQ ─────────────────────────────────────────────────────────────
+    moq_cases = _to_float(safe_data.get('moq_cases'))
+    moq_bottles = _to_float(safe_data.get('moq_bottles'))
+    moq_unit = (safe_data.get('moq_unit') or '').lower().strip()
+
+    if moq_unit == 'bottles' and moq_bottles:
+        if upc:
+            converted = round(moq_bottles / upc, 2)
+            safe_data['moq_cases'] = converted
+            error_flags.append('MOQ converted from bottles to cases')
+        else:
+            safe_data['moq_cases'] = None
+            error_flags.append(f'MOQ in bottles ({int(moq_bottles)}), cases unknown (no units_per_case)')
+    elif moq_unit == 'pallets' and moq_cases is None:
+        # rare — leave null, flag
+        error_flags.append('MOQ in pallets, cases unknown')
+    elif moq_cases is not None and moq_cases > 10000 and upc and upc >= 2:
+        # sanity check: values >10k with a small case pack suggest the LLM stored bottles under moq_cases
+        # only trigger if moq_unit was NOT explicitly cases (defensive)
+        if moq_unit not in ('cases', 'case', 'cs'):
+            converted = round(moq_cases / upc, 2)
+            error_flags.append(f'MOQ auto-normalized {int(moq_cases)}→{converted} cases (looked like bottles)')
+            safe_data['moq_bottles'] = safe_data.get('moq_bottles') or moq_cases
+            safe_data['moq_cases'] = converted
+
+    safe_data['moq_bottles'] = _to_float(safe_data.get('moq_bottles'))
+
+    # ── quantity_case ───────────────────────────────────────────────────
+    qty = _to_float(safe_data.get('quantity_case'))
+    qty_unit = (safe_data.get('quantity_unit') or '').lower().strip()
+
+    if qty_unit == 'ftl':
+        safe_data['quantity_case'] = None
+        error_flags.append('Quantity: FTL (Full Truck Load)')
+    elif qty_unit == 'bottles' and qty:
+        if upc:
+            converted = round(qty / upc, 2)
+            safe_data['quantity_case'] = converted
+            error_flags.append(f'Quantity converted from {int(qty)} bottles to {converted} cases')
+        else:
+            error_flags.append(f'Quantity in bottles ({int(qty)}), cases unknown')
+
+    return safe_data
+
+
+# ─── offer_date parsing ────────────────────────────────────────────────────────
+_FRENCH_MONTHS = {
+    'janvier': 1, 'février': 2, 'fevrier': 2, 'mars': 3, 'avril': 4, 'mai': 5, 'juin': 6,
+    'juillet': 7, 'août': 8, 'aout': 8, 'septembre': 9, 'octobre': 10, 'novembre': 11, 'décembre': 12, 'decembre': 12,
+}
+
+
+def _parse_offer_date(raw) -> Optional[datetime]:
+    """
+    Parse the AI-extracted offer_date into a datetime. Handles:
+      - ISO 8601 (YYYY-MM-DD or full)
+      - French "11 mars 2026" / "11 mars 2026 à 14:40"
+      - English "March 11, 2026" / "11 March 2026"
+    Returns None on failure so the caller can fall back to utcnow.
+    """
+    if raw in (None, "", "Not Found"):
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    s = str(raw).strip()
+    # Strip common French time suffix
+    s = re.sub(r'\s+à\s+\d{1,2}[:h]\d{2}.*$', '', s, flags=re.IGNORECASE)
+
+    # Try ISO
+    for fmt in ('%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(s[:len(fmt) + 4], fmt) if fmt.endswith('S') else datetime.strptime(s[:10], fmt)
+        except (ValueError, TypeError):
+            pass
+
+    # French: "11 mars 2026"
+    m = re.match(r'(\d{1,2})\s+([a-zA-Zûéèçîôàâäïüö]+)\s+(\d{4})', s)
+    if m:
+        day, month_name, year = m.groups()
+        mo = _FRENCH_MONTHS.get(month_name.lower())
+        if mo:
+            try:
+                return datetime(int(year), mo, int(day))
+            except ValueError:
+                pass
+
+    # English "March 11, 2026" / "11 March 2026"
+    for fmt in ('%B %d, %Y', '%d %B %Y', '%d %b %Y', '%b %d, %Y'):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+
+    return None
 
 
 def _apply_offer_defaults(data: dict) -> dict:
@@ -462,17 +582,17 @@ async def process_offer(payload, job_id: str):
                         'packaging': merged_data.get('packaging') or "Bottle",
                         'packaging_raw': merged_data.get('packaging_raw') or "bottle",
                         'bottle_or_can_type': merged_data.get('bottle_or_can_type'),
-                        'unit_volume_ml': _safe_float(merged_data.get('unit_volume_ml'), 0),
-                        'units_per_case': _safe_float(merged_data.get('units_per_case'), 0),
+                        'unit_volume_ml': _safe_float(merged_data.get('unit_volume_ml')),
+                        'units_per_case': _safe_float(merged_data.get('units_per_case')),
                         'cases_per_pallet': merged_data.get('cases_per_pallet'),
                         'quantity_case': merged_data.get('quantity_case'),
                         'gift_box': merged_data.get('gift_box'),
                         'refillable_status': merged_data.get('refillable_status') or "",
                         'currency': merged_data.get('currency') or "EUR",
-                        'price_per_unit': _safe_float(merged_data.get('price_per_unit'), 0),
-                        'price_per_unit_eur': _safe_float(merged_data.get('price_per_unit_eur'), 0),
-                        'price_per_case': _safe_float(merged_data.get('price_per_case'), 0),
-                        'price_per_case_eur': _safe_float(merged_data.get('price_per_case_eur'), 0),
+                        'price_per_unit': _safe_float(merged_data.get('price_per_unit')),
+                        'price_per_unit_eur': _safe_float(merged_data.get('price_per_unit_eur')),
+                        'price_per_case': _safe_float(merged_data.get('price_per_case')),
+                        'price_per_case_eur': _safe_float(merged_data.get('price_per_case_eur')),
                         'fx_rate': _safe_float(merged_data.get('fx_rate'), 1.0),
                         'fx_date': merged_data.get('fx_date'),
                         'alcohol_percent': merged_data.get('alcohol_percent'),
@@ -482,6 +602,9 @@ async def process_offer(payload, job_id: str):
                         'location': merged_data.get('location') or "Not Found",
                         'lead_time': merged_data.get('lead_time') or "Not Found",
                         'moq_cases': merged_data.get('moq_cases'),
+                        'moq_bottles': merged_data.get('moq_bottles'),
+                        'moq_unit': merged_data.get('moq_unit'),
+                        'quantity_unit': merged_data.get('quantity_unit'),
                         'min_order_quantity_case': merged_data.get('min_order_quantity_case'),
                         'port': merged_data.get('port') or "Not Found",
                         'valid_until': merged_data.get('valid_until'),
@@ -517,6 +640,11 @@ async def process_offer(payload, job_id: str):
 
                     # ── Currency normalisation & EUR conversion ──────────────
                     safe_data = _normalize_currency_and_prices(safe_data)
+
+                    # ── MOQ / quantity unit-aware normalization (RULE 0.3) ───
+                    _flag_bucket = list(safe_data.get('error_flags') or [])
+                    safe_data = _normalize_moq_and_quantity(safe_data, _flag_bucket)
+                    safe_data['error_flags'] = _flag_bucket
 
                     # ── Parse units_per_case & unit_volume_ml from packaging ──
                     _pkg_str = str(safe_data.get('packaging') or '')
@@ -572,7 +700,7 @@ async def process_offer(payload, job_id: str):
                         lead_time=safe_data['lead_time'],
                         moq_cases=safe_data['moq_cases'],
                         valid_until=safe_data['valid_until'],
-                        offer_date=datetime.utcnow(),
+                        offer_date=(_parse_offer_date(merged_data.get('offer_date')) or datetime.utcnow()),
                         date_received=datetime.utcnow(),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
@@ -634,17 +762,17 @@ async def process_offer(payload, job_id: str):
                     'packaging': extracted_data.get('packaging') or "Bottle",
                     'packaging_raw': extracted_data.get('packaging_raw') or "bottle",
                     'bottle_or_can_type': extracted_data.get('bottle_or_can_type'),
-                    'unit_volume_ml': _safe_float(extracted_data.get('unit_volume_ml'), 0),
-                    'units_per_case': _safe_float(extracted_data.get('units_per_case'), 0),
+                    'unit_volume_ml': _safe_float(extracted_data.get('unit_volume_ml')),
+                    'units_per_case': _safe_float(extracted_data.get('units_per_case')),
                     'cases_per_pallet': extracted_data.get('cases_per_pallet'),
                     'quantity_case': extracted_data.get('quantity_case'),
                     'gift_box': extracted_data.get('gift_box'),
                     'refillable_status': extracted_data.get('refillable_status') or "",
                     'currency': extracted_data.get('currency') or "EUR",
-                    'price_per_unit': _safe_float(extracted_data.get('price_per_unit'), 0),
-                    'price_per_unit_eur': _safe_float(extracted_data.get('price_per_unit_eur'), 0),
-                    'price_per_case': _safe_float(extracted_data.get('price_per_case'), 0),
-                    'price_per_case_eur': _safe_float(extracted_data.get('price_per_case_eur'), 0),
+                    'price_per_unit': _safe_float(extracted_data.get('price_per_unit')),
+                    'price_per_unit_eur': _safe_float(extracted_data.get('price_per_unit_eur')),
+                    'price_per_case': _safe_float(extracted_data.get('price_per_case')),
+                    'price_per_case_eur': _safe_float(extracted_data.get('price_per_case_eur')),
                     'fx_rate': _safe_float(extracted_data.get('fx_rate'), 1.0),
                     'fx_date': extracted_data.get('fx_date'),
                     'alcohol_percent': extracted_data.get('alcohol_percent'),
@@ -654,6 +782,9 @@ async def process_offer(payload, job_id: str):
                     'location': extracted_data.get('location') or "Not Found",
                     'lead_time': extracted_data.get('lead_time') or "Not Found",
                     'moq_cases': extracted_data.get('moq_cases'),
+                    'moq_bottles': extracted_data.get('moq_bottles'),
+                    'moq_unit': extracted_data.get('moq_unit'),
+                    'quantity_unit': extracted_data.get('quantity_unit'),
                     'min_order_quantity_case': extracted_data.get('min_order_quantity_case'),
                     'port': extracted_data.get('port') or "Not Found",
                     'valid_until': extracted_data.get('valid_until'),
@@ -722,7 +853,7 @@ async def process_offer(payload, job_id: str):
                     lead_time=safe_data['lead_time'],
                     moq_cases=safe_data['moq_cases'],
                     valid_until=safe_data['valid_until'],
-                    offer_date=datetime.utcnow(),
+                    offer_date=(_parse_offer_date(extracted_data.get('offer_date')) or datetime.utcnow()),
                     date_received=datetime.utcnow(),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],

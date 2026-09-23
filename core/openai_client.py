@@ -20,6 +20,73 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # SHARED EXTRACTION RULES — used in BOTH extract_offer and Excel batch prompts
 # ──────────────────────────────────────────────────────────────────────────────
 SHARED_EXTRACTION_RULES = """
+══════════════════════════════════════════════════════════════════════
+RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
+══════════════════════════════════════════════════════════════════════
+
+0.1  COMPLETENESS — YOU MUST EXTRACT EVERY DISTINCT PRODUCT
+     Do NOT summarize, sample, or truncate. If the source lists 3 products
+     (each with its own name/volume/price block), you MUST return 3 objects
+     — never fewer. Missing a product is a HARD FAILURE.
+
+     A "distinct product" = distinct line item with its own price OR its own
+     bottle size OR its own packaging. Two lines that share ONLY the brand
+     but differ in size/packaging are TWO products (e.g. "Grey Goose 70cl @
+     €16" and "Grey Goose 20cl @ €5.25" are two rows, not one).
+
+0.2  OFFER DATE — READ IT FROM THE HEADER, NEVER INVENT IT
+     Every email/PDF starts with a header block like:
+         De: <sender>
+         Objet: <subject>
+         Date: 11 mars 2026 à 14:40
+         À: <recipient>
+     The "Date:" line is the offer_date. Parse it to ISO 8601 (YYYY-MM-DD).
+     If forwarded ("Début du message réexpédié"), use the ORIGINAL "Date:"
+     line from the forwarded block, NOT the forwarding date.
+     If genuinely absent → offer_date: "Not Found". Never guess. Never use
+     today's date. Never use "Not Found" as a stand-in when the date IS in
+     the header — read it.
+
+0.3  MOQ + QUANTITY — UNIT AWARENESS IS MANDATORY
+     Sources express MOQ and quantity in cases, bottles, pallets, or FTL.
+     You MUST normalize to cases in moq_cases and quantity_case AND you
+     MUST record the original unit.
+
+     For MOQ:
+       - moq_cases   = the value expressed in CASES ONLY. Convert if needed.
+       - moq_bottles = if source used bottles, keep the raw bottle count.
+       - moq_unit    = "cases" | "bottles" | "pallets" | "ftl" | "unspecified".
+
+       Conversion: if source says "MOQ 45,240 Bottles" and units_per_case=6,
+         → moq_bottles=45240, moq_cases=7540 (45240/6), moq_unit="bottles"
+         → also add error_flag: "MOQ converted from bottles to cases".
+
+       If units_per_case is unknown, still record moq_bottles and moq_unit;
+       leave moq_cases as null and flag "MOQ in bottles, cases unknown".
+
+     For quantity offered (quantity_case): same principle.
+       - "600 cs" → quantity_case=600, quantity_unit="cases"
+       - "9600 btls" with 6-bottle case → quantity_case=1600, quantity_unit="bottles"
+         flag: "Quantity converted from bottles to cases"
+       - "FTL" → quantity_case=null, quantity_unit="ftl", flag: "Quantity: FTL (Full Truck Load)"
+
+0.4  NULL vs ZERO — NEVER USE 0 OR "Not Found" FOR NUMBERS
+     For numeric fields (price_per_unit, price_per_case, price_per_unit_eur,
+     price_per_case_eur, unit_volume_ml, units_per_case, cases_per_pallet,
+     quantity_case, moq_cases, moq_bottles, alcohol_percent, fx_rate):
+       - If the value is stated → number (float/int).
+       - If NOT stated → JSON null. NEVER 0, "0", "", or "Not Found".
+     Zero is a real commercial value (free sample, promo). Don't corrupt it
+     by using 0 as a "missing" sentinel.
+
+0.5  PRODUCT IDENTITY — BRAND IS SEPARATE FROM VARIANT
+     product_name is the SPECIFIC EXPRESSION / VARIANT (e.g. "Original",
+     "Añejo", "Reposado G", "12YO Sherry Oak", "Classic Martini RTD
+     Cocktail"). Never include the brand in product_name.
+     brand is the family (e.g. "Grey Goose", "Don Julio", "The Macallan",
+     "Olmeca"). Always uppercase-then-titlecase the brand exactly as printed.
+
+══════════════════════════════════════════════════════════════════════
 SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - uid: Unique internal ID for each row (DO NOT generate - leave as "Not Found")
 - product_key: Logical ID for deduplication (brand + name + volume + packaging). UPPERCASE with underscores.
@@ -52,7 +119,7 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - supplier_email: Email address of the sender/supplier extracted from "De:" or "From:" header.
 - supplier_reference: Supplier offer reference.
 - supplier_country: Supplier's country.
-- offer_date: Date of the offer (leave as "Not Found").
+- offer_date: Date of the offer, parsed from the email/PDF header "Date:" line to YYYY-MM-DD (see RULE 0.2). "Not Found" ONLY when truly absent.
 - valid_until: Offer validity date.
 - date_received: Actual timestamp when received (leave as "Not Found").
 - source_channel: Source of data (leave as "Not Found").
@@ -67,7 +134,11 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - gift_box: Indicates if product includes gift box (GBX) or not (NGB). See RULE 9.
 - refillable_status: REF or NRF. Use "Not Found" if not stated.
 - custom_status: T1 or T2 customs status. Use "Not Found" if not stated.
-- moq_cases: Minimum order quantity stated in the offer (in cases).
+- moq_cases: MOQ EXPRESSED IN CASES ONLY (see RULE 0.3). Convert from bottles or pallets. null if unknown.
+- moq_bottles: Raw MOQ in bottles when source expressed it in bottles (see RULE 0.3). null otherwise.
+- moq_unit: "cases" | "bottles" | "pallets" | "ftl" | "unspecified" — the ORIGINAL unit used in the source.
+- quantity_case: Quantity offered EXPRESSED IN CASES (see RULE 0.3). null if unknown/FTL.
+- quantity_unit: "cases" | "bottles" | "pallets" | "ftl" | "unspecified" — the ORIGINAL unit used for quantity.
 
 ══════════════════════════════════════════════════════════════════════
 RULE 1 — CUSTOM STATUS (T1 / T2)  ⚠️ HIGHEST PRIORITY
