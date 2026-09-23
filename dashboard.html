@@ -313,6 +313,7 @@
       </div>
 
       <div class="filter-bar">
+        <select id="filter-brand" class="filter-select"><option value="">All Brands</option></select>
         <select id="filter-category" class="filter-select"><option value="">All Categories</option></select>
         <select id="filter-subcategory" class="filter-select"><option value="">All Sub-categories</option></select>
         <select id="filter-supplier" class="filter-select"><option value="">All Suppliers</option></select>
@@ -321,6 +322,21 @@
         <select id="filter-incoterm" class="filter-select"><option value="">All Incoterms</option></select>
         <select id="filter-location" class="filter-select"><option value="">All Locations</option></select>
         <select id="filter-currency" class="filter-select"><option value="">All Currencies</option></select>
+        <select id="filter-abv" class="filter-select" title="Alcohol % band">
+          <option value="">All ABV</option>
+          <option value="0-15">Under 15%</option>
+          <option value="15-25">15–25%</option>
+          <option value="25-40">25–40%</option>
+          <option value="40-50">40–50%</option>
+          <option value="50-100">50%+</option>
+        </select>
+        <select id="filter-availability" class="filter-select" title="Availability window">
+          <option value="">All Availability</option>
+          <option value="onfloor">On Floor / Stock</option>
+          <option value="short">≤ 2 weeks lead time</option>
+          <option value="mid">3–4 weeks</option>
+          <option value="long">5+ weeks</option>
+        </select>
         <select id="filter-custom-status" class="filter-select">
           <option value="">All Status</option>
           <option value="T1">T1</option>
@@ -344,10 +360,21 @@
       <div class="toolbar">
         <div class="count"><b id="records-count">—</b> offers shown of <b id="records-total">—</b></div>
         <div class="sort-wrap">
-          Sort by:
-          <select id="sort-select" class="filter-select" style="min-width: 180px;">
+          Benchmark:
+          <select id="benchmark-window" class="filter-select" style="min-width: 90px;" title="Historical benchmark window">
+            <option value="1M">1M</option>
+            <option value="3M">3M</option>
+            <option value="6M">6M</option>
+            <option value="12M" selected>12M</option>
+            <option value="24M">24M</option>
+            <option value="ALL">ALL</option>
+          </select>
+          &nbsp;·&nbsp; Sort by:
+          <select id="sort-select" class="filter-select" style="min-width: 210px;">
+            <option value="quality_desc">Cleanest data first</option>
             <option value="price_per_unit_eur_asc">Lowest €/Unit</option>
             <option value="price_per_case_eur_asc">Lowest €/Case</option>
+            <option value="delta_low_asc">Best vs Xm Low</option>
             <option value="offer_date_desc">Newest offer</option>
             <option value="quantity_case_desc">Largest quantity</option>
             <option value="supplier_asc">Supplier A-Z</option>
@@ -365,6 +392,8 @@
               <th>Supplier</th>
               <th class="sortable" data-sort="quantity_case_desc">Qty</th>
               <th class="sortable" data-sort="price_per_unit_eur_asc" style="text-align:right;">€/Unit</th>
+              <th style="text-align:right;" title="Historical low €/Unit within selected window">Xm Low</th>
+              <th style="text-align:right;" title="% delta vs Xm Low">Δ Low</th>
               <th class="sortable" data-sort="price_per_case_eur_asc" style="text-align:right;">€/Case</th>
               <th>Incoterm</th>
               <th>Location</th>
@@ -440,11 +469,11 @@
   // Offers
   let recordsSkip = 0, recordsTotal = 0, loadingRecords = false;
   let globalSearchText = "", customStatusFilter = "", flagStateFilter = "", ageDaysFilter = "";
-  let filters = { category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"" };
-  let sortKey = "offer_date_desc";
+  let filters = { brand:"", category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"", abv:"", availability:"" };
+  let sortKey = "quality_desc";  // default: cleanest data first
   let allRawItemsCache = [];
   const availableFilters = {
-    category: new Set(), sub_category: new Set(), supplier: new Set(),
+    brand: new Set(), category: new Set(), sub_category: new Set(), supplier: new Set(),
     bottle: new Set(), packaging: new Set(), incoterm: new Set(),
     location: new Set(), currency: new Set(),
   };
@@ -453,6 +482,10 @@
   let bpSkip = 0, bpTotal = 0, loadingBp = false;
   let bpSearch = "", bpCategory = "", bpSubCategory = "";
   const bpAvail = { category: new Set(), sub_category: new Set() };
+
+  // Historical benchmark
+  let benchmarkWindow = "12M";
+  let benchmarks = {};   // peer_key -> {low_eur, low_uid, avg_eur, samples}
 
   // ─── Boot ───────────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
@@ -487,7 +520,7 @@
 
   function initApp() {
     loadSources();
-    loadRecords(true);
+    loadBenchmarks().then(() => loadRecords(true));
 
     document.getElementById('source-search').addEventListener('input', filterSourceList);
     document.getElementById('sidebar-toggle').addEventListener('click', () =>
@@ -499,6 +532,7 @@
       customStatusFilter = document.getElementById('filter-custom-status').value;
       flagStateFilter = document.getElementById('filter-flag-state').value;
       ageDaysFilter = document.getElementById('filter-age').value;
+      filters.brand = document.getElementById('filter-brand').value;
       filters.category = document.getElementById('filter-category').value;
       filters.sub_category = document.getElementById('filter-subcategory').value;
       filters.supplier = document.getElementById('filter-supplier').value;
@@ -507,16 +541,25 @@
       filters.incoterm = document.getElementById('filter-incoterm').value;
       filters.location = document.getElementById('filter-location').value;
       filters.currency = document.getElementById('filter-currency').value;
+      filters.abv = document.getElementById('filter-abv').value;
+      filters.availability = document.getElementById('filter-availability').value;
       sortKey = document.getElementById('sort-select').value;
       loadRecords(true);
     };
     document.getElementById('global-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerFilters, 350); });
-    ['filter-custom-status','filter-flag-state','filter-age','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','sort-select']
+    document.getElementById('benchmark-window').addEventListener('change', async () => {
+      benchmarkWindow = document.getElementById('benchmark-window').value;
+      await loadBenchmarks();
+      // re-render current items so Xm Low columns update
+      const filtered = sortItems(applyClientFilters(allRawItemsCache), sortKey);
+      renderOffersTable(filtered);
+    });
+    ['filter-custom-status','filter-flag-state','filter-age','filter-brand','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','filter-abv','filter-availability','sort-select']
       .forEach(id => document.getElementById(id).addEventListener('change', triggerFilters));
 
     document.getElementById('reset-filters-btn').addEventListener('click', () => {
       document.getElementById('global-search').value = '';
-      ['filter-custom-status','filter-flag-state','filter-age','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency']
+      ['filter-custom-status','filter-flag-state','filter-age','filter-brand','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','filter-abv','filter-availability']
         .forEach(id => document.getElementById(id).value = '');
       globalSearchText = ''; customStatusFilter = ''; flagStateFilter = ''; ageDaysFilter = '';
       Object.keys(filters).forEach(k => filters[k] = '');
@@ -602,6 +645,36 @@
     loadRecords(true);
   };
 
+  // ─── Historical benchmark ───────────────────────────────────────────────────
+  async function loadBenchmarks() {
+    try {
+      const res = await fetch(`${API_BASE}/api/benchmarks?window=${encodeURIComponent(benchmarkWindow)}`,
+        { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      if (!res.ok) { benchmarks = {}; return; }
+      const data = await res.json();
+      benchmarks = data.peers || {};
+    } catch (_) { benchmarks = {}; }
+  }
+
+  function peerKey(item) {
+    const brand = (item.brand || '').toLowerCase();
+    const name = (item.product_name || '').toLowerCase();
+    const vol = item.unit_volume_ml || 0;
+    const upc = item.units_per_case || 0;
+    return `${brand}|${name}|${vol}|${upc}`;
+  }
+
+  function getBenchmark(item) {
+    const p = benchmarks[peerKey(item)];
+    if (!p) return null;
+    const cur = item.price_per_unit_eur;
+    if (cur == null || p.low_eur == null || p.samples < 1) return { ...p, delta: null };
+    const delta = ((cur - p.low_eur) / p.low_eur) * 100;
+    const isNewLow = cur <= p.low_eur + 0.001; // fp tolerance
+    const deltaAvg = p.avg_eur ? ((cur - p.avg_eur) / p.avg_eur) * 100 : null;
+    return { ...p, delta, delta_avg: deltaAvg, is_new_low: isNewLow };
+  }
+
   // ─── Records ────────────────────────────────────────────────────────────────
   async function loadRecords(reset = false) {
     if (loadingRecords) return;
@@ -650,6 +723,7 @@
   function loadMoreRecords() { loadRecords(false); }
 
   function collectFilterValues(i) {
+    if (i.brand && i.brand !== 'Not Found') availableFilters.brand.add(i.brand);
     if (i.category) availableFilters.category.add(i.category);
     if (i.sub_category) availableFilters.sub_category.add(i.sub_category);
     if (i.supplier_name) availableFilters.supplier.add(i.supplier_name);
@@ -660,6 +734,7 @@
     if (i.currency) availableFilters.currency.add(i.currency);
   }
   function applyDropdownUpdates() {
+    updateDropdown('filter-brand', availableFilters.brand, 'All Brands', filters.brand);
     updateDropdown('filter-category', availableFilters.category, 'All Categories', filters.category);
     updateDropdown('filter-subcategory', availableFilters.sub_category, 'All Sub-categories', filters.sub_category);
     updateDropdown('filter-supplier', availableFilters.supplier, 'All Suppliers', filters.supplier);
@@ -697,14 +772,60 @@
         const age = now - new Date(dt).getTime();
         if (isNaN(age) || age > ageCutoffMs) return false;
       }
+      if (filters.brand && i.brand !== filters.brand) return false;
       if (filters.supplier && i.supplier_name !== filters.supplier) return false;
       if (filters.bottle && String(i.unit_volume_ml) !== filters.bottle) return false;
       if (filters.packaging && i.packaging !== filters.packaging) return false;
       if (filters.incoterm && i.incoterm !== filters.incoterm) return false;
       if (filters.location && i.location !== filters.location) return false;
       if (filters.currency && i.currency !== filters.currency) return false;
+      if (filters.abv) {
+        const [lo, hi] = filters.abv.split('-').map(Number);
+        const a = i.alcohol_percent;
+        if (a == null || a < lo || a >= hi) return false;
+      }
+      if (filters.availability) {
+        const lt = (i.lead_time || '').toLowerCase();
+        const availTag = availabilityBucket(lt);
+        if (availTag !== filters.availability) return false;
+      }
       return true;
     });
+  }
+
+  function availabilityBucket(leadTime) {
+    if (!leadTime) return '';
+    const s = leadTime.toLowerCase();
+    if (/(on\s*floor|stock|ready|available now|in\s*stock)/.test(s)) return 'onfloor';
+    const weeks = parseInt(s.match(/(\d+)\s*(?:week|wk)/)?.[1]);
+    if (!weeks) return '';
+    if (weeks <= 2) return 'short';
+    if (weeks <= 4) return 'mid';
+    return 'long';
+  }
+
+  // Quality score: how "complete" a row is. Higher = cleaner. Used by the default sort.
+  function qualityScore(i) {
+    const fc = classifyFlags(i.error_flags || []);
+    let s = 0;
+    if (i.brand && i.brand !== 'Not Found') s += 5;
+    if (i.product_name && i.product_name !== 'Not Found') s += 5;
+    if (i.unit_volume_ml) s += 5;
+    if (i.units_per_case) s += 4;
+    if (i.alcohol_percent != null) s += 3;
+    if (i.price_per_unit_eur != null || i.price_per_case_eur != null) s += 8;
+    if (i.currency) s += 2;
+    if (i.quantity_case != null) s += 5;
+    if (i.moq_cases != null) s += 3;
+    if (i.incoterm && i.incoterm !== 'Not Found') s += 5;
+    if (i.location && i.location !== 'Not Found') s += 5;
+    if (i.supplier_name && i.supplier_name !== 'Not Found') s += 4;
+    if (i.offer_date) s += 4;
+    if (i.custom_status) s += 3;
+    // penalties
+    if (i.needs_manual_review) s -= 15;
+    s -= fc.needs.length * 4;
+    return s;
   }
 
   // ─── Relative-age helper ────────────────────────────────────────────────────
@@ -728,6 +849,8 @@
     const withNulls = (val, dir) => val == null ? (dir === 'asc' ? Infinity : -Infinity) : val;
     const cmp = (a, b, dir=1) => (a < b ? -1 : a > b ? 1 : 0) * dir;
     switch (key) {
+      case 'quality_desc':
+        return [...items].sort((a,b) => qualityScore(b) - qualityScore(a));
       case 'price_per_unit_eur_asc':
         return [...items].sort((a,b) => cmp(withNulls(a.price_per_unit_eur, 'asc'), withNulls(b.price_per_unit_eur, 'asc'), 1));
       case 'price_per_case_eur_asc':
@@ -738,6 +861,12 @@
         return [...items].sort((a,b) => cmp(withNulls(a.quantity_case, 'desc'), withNulls(b.quantity_case, 'desc'), -1));
       case 'supplier_asc':
         return [...items].sort((a,b) => (a.supplier_name || '').localeCompare(b.supplier_name || ''));
+      case 'delta_low_asc':
+        return [...items].sort((a,b) => {
+          const ba = getBenchmark(a); const bb = getBenchmark(b);
+          const da = ba?.delta ?? Infinity; const db = bb?.delta ?? Infinity;
+          return da - db;
+        });
       default: return items;
     }
   }
@@ -776,6 +905,20 @@
     const qty = i.quantity_case != null ? `${Number(i.quantity_case)} cs` : nullCell();
     const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : nullCell();
     const pcEur = i.price_per_case_eur != null ? `€${Number(i.price_per_case_eur).toFixed(2)}` : nullCell();
+
+    // Historical benchmark cell
+    const bench = getBenchmark(i);
+    let lowCell = nullCell(), deltaCell = nullCell();
+    if (bench && bench.low_eur != null) {
+      lowCell = `<span title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)}">€${bench.low_eur.toFixed(2)}</span>`;
+      if (bench.is_new_low) {
+        deltaCell = `<span class="delta-badge best" title="This offer is the lowest we've seen in the last ${benchmarkWindow}">NEW ${benchmarkWindow} LOW</span>`;
+      } else if (bench.delta != null) {
+        const sign = bench.delta >= 0 ? '+' : '';
+        const cls = bench.delta <= 5 ? 'best' : (bench.delta <= 15 ? '' : 'up');
+        deltaCell = `<span class="delta-badge ${cls}">${sign}${bench.delta.toFixed(1)}%</span>`;
+      }
+    }
     const incoterm = i.incoterm && i.incoterm !== 'Not Found' ? `<span class="pill">${escapeHtml(i.incoterm)}</span>` : nullCell();
     const loc = i.location && i.location !== 'Not Found' ? escapeHtml(i.location) : nullCell();
     const ageInfo = formatAge(i.offer_date || i.created_at);
@@ -817,6 +960,8 @@
       <td class="supplier">${sup}</td>
       <td class="qty">${qty}</td>
       <td class="price">${puEur}</td>
+      <td class="price dim">${lowCell}</td>
+      <td class="price dim" style="text-align:right;">${deltaCell}</td>
       <td class="price">${pcEur}</td>
       <td class="incoterm">${incoterm}</td>
       <td class="location">${loc}</td>

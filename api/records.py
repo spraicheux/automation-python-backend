@@ -1,12 +1,95 @@
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional
 from core.database import get_db
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
+
+
+_WINDOW_DAYS = {"1M": 30, "3M": 90, "6M": 182, "12M": 365, "24M": 730, "ALL": None}
+
+
+@router.get("/benchmarks")
+async def get_benchmarks(
+    window: str = Query("12M", description="Time window: 1M | 3M | 6M | 12M | 24M | ALL"),
+    db: Session = Depends(get_db),
+):
+    """
+    Historical benchmark per genuinely comparable peer group.
+    Peer key = LOWER(brand) + LOWER(product_name) + unit_volume_ml + units_per_case.
+
+    Returns:
+    {
+      "window": "12M",
+      "window_days": 365,
+      "peers": {
+        "grey goose|original|700|6": {
+          "low_eur":  15.15,
+          "low_uid":  "abc-…",
+          "avg_eur":  16.42,
+          "samples":  8,
+          "since":    "2025-09-23"
+        },
+        ...
+      }
+    }
+    """
+    window = window.upper() if window else "12M"
+    days = _WINDOW_DAYS.get(window, 365)
+    cutoff = datetime.utcnow() - timedelta(days=days) if days else None
+
+    q = db.query(
+        func.lower(func.coalesce(OfferItemDB.brand, '')).label('brand_lc'),
+        func.lower(func.coalesce(OfferItemDB.product_name, '')).label('name_lc'),
+        func.coalesce(OfferItemDB.unit_volume_ml, 0).label('vol'),
+        func.coalesce(OfferItemDB.units_per_case, 0).label('upc'),
+        OfferItemDB.uid,
+        OfferItemDB.price_per_unit_eur,
+        OfferItemDB.offer_date,
+    ).filter(OfferItemDB.price_per_unit_eur.isnot(None))
+    if cutoff:
+        q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) >= cutoff)
+
+    rows = q.all()
+    peers = {}
+    for r in rows:
+        key = f"{r.brand_lc}|{r.name_lc}|{r.vol}|{r.upc}"
+        p = peers.get(key)
+        if p is None:
+            peers[key] = {
+                "low_eur": r.price_per_unit_eur,
+                "low_uid": r.uid,
+                "sum_eur": r.price_per_unit_eur,
+                "samples": 1,
+            }
+        else:
+            if r.price_per_unit_eur < p["low_eur"]:
+                p["low_eur"] = r.price_per_unit_eur
+                p["low_uid"] = r.uid
+            p["sum_eur"] += r.price_per_unit_eur
+            p["samples"] += 1
+
+    out = {
+        k: {
+            "low_eur": round(v["low_eur"], 4),
+            "low_uid": v["low_uid"],
+            "avg_eur": round(v["sum_eur"] / v["samples"], 4),
+            "samples": v["samples"],
+        }
+        for k, v in peers.items() if v["samples"] >= 1
+    }
+
+    return {
+        "window": window,
+        "window_days": days,
+        "since": cutoff.isoformat() if cutoff else None,
+        "peers": out,
+        "peer_count": len(out),
+    }
 
 
 @router.get("/records")
