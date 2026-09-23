@@ -196,6 +196,8 @@
     .delta-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; }
     .delta-badge.best { background: rgba(52,211,153,0.15); color: var(--green); }
     .delta-badge.up { background: rgba(248,113,113,0.12); color: var(--red); }
+    .xm-low-link { color: var(--green); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+    .xm-low-link:hover { color: var(--accent); }
     .bp-mono { font-family: 'DM Mono', monospace; }
 
     /* ─── Detail drawer ─── */
@@ -231,6 +233,18 @@
     .price-hero .original { display: flex; flex-direction: column; margin-left: auto; padding-left: 12px; border-left: 1px solid var(--border); }
     .price-hero .original .small { font-family: 'DM Mono', monospace; font-size: 14px; color: var(--text); }
     .price-hero .original .fx { font-size: 10px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 2px; }
+
+    /* Benchmark mini-strip inside the drawer */
+    .bench-strip { display: flex; gap: 24px; padding: 12px 14px; margin-top: 14px; background: rgba(52,211,153,0.05); border: 1px solid rgba(52,211,153,0.2); border-radius: 10px; font-size: 12px; flex-wrap: wrap; }
+    .bench-strip .b-lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
+    .bench-strip .b-val { font-family: 'DM Mono', monospace; color: white; font-size: 15px; font-weight: 700; margin-top: 2px; }
+    .bench-strip .b-val a { color: var(--green); text-decoration: underline dotted; text-underline-offset: 3px; }
+    .bench-strip .b-delta { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; margin-left: 6px; vertical-align: 2px; }
+    .bench-strip .b-delta.best { background: rgba(52,211,153,0.15); color: var(--green); }
+    .bench-strip .b-delta.warn { background: rgba(248,113,113,0.12); color: var(--red); }
+    .bench-strip .b-delta.mid  { background: rgba(251,191,36,0.1); color: var(--amber); }
+    .bench-strip .b-meta { color: var(--muted); font-size: 11px; margin-top: 4px; font-family: 'DM Mono', monospace; }
+    .bench-strip .b-empty { color: var(--muted); font-style: italic; }
 
     .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
     .kv-grid.three { grid-template-columns: 1fr 1fr 1fr; }
@@ -890,9 +904,20 @@
       return;
     }
     tbody.innerHTML = items.map((i, idx) => rowHtml(i, idx)).join('');
-    // Row click → drawer
+    // Row click → drawer for that row
     [...tbody.querySelectorAll('tr[data-uid]')].forEach(tr => {
-      tr.addEventListener('click', () => openDrawer(items.find(x => x.uid === tr.dataset.uid)));
+      tr.addEventListener('click', (e) => {
+        // Clicks on the Xm Low link get their own handler below and stop propagation.
+        if (e.target.closest('.xm-low-link')) return;
+        openDrawer(items.find(x => x.uid === tr.dataset.uid));
+      });
+    });
+    // Xm Low click → open drawer for the historical low offer
+    [...tbody.querySelectorAll('.xm-low-link')].forEach(a => {
+      a.addEventListener('click', async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        await openDrawerByUid(a.dataset.uid);
+      });
     });
   }
 
@@ -910,13 +935,17 @@
     const bench = getBenchmark(i);
     let lowCell = nullCell(), deltaCell = nullCell();
     if (bench && bench.low_eur != null) {
-      lowCell = `<span title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)}">€${bench.low_eur.toFixed(2)}</span>`;
+      const clickable = bench.low_uid && bench.low_uid !== i.uid;
+      const lowLink = clickable
+        ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.low_uid)}" title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)} · click to see the offer behind this low">€${bench.low_eur.toFixed(2)}</a>`
+        : `<span title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)}">€${bench.low_eur.toFixed(2)}</span>`;
+      lowCell = lowLink;
       if (bench.is_new_low) {
-        deltaCell = `<span class="delta-badge best" title="This offer is the lowest we've seen in the last ${benchmarkWindow}">NEW ${benchmarkWindow} LOW</span>`;
+        deltaCell = `<span class="delta-badge best" title="This offer IS the lowest we've seen in the last ${benchmarkWindow} (${bench.samples} samples)">NEW ${benchmarkWindow} LOW</span>`;
       } else if (bench.delta != null) {
         const sign = bench.delta >= 0 ? '+' : '';
         const cls = bench.delta <= 5 ? 'best' : (bench.delta <= 15 ? '' : 'up');
-        deltaCell = `<span class="delta-badge ${cls}">${sign}${bench.delta.toFixed(1)}%</span>`;
+        deltaCell = `<span class="delta-badge ${cls}" title="${bench.delta.toFixed(2)}% above the ${benchmarkWindow} low of €${bench.low_eur.toFixed(2)}">${sign}${bench.delta.toFixed(1)}%</span>`;
       }
     }
     const incoterm = i.incoterm && i.incoterm !== 'Not Found' ? `<span class="pill">${escapeHtml(i.incoterm)}</span>` : nullCell();
@@ -1032,6 +1061,26 @@
     document.getElementById('drawer-scrim').classList.remove('open');
   }
 
+  async function openDrawerByUid(uid) {
+    if (!uid) return;
+    const cached = allRawItemsCache.find(x => x.uid === uid);
+    if (cached) { openDrawer(cached); return; }
+    // Fall back to a targeted fetch — best-effort, records API doesn't have a by-uid endpoint,
+    // so we page through until we find it. Small dataset so this is acceptable.
+    try {
+      for (let skip = 0; skip < 5000; skip += 200) {
+        const res = await fetch(`${API_BASE}/api/records?skip=${skip}&limit=200`,
+          { headers: { 'Authorization': `Bearer ${currentToken}` } });
+        if (!res.ok) break;
+        const data = await res.json();
+        const hit = (data.records || []).find(x => x.uid === uid);
+        if (hit) { openDrawer(hit); return; }
+        if (!data.records || data.records.length < 200) break;
+      }
+    } catch(_) {}
+    alert('Could not find that historical offer in the current dataset.');
+  }
+
   function drawerBodyHtml(i) {
     const flags = classifyFlags(i.error_flags || []);
     const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : '—';
@@ -1061,6 +1110,7 @@
             </div>
           ` : ''}
         </div>
+        ${benchmarkBlock(i)}
       </div>
 
       <!-- COMMERCIAL -->
@@ -1150,6 +1200,41 @@
       </div>
     `;
   }
+  function benchmarkBlock(i) {
+    const b = getBenchmark(i);
+    if (!b || b.low_eur == null) {
+      return `<div class="bench-strip"><span class="b-empty">No comparable history in the last ${benchmarkWindow} yet.</span></div>`;
+    }
+    const cur = i.price_per_unit_eur;
+    const dSign = (v) => v >= 0 ? '+' : '';
+    const dCls = (v) => v <= 5 ? 'best' : (v <= 15 ? 'mid' : 'warn');
+    const dAvgCls = (v) => v <= -5 ? 'best' : (v <= 5 ? 'mid' : 'warn');
+    const lowLink = b.low_uid && b.low_uid !== i.uid
+      ? `<a href="#" onclick="event.preventDefault(); openDrawerByUid('${escapeAttr(b.low_uid)}')">€${b.low_eur.toFixed(2)}</a>`
+      : `€${b.low_eur.toFixed(2)}`;
+    const dLowHtml = (b.delta != null && !b.is_new_low)
+      ? `<span class="b-delta ${dCls(b.delta)}">${dSign(b.delta)}${b.delta.toFixed(1)}%</span>`
+      : (b.is_new_low ? `<span class="b-delta best">NEW ${benchmarkWindow} LOW</span>` : '');
+    const dAvgHtml = (b.delta_avg != null)
+      ? `<span class="b-delta ${dAvgCls(b.delta_avg)}">${dSign(b.delta_avg)}${b.delta_avg.toFixed(1)}%</span>`
+      : '';
+    return `<div class="bench-strip">
+      <div>
+        <div class="b-lbl">${benchmarkWindow} Low</div>
+        <div class="b-val">${lowLink} ${dLowHtml}</div>
+      </div>
+      <div>
+        <div class="b-lbl">${benchmarkWindow} Avg</div>
+        <div class="b-val">€${b.avg_eur.toFixed(2)} ${dAvgHtml}</div>
+      </div>
+      <div style="margin-left:auto;">
+        <div class="b-lbl">Samples</div>
+        <div class="b-val" style="font-size:14px;">${b.samples}</div>
+        <div class="b-meta">peers in ${benchmarkWindow}</div>
+      </div>
+    </div>`;
+  }
+
   function supplierRich(i) {
     if (!i.supplier_name) return null;
     const bits = [i.supplier_name];
