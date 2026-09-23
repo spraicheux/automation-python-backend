@@ -359,8 +359,8 @@
         <select id="filter-flag-state" class="filter-select" title="Filter by review flag state">
           <option value="">All Flag States</option>
           <option value="needs">⚠ Needs Review</option>
-          <option value="info">ℹ Calculated / Inferred</option>
-          <option value="ok">✓ Confirmed / No Issue</option>
+          <option value="info">ℹ Calculated / Inferred only</option>
+          <option value="ok">✓ No material issues</option>
         </select>
         <select id="filter-age" class="filter-select" title="Offer age">
           <option value="">All Ages</option>
@@ -776,9 +776,13 @@
         const c = classifyFlags(i.error_flags || []);
         const hasNeeds = c.needs.length > 0 || i.needs_manual_review;
         const hasInfo = c.info.length > 0;
+        // Needs Review: anything the extractor flagged as material
         if (flagStateFilter === 'needs' && !hasNeeds) return false;
+        // Calculated/Inferred: has info-level notes only (no material issues)
         if (flagStateFilter === 'info' && (!hasInfo || hasNeeds)) return false;
-        if (flagStateFilter === 'ok' && (hasNeeds || hasInfo)) return false;
+        // Confirmed/No Issue: no material issues (info flags are fine — they're
+        // just notes that the system did a normal calculation, not problems)
+        if (flagStateFilter === 'ok' && hasNeeds) return false;
       }
       if (ageCutoffMs) {
         const dt = i.offer_date || i.created_at;
