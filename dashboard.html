@@ -2,36 +2,42 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
-  <title>Offer Intelligence Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Offer Intelligence — Trading Desk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:        #0a0c12;
-      --surface:   #141822;
-      --card:      #1a1f2c;
-      --card-hover:#202536;
-      --border:    #2a3148;
-      --accent:    #5d9eff;
-      --accent-dim:#1e3a6e;
-      --green:     #2ecc71;
-      --amber:     #f39c12;
-      --red:       #e74c3c;
-      --purple:    #9b59b6;
-      --text:      #f0f3f8;
-      --text-dim:  #8e9ab0;
-      --muted:     #5b6a8c;
-      --pill:      #252e42;
-      --sidebar-w: 330px;
-      --header-h:  68px;
+      --bg:          #0a0c12;
+      --surface:     #141822;
+      --card:        #1a1f2c;
+      --card-hover:  #202536;
+      --row-hover:   #1e2434;
+      --row-alt:     #171b26;
+      --border:      #2a3148;
+      --border-soft: #212739;
+      --accent:      #5d9eff;
+      --accent-2:    #7dbaff;
+      --accent-dim:  #1e3a6e;
+      --green:       #34d399;
+      --amber:       #fbbf24;
+      --red:         #f87171;
+      --purple:      #a78bfa;
+      --text:        #f0f3f8;
+      --text-dim:    #8e9ab0;
+      --muted:       #5b6a8c;
+      --pill:        #252e42;
+      --sidebar-w:   280px;
+      --drawer-w:    620px;
+      --header-h:    64px;
+      --toolbar-h:   58px;
     }
 
-    body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+    body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow: hidden; }
 
-    /* Login */
+    /* ─── Login ─── */
     #login-overlay { position: fixed; inset: 0; background: rgba(10,12,18,0.98); z-index: 9999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
     .login-box { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 36px; width: 100%; max-width: 380px; box-shadow: 0 20px 35px rgba(0,0,0,0.5); }
     .login-box h2 { text-align: center; margin-bottom: 24px; font-size: 22px; font-weight: 600; }
@@ -39,119 +45,201 @@
     .login-btn { width: 100%; padding: 12px; font-size: 15px; margin-top: 8px; border-radius: 12px; }
     .login-err { color: var(--red); font-size: 13px; text-align: center; margin-top: 12px; display: none; }
 
-    /* Header */
-    header { height: var(--header-h); background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 28px; gap: 16px; position: sticky; top: 0; z-index: 100; }
-    .logo-icon { width: 38px; height: 38px; background: linear-gradient(135deg, var(--accent), #3b6ec7); border-radius: 12px; display: grid; place-items: center; }
-    .logo-icon svg { width: 20px; height: 20px; }
-    header h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+    /* ─── Header ─── */
+    header { height: var(--header-h); background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 24px; gap: 16px; position: sticky; top: 0; z-index: 100; }
+    .logo-icon { width: 34px; height: 34px; background: linear-gradient(135deg, var(--accent), #3b6ec7); border-radius: 10px; display: grid; place-items: center; }
+    .logo-icon svg { width: 18px; height: 18px; }
+    header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
     header h1 span { color: var(--text-dim); font-weight: 500; }
-    .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
-    .stat-chip { background: var(--pill); border: 1px solid var(--border); border-radius: 40px; padding: 6px 16px; font-size: 13px; font-weight: 500; }
+    .header-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+    .stat-chip { background: var(--pill); border: 1px solid var(--border); border-radius: 40px; padding: 5px 14px; font-size: 12px; font-weight: 500; }
     .stat-chip b { color: var(--accent); font-weight: 700; margin-right: 4px; }
-    .nav-tab { background: transparent; border: 1px solid var(--border); border-radius: 12px; padding: 8px 18px; color: var(--text-dim); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+    .nav-tab { background: transparent; border: 1px solid var(--border); border-radius: 12px; padding: 7px 16px; color: var(--text-dim); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.15s; }
     .nav-tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
     .nav-tab:hover:not(.active) { background: var(--pill); color: var(--text); }
+    .logout-btn { background: transparent; border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+    .logout-btn:hover { border-color: var(--red); color: var(--red); }
 
-    /* Layout */
-    .layout { display: flex; flex: 1; overflow: hidden; height: calc(100vh - var(--header-h)); }
+    /* ─── Layout ─── */
+    .layout { display: flex; height: calc(100vh - var(--header-h)); }
 
-    /* Sidebar */
-    aside { width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
-    .aside-head { padding: 20px 18px 12px; border-bottom: 1px solid var(--border); }
-    .aside-head h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: 12px; }
+    /* Sidebar (source files) */
+    aside.sidebar { width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; transition: width 0.2s; }
+    aside.sidebar.collapsed { width: 0; border-right: none; }
+    .aside-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--border); }
+    .aside-head h2 { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: 8px; }
     .search-wrap { position: relative; }
-    .search-wrap svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 15px; color: var(--muted); }
-    #source-search { width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px 10px 36px; font-family: inherit; font-size: 13px; color: var(--text); outline: none; }
-    .source-list { flex: 1; overflow-y: auto; padding: 12px; }
-    .source-item, .source-all { padding: 12px 14px; border-radius: 12px; cursor: pointer; border: 1px solid transparent; transition: all 0.2s; margin-bottom: 6px; }
+    .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; color: var(--muted); }
+    #source-search { width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px 8px 32px; font-family: inherit; font-size: 12px; color: var(--text); outline: none; }
+    .source-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .source-item, .source-all { padding: 10px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; margin-bottom: 4px; }
     .source-item:hover, .source-all:hover { background: var(--card-hover); border-color: var(--border); }
     .source-item.active, .source-all.active { background: var(--accent-dim); border-color: var(--accent); }
-    .source-item-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .source-item-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-top: 4px; }
-    .source-badge { background: var(--pill); border-radius: 20px; padding: 2px 8px; font-size: 10px; font-family: monospace; }
-    .all-divider { border: none; border-top: 1px solid var(--border); margin: 8px 0 12px; }
+    .source-item-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .source-item-meta { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+    .source-badge { background: var(--pill); border-radius: 20px; padding: 2px 6px; font-size: 9px; font-family: 'DM Mono', monospace; }
+    .all-divider { border: none; border-top: 1px solid var(--border); margin: 6px 0 10px; }
+    .sidebar-toggle { position: absolute; top: 76px; left: var(--sidebar-w); background: var(--surface); border: 1px solid var(--border); border-left: none; width: 22px; height: 44px; border-radius: 0 8px 8px 0; display: grid; place-items: center; cursor: pointer; z-index: 50; transition: left 0.2s; }
+    .sidebar-toggle:hover { background: var(--card-hover); }
+    .sidebar-toggle svg { width: 12px; color: var(--text-dim); transition: transform 0.2s; }
+    aside.sidebar.collapsed + .sidebar-toggle { left: 0; }
+    aside.sidebar.collapsed + .sidebar-toggle svg { transform: rotate(180deg); }
 
     /* Main */
-    main { flex: 1; overflow-y: auto; padding: 28px 32px; background: var(--bg); }
-    .page { display: none; }
-    .page.active { display: block; }
-    .main-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
-    .main-head h2 { font-size: 20px; font-weight: 700; background: linear-gradient(135deg, #fff, var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-    .count-tag { background: var(--pill); border-radius: 40px; padding: 4px 14px; font-size: 13px; font-weight: 500; }
-    .filter-group { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; align-items: center; }
-    .filter-select { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; color: var(--text); font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer; min-width: 130px; outline: none; }
-    .search-input-main { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; color: var(--text); font-family: inherit; font-size: 13px; outline: none; width: 220px; }
-    .reset-filters { background: transparent; border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; color: var(--text-dim); font-size: 12px; cursor: pointer; transition: 0.2s; font-family: inherit; }
+    main { flex: 1; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); }
+    .page { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    .page.active { display: flex; }
+
+    /* ─── Search bar (prominent) ─── */
+    .search-bar { padding: 16px 24px 0; }
+    .big-search { position: relative; max-width: 720px; }
+    .big-search svg { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); width: 18px; color: var(--muted); }
+    .big-search input { width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px 14px 46px; font-family: inherit; font-size: 15px; color: var(--text); outline: none; transition: border-color 0.15s; }
+    .big-search input:focus { border-color: var(--accent); }
+    .search-hint { font-size: 11px; color: var(--muted); margin-top: 6px; padding-left: 46px; }
+
+    /* Filters row */
+    .filter-bar { padding: 12px 24px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border-soft); }
+    .filter-select { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 7px 12px; color: var(--text); font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; min-width: 120px; outline: none; }
+    .filter-select:hover { border-color: var(--accent); }
+    .reset-filters { background: transparent; border: 1px solid var(--border); border-radius: 10px; padding: 7px 12px; color: var(--text-dim); font-size: 12px; cursor: pointer; font-family: inherit; }
     .reset-filters:hover { background: var(--pill); color: white; border-color: var(--accent); }
 
-    /* Records Grid */
-    .records-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 22px; }
+    /* Toolbar (count + sort) */
+    .toolbar { height: var(--toolbar-h); padding: 0 24px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--border-soft); }
+    .toolbar .count { font-size: 13px; color: var(--text-dim); }
+    .toolbar .count b { color: white; font-weight: 700; }
+    .toolbar .sort-wrap { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-dim); }
 
-    /* Record Card */
-    .record-card { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 20px; transition: all 0.2s ease; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
-    .record-card:hover { border-color: var(--accent); transform: translateY(-2px); background: var(--card-hover); }
-    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; gap: 12px; }
-    .card-product-name { font-size: 15px; font-weight: 700; line-height: 1.3; color: white; }
-    .card-category { background: var(--accent-dim); border-radius: 20px; padding: 3px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); flex-shrink: 0; white-space: nowrap; }
-    .card-meta-row { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .card-meta-row b { color: var(--accent); font-weight: 600; }
-    .meta-pill { font-size: 10px; background: var(--pill); padding: 2px 8px; border-radius: 12px; }
+    /* ─── Offers table ─── */
+    .table-scroll { flex: 1; overflow: auto; }
+    table.offers { width: 100%; border-collapse: separate; border-spacing: 0; font-family: 'DM Sans', sans-serif; }
+    table.offers thead th {
+      position: sticky; top: 0; z-index: 5;
+      background: var(--surface); font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--muted); font-weight: 700;
+      text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border);
+      white-space: nowrap; user-select: none;
+    }
+    table.offers thead th.sortable { cursor: pointer; }
+    table.offers thead th.sortable:hover { color: var(--accent); }
+    table.offers thead th .sort-arrow { display: inline-block; margin-left: 4px; opacity: 0.5; }
+    table.offers thead th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+    table.offers td { padding: 10px 14px; border-bottom: 1px solid var(--border-soft); font-size: 13px; vertical-align: middle; }
+    table.offers tbody tr { cursor: pointer; transition: background 0.1s; }
+    table.offers tbody tr:nth-child(even) td { background: var(--row-alt); }
+    table.offers tbody tr:hover td { background: var(--row-hover); }
+    table.offers tbody tr.needs-review td { border-left: none; }
+    table.offers tbody tr.needs-review td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+    td.product { max-width: 320px; }
+    .prod-brand { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--accent); font-weight: 700; }
+    .prod-name  { font-weight: 600; color: white; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .prod-cat   { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    td.pack, td.abv, td.qty, td.date { font-family: 'DM Mono', monospace; color: var(--text); }
+    td.supplier { max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    td.supplier b { color: white; }
+    td.supplier .sup-country { font-size: 10px; color: var(--muted); margin-left: 4px; }
+    td.price { font-family: 'DM Mono', monospace; font-weight: 700; color: var(--green); text-align: right; white-space: nowrap; }
+    td.price.dim { color: var(--text-dim); font-weight: 500; }
+    td.incoterm .pill { display: inline-block; background: var(--pill); border-radius: 12px; padding: 2px 8px; font-size: 11px; font-family: 'DM Mono', monospace; }
+    td.location { max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--text-dim); }
+    td.review-cell { text-align: center; width: 40px; }
+    .review-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px rgba(251,191,36,0.15); }
+    td.null-cell { color: var(--muted); font-style: italic; font-size: 12px; }
 
-    /* Field grid */
-    .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 14px; }
-    .card-grid.three-col { grid-template-columns: 1fr 1fr 1fr; }
-    .card-field label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; display: block; }
-    .card-field value { font-size: 13px; font-weight: 600; font-family: 'DM Mono', monospace; display: block; margin-top: 2px; color: var(--text); word-break: break-word; }
-    .card-field value.price { color: var(--green); }
-    .card-field value.null-val { color: var(--muted); font-style: italic; font-size: 11px; }
-
-    /* Expandable */
-    .detail-toggle { background: rgba(93,158,255,0.08); border: 1px solid rgba(93,158,255,0.15); color: var(--accent); font-size: 11px; font-weight: 600; cursor: pointer; padding: 6px 12px; border-radius: 30px; width: 100%; text-align: center; margin: 10px 0; font-family: inherit; transition: 0.2s; }
-    .detail-toggle:hover { background: rgba(93,158,255,0.15); }
-
-    /* Error flags */
-    .error-flags { margin: 10px 0; }
-    .error-flags-title { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; margin-bottom: 6px; }
-    .flag-item { font-size: 10px; color: var(--amber); background: rgba(243,156,18,0.08); border-radius: 6px; padding: 3px 8px; margin-bottom: 3px; display: block; }
-
-    /* Footer */
-    .card-footer { border-top: 1px solid var(--border); padding-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
-    .card-supplier { font-size: 12px; background: var(--pill); padding: 4px 12px; border-radius: 30px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .card-supplier b { color: white; font-weight: 600; }
-    .badge-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-    .custom-status-badge { color: white; padding: 2px 10px; border-radius: 30px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
-    .review-flag { font-size: 10px; padding: 3px 10px; border-radius: 30px; font-weight: 600; }
-    .review-flag.warn { background: rgba(243,156,18,0.2); color: var(--amber); }
-    .review-flag.ok { background: rgba(46,204,113,0.15); color: var(--green); }
-    .confidence { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-    .conf-bar { width: 50px; height: 4px; background: var(--border); border-radius: 4px; overflow: hidden; }
-    .conf-fill { height: 100%; border-radius: 4px; }
-    .bottom-meta { margin-top: 10px; font-size: 10px; color: var(--text-dim); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; border-top: 1px dashed var(--border); padding-top: 10px; }
-
-    /* Best Prices */
-    .price-group-card { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 22px; margin-bottom: 22px; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
-    .price-group-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
-    .price-group-title { font-size: 17px; font-weight: 700; color: white; flex: 1; }
-    .price-group-meta { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-    .supplier-count-badge { background: var(--accent-dim); color: var(--accent); border-radius: 20px; padding: 4px 14px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-    .best-price-tag { background: rgba(46,204,113,0.15); color: var(--green); border-radius: 20px; padding: 4px 14px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-    .offers-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .offers-table th { text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); font-weight: 700; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-    .offers-table td { padding: 10px; border-bottom: 1px solid rgba(42,49,72,0.5); font-family: 'DM Mono', monospace; vertical-align: middle; }
-    .offers-table tr:last-child td { border-bottom: none; }
-    .offers-table tr.best-row td { background: rgba(46,204,113,0.04); }
-    .offers-table tr:hover td { background: var(--card-hover); }
-    .best-marker { font-size: 9px; font-weight: 700; color: var(--green); background: rgba(46,204,113,0.15); padding: 2px 6px; border-radius: 10px; margin-left: 6px; }
-    td.price-cell { color: var(--green); font-weight: 700; }
-    td.null-cell { color: var(--muted); font-style: italic; }
-
-    /* Shared */
+    /* Load more */
+    .load-more-wrap { display: flex; justify-content: center; padding: 20px 0 40px; }
     .btn { background: var(--accent); border: none; border-radius: 40px; padding: 10px 24px; font-weight: 600; cursor: pointer; color: white; font-size: 13px; font-family: inherit; }
     .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
-    .state-box { text-align: center; padding: 60px 20px; color: var(--muted); }
-    .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 16px; }
+
+    .state-box { text-align: center; padding: 60px 20px; color: var(--muted); grid-column: 1/-1; }
+    .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 16px; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .load-more-wrap { display: flex; justify-content: center; margin-top: 32px; }
+
+    /* ─── Best Prices ─── */
+    .bp-list { padding: 16px 24px 40px; overflow-y: auto; flex: 1; }
+    .bp-group { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 16px; overflow: hidden; }
+    .bp-group-head { display: flex; align-items: flex-start; gap: 14px; padding: 16px 18px; border-bottom: 1px solid var(--border); background: var(--surface); }
+    .bp-title { flex: 1; }
+    .bp-title .bp-brand { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--accent); font-weight: 700; }
+    .bp-title .bp-name { font-size: 17px; font-weight: 700; color: white; margin-top: 2px; }
+    .bp-title .bp-sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+    .bp-best-banner { text-align: right; }
+    .bp-best-banner .bp-best-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--green); font-weight: 700; }
+    .bp-best-banner .bp-best-price { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 700; color: var(--green); margin-top: 2px; }
+    .bp-best-banner .bp-best-sup { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+    table.bp-offers { width: 100%; border-collapse: separate; border-spacing: 0; }
+    table.bp-offers th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 700; text-align: left; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border-soft); }
+    table.bp-offers td { padding: 10px 16px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+    table.bp-offers tr.best td { background: rgba(52,211,153,0.05); }
+    table.bp-offers tr:hover td { background: var(--row-hover); }
+    .delta-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; }
+    .delta-badge.best { background: rgba(52,211,153,0.15); color: var(--green); }
+    .delta-badge.up { background: rgba(248,113,113,0.12); color: var(--red); }
+    .bp-mono { font-family: 'DM Mono', monospace; }
+
+    /* ─── Detail drawer ─── */
+    .drawer-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(3px); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 300; }
+    .drawer-scrim.open { opacity: 1; pointer-events: auto; }
+    .drawer { position: fixed; top: 0; right: 0; height: 100vh; width: var(--drawer-w); max-width: 100vw; background: var(--surface); border-left: 1px solid var(--border); z-index: 400; transform: translateX(100%); transition: transform 0.25s ease; display: flex; flex-direction: column; }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head { padding: 20px 24px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; }
+    .drawer-head .brand { font-size: 11px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--accent); font-weight: 700; }
+    .drawer-head .name { font-size: 22px; font-weight: 700; color: white; margin-top: 2px; line-height: 1.15; }
+    .drawer-head .sub { font-size: 13px; color: var(--text-dim); margin-top: 6px; }
+    .drawer-close { background: transparent; border: 1px solid var(--border); color: var(--text-dim); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; flex-shrink: 0; }
+    .drawer-close:hover { background: var(--pill); color: white; }
+
+    .drawer-body { flex: 1; overflow-y: auto; padding: 0 24px 40px; }
+
+    .drawer-section { padding: 18px 0; border-bottom: 1px solid var(--border-soft); }
+    .drawer-section:last-child { border-bottom: none; }
+    .drawer-section h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.9px; color: var(--muted); font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+    .drawer-section h3.toggler { cursor: pointer; user-select: none; }
+    .drawer-section h3.toggler:hover { color: var(--accent); }
+    .drawer-section h3 .chev { transition: transform 0.15s; }
+    .drawer-section.collapsed h3 .chev { transform: rotate(-90deg); }
+    .drawer-section.collapsed .drawer-section-body { display: none; }
+
+    .price-hero { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+    .price-hero .primary { display: flex; flex-direction: column; }
+    .price-hero .primary .big { font-family: 'DM Mono', monospace; font-size: 34px; font-weight: 700; color: var(--green); line-height: 1; }
+    .price-hero .primary .lbl { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+    .price-hero .secondary { display: flex; flex-direction: column; }
+    .price-hero .secondary .med { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 700; color: var(--green); line-height: 1; opacity: 0.9; }
+    .price-hero .secondary .lbl { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+    .price-hero .original { display: flex; flex-direction: column; margin-left: auto; padding-left: 12px; border-left: 1px solid var(--border); }
+    .price-hero .original .small { font-family: 'DM Mono', monospace; font-size: 14px; color: var(--text); }
+    .price-hero .original .fx { font-size: 10px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 2px; }
+
+    .kv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+    .kv-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+    .kv { display: flex; flex-direction: column; }
+    .kv .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 700; }
+    .kv .val { font-size: 14px; color: var(--text); font-weight: 500; margin-top: 3px; word-break: break-word; }
+    .kv .val.mono { font-family: 'DM Mono', monospace; }
+    .kv .val.null { color: var(--muted); font-style: italic; font-weight: 400; font-size: 13px; }
+
+    .flag-block { margin-bottom: 12px; }
+    .flag-block .flag-head { display: flex; align-items: center; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.7px; font-weight: 700; margin-bottom: 6px; }
+    .flag-block.needs .flag-head { color: var(--amber); }
+    .flag-block.info .flag-head { color: var(--accent); }
+    .flag-item { padding: 6px 10px; border-radius: 8px; font-size: 12px; margin-bottom: 4px; }
+    .flag-block.needs .flag-item { background: rgba(251,191,36,0.08); color: var(--amber); border-left: 2px solid var(--amber); }
+    .flag-block.info .flag-item { background: rgba(93,158,255,0.06); color: var(--accent-2); border-left: 2px solid rgba(93,158,255,0.4); }
+
+    /* Utility */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; background: var(--pill); }
+    .badge.status-t1 { background: rgba(52,211,153,0.12); color: var(--green); }
+    .badge.status-t2 { background: rgba(93,158,255,0.12); color: var(--accent); }
+
+    /* Responsive: on narrow, hide sidebar toggle etc. Table scrolls horizontally. */
+    @media (max-width: 900px) {
+      aside.sidebar { position: absolute; z-index: 200; left: 0; top: var(--header-h); height: calc(100vh - var(--header-h)); }
+      aside.sidebar:not(.collapsed) { box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+      .sidebar-toggle { position: fixed; top: calc(var(--header-h) + 12px); left: 0; }
+      .drawer { width: 100vw; }
+    }
   </style>
 </head>
 <body>
@@ -161,7 +249,7 @@
     <h2>Admin Access</h2>
     <input type="email" id="login-email" class="login-input" placeholder="admin@gmail.com" />
     <input type="password" id="login-pw" class="login-input" placeholder="Password" />
-    <button class="btn login-btn" onclick="handleLogin()">Login to Dashboard</button>
+    <button class="btn login-btn" onclick="handleLogin()">Login</button>
     <div class="login-err" id="login-err"></div>
   </div>
 </div>
@@ -174,11 +262,12 @@
     <button class="nav-tab" id="tab-bestprices" onclick="switchTab('bestprices')">Best Prices</button>
     <div class="stat-chip" id="stat-sources"><b>—</b> Sources</div>
     <div class="stat-chip" id="stat-records"><b>—</b> Offers</div>
+    <button class="logout-btn" onclick="handleLogout()">Logout</button>
   </div>
 </header>
 
 <div class="layout">
-  <aside id="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="aside-head">
       <h2>Source Files</h2>
       <div class="search-wrap">
@@ -188,26 +277,76 @@
     </div>
     <div class="source-list" id="source-list"><div class="state-box"><div class="spinner"></div><p>Loading sources...</p></div></div>
   </aside>
+  <div class="sidebar-toggle" id="sidebar-toggle" title="Toggle source list">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+  </div>
 
   <main>
     <!-- ALL OFFERS PAGE -->
     <div class="page active" id="page-offers">
-      <div class="main-head">
-        <h2 id="main-title">All Offers</h2>
-        <div class="count-tag" id="records-count">—</div>
-        <div class="filter-group">
-          <input type="text" id="global-search" class="search-input-main" placeholder="Search product, brand..." />
-          <select id="filter-custom-status" class="filter-select">
-            <option value="">All Status</option>
-            <option value="T1">T1</option>
-            <option value="T2">T2</option>
+      <div class="search-bar">
+        <div class="big-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input id="global-search" placeholder="Search product, brand, expression (e.g. Don Julio Añejo)…" />
+        </div>
+        <div class="search-hint" id="search-hint">Search across product name and brand.</div>
+      </div>
+
+      <div class="filter-bar">
+        <select id="filter-category" class="filter-select"><option value="">All Categories</option></select>
+        <select id="filter-subcategory" class="filter-select"><option value="">All Sub-categories</option></select>
+        <select id="filter-supplier" class="filter-select"><option value="">All Suppliers</option></select>
+        <select id="filter-bottle" class="filter-select"><option value="">All Bottle Sizes</option></select>
+        <select id="filter-packaging" class="filter-select"><option value="">All Packagings</option></select>
+        <select id="filter-incoterm" class="filter-select"><option value="">All Incoterms</option></select>
+        <select id="filter-location" class="filter-select"><option value="">All Locations</option></select>
+        <select id="filter-currency" class="filter-select"><option value="">All Currencies</option></select>
+        <select id="filter-custom-status" class="filter-select">
+          <option value="">All Status</option>
+          <option value="T1">T1</option>
+          <option value="T2">T2</option>
+          <option value="review">Needs review</option>
+        </select>
+        <button class="reset-filters" id="reset-filters-btn">Reset</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="count"><b id="records-count">—</b> offers shown of <b id="records-total">—</b></div>
+        <div class="sort-wrap">
+          Sort by:
+          <select id="sort-select" class="filter-select" style="min-width: 180px;">
+            <option value="price_per_unit_eur_asc">Lowest €/Unit</option>
+            <option value="price_per_case_eur_asc">Lowest €/Case</option>
+            <option value="offer_date_desc">Newest offer</option>
+            <option value="quantity_case_desc">Largest quantity</option>
+            <option value="supplier_asc">Supplier A-Z</option>
           </select>
-          <select id="filter-category" class="filter-select"><option value="">All Categories</option></select>
-          <select id="filter-subcategory" class="filter-select"><option value="">All Subcategories</option></select>
-          <button class="reset-filters" id="reset-filters-btn">Reset Filters</button>
         </div>
       </div>
-      <div class="records-grid" id="records-grid"><div class="state-box"><div class="spinner"></div><p>Loading offers...</p></div></div>
+
+      <div class="table-scroll">
+        <table class="offers">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="product">Product</th>
+              <th>Pack</th>
+              <th>ABV</th>
+              <th>Supplier</th>
+              <th class="sortable" data-sort="quantity_case_desc">Qty</th>
+              <th class="sortable" data-sort="price_per_unit_eur_asc" style="text-align:right;">€/Unit</th>
+              <th class="sortable" data-sort="price_per_case_eur_asc" style="text-align:right;">€/Case</th>
+              <th>Incoterm</th>
+              <th>Location</th>
+              <th class="sortable" data-sort="offer_date_desc">Offer Date</th>
+              <th title="Needs review">!</th>
+            </tr>
+          </thead>
+          <tbody id="offers-tbody">
+            <tr><td colspan="11"><div class="state-box"><div class="spinner"></div><p>Fetching offers…</p></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
       <div class="load-more-wrap" id="load-more-wrap" style="display:none">
         <button class="btn btn-outline" id="load-more-btn" onclick="loadMoreRecords()">Load more offers</button>
       </div>
@@ -215,17 +354,26 @@
 
     <!-- BEST PRICES PAGE -->
     <div class="page" id="page-bestprices">
-      <div class="main-head">
-        <h2>Best Prices</h2>
-        <div class="count-tag" id="bp-count">—</div>
-        <div class="filter-group">
-          <input type="text" id="bp-search" class="search-input-main" placeholder="Search product, brand..." />
-          <select id="bp-filter-category" class="filter-select"><option value="">All Categories</option></select>
-          <select id="bp-filter-subcategory" class="filter-select"><option value="">All Subcategories</option></select>
-          <button class="reset-filters" id="bp-reset-btn">Reset Filters</button>
+      <div class="search-bar">
+        <div class="big-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input id="bp-search" placeholder="Search product or brand to compare…" />
         </div>
+        <div class="search-hint">Products grouped by brand + name + bottle size + packaging so only genuinely comparable offers are compared.</div>
       </div>
-      <div id="bp-grid"><div class="state-box"><div class="spinner"></div><p>Loading best prices...</p></div></div>
+
+      <div class="filter-bar">
+        <select id="bp-filter-category" class="filter-select"><option value="">All Categories</option></select>
+        <select id="bp-filter-subcategory" class="filter-select"><option value="">All Sub-categories</option></select>
+        <button class="reset-filters" id="bp-reset-btn">Reset</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="count"><b id="bp-count">—</b> comparable groups</div>
+      </div>
+
+      <div class="bp-list" id="bp-list"><div class="state-box"><div class="spinner"></div><p>Loading best prices…</p></div></div>
+
       <div class="load-more-wrap" id="bp-load-more-wrap" style="display:none">
         <button class="btn btn-outline" id="bp-load-more-btn" onclick="loadMoreBestPrices()">Load more</button>
       </div>
@@ -233,28 +381,49 @@
   </main>
 </div>
 
+<!-- Detail drawer -->
+<div class="drawer-scrim" id="drawer-scrim" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div style="flex:1;">
+      <div class="brand" id="drawer-brand">—</div>
+      <div class="name" id="drawer-name">—</div>
+      <div class="sub" id="drawer-sub">—</div>
+    </div>
+    <button class="drawer-close" onclick="closeDrawer()" title="Close">✕</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
 <script>
-  // const API_BASE = 'http://0.0.0.0:8000';
   const API_BASE = 'https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net/';
-  const PAGE_SIZE = 24;
+  const PAGE_SIZE = 100;
   let currentToken = localStorage.getItem('adminToken');
+
+  // ─── State ──────────────────────────────────────────────────────────────────
   let allSources = [];
   let activeSourceId = null;
   let debounceTimer = null;
   let currentTab = 'offers';
 
-  // Offers state
+  // Offers
   let recordsSkip = 0, recordsTotal = 0, loadingRecords = false;
-  let globalSearchText = "", customStatusFilter = "", categoryFilter = "", subCategoryFilter = "";
+  let globalSearchText = "", customStatusFilter = "";
+  let filters = { category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"" };
+  let sortKey = "offer_date_desc";
   let allRawItemsCache = [];
-  let availableCategories = new Set();
-  let availableSubCategories = new Set();
+  const availableFilters = {
+    category: new Set(), sub_category: new Set(), supplier: new Set(),
+    bottle: new Set(), packaging: new Set(), incoterm: new Set(),
+    location: new Set(), currency: new Set(),
+  };
 
-  // Best Prices state
+  // Best Prices
   let bpSkip = 0, bpTotal = 0, loadingBp = false;
   let bpSearch = "", bpCategory = "", bpSubCategory = "";
-  let bpCategories = new Set(), bpSubCategories = new Set();
+  const bpAvail = { category: new Set(), sub_category: new Set() };
 
+  // ─── Boot ───────────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
     if (!currentToken) document.getElementById('login-overlay').style.display = 'flex';
     else { document.getElementById('login-overlay').style.display = 'none'; initApp(); }
@@ -280,40 +449,55 @@
     } catch(e) { errDiv.textContent = 'Network error'; errDiv.style.display = 'block'; }
   }
 
+  function handleLogout() {
+    localStorage.removeItem('adminToken');
+    location.reload();
+  }
+
   function initApp() {
     loadSources();
     loadRecords(true);
 
     document.getElementById('source-search').addEventListener('input', filterSourceList);
+    document.getElementById('sidebar-toggle').addEventListener('click', () =>
+      document.getElementById('sidebar').classList.toggle('collapsed')
+    );
 
     const triggerFilters = () => {
       globalSearchText = document.getElementById('global-search').value;
       customStatusFilter = document.getElementById('filter-custom-status').value;
-      categoryFilter = document.getElementById('filter-category').value;
-      subCategoryFilter = document.getElementById('filter-subcategory').value;
+      filters.category = document.getElementById('filter-category').value;
+      filters.sub_category = document.getElementById('filter-subcategory').value;
+      filters.supplier = document.getElementById('filter-supplier').value;
+      filters.bottle = document.getElementById('filter-bottle').value;
+      filters.packaging = document.getElementById('filter-packaging').value;
+      filters.incoterm = document.getElementById('filter-incoterm').value;
+      filters.location = document.getElementById('filter-location').value;
+      filters.currency = document.getElementById('filter-currency').value;
+      sortKey = document.getElementById('sort-select').value;
       loadRecords(true);
     };
-    document.getElementById('global-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerFilters, 400); });
-    document.getElementById('filter-custom-status').addEventListener('change', triggerFilters);
-    document.getElementById('filter-category').addEventListener('change', triggerFilters);
-    document.getElementById('filter-subcategory').addEventListener('change', triggerFilters);
+    document.getElementById('global-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerFilters, 350); });
+    ['filter-custom-status','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','sort-select']
+      .forEach(id => document.getElementById(id).addEventListener('change', triggerFilters));
+
     document.getElementById('reset-filters-btn').addEventListener('click', () => {
       document.getElementById('global-search').value = '';
-      document.getElementById('filter-custom-status').value = '';
-      document.getElementById('filter-category').value = '';
-      document.getElementById('filter-subcategory').value = '';
-      globalSearchText = ''; customStatusFilter = ''; categoryFilter = ''; subCategoryFilter = '';
+      ['filter-custom-status','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency']
+        .forEach(id => document.getElementById(id).value = '');
+      globalSearchText = ''; customStatusFilter = '';
+      Object.keys(filters).forEach(k => filters[k] = '');
       loadRecords(true);
     });
 
-    // Best prices filters
+    // Best prices
     const triggerBp = () => {
       bpSearch = document.getElementById('bp-search').value;
       bpCategory = document.getElementById('bp-filter-category').value;
       bpSubCategory = document.getElementById('bp-filter-subcategory').value;
       loadBestPrices(true);
     };
-    document.getElementById('bp-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerBp, 400); });
+    document.getElementById('bp-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerBp, 350); });
     document.getElementById('bp-filter-category').addEventListener('change', triggerBp);
     document.getElementById('bp-filter-subcategory').addEventListener('change', triggerBp);
     document.getElementById('bp-reset-btn').addEventListener('click', () => {
@@ -323,6 +507,21 @@
       bpSearch = ''; bpCategory = ''; bpSubCategory = '';
       loadBestPrices(true);
     });
+
+    // Column-header click sort
+    document.querySelectorAll('table.offers thead th.sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        if (key === 'product') return; // client sort only
+        document.getElementById('sort-select').value = key;
+        sortKey = key;
+        markSortedHeader();
+        loadRecords(true);
+      });
+    });
+
+    // Escape closes drawer
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
   }
 
   function switchTab(tab) {
@@ -331,10 +530,10 @@
     document.getElementById('tab-bestprices').classList.toggle('active', tab === 'bestprices');
     document.getElementById('page-offers').classList.toggle('active', tab === 'offers');
     document.getElementById('page-bestprices').classList.toggle('active', tab === 'bestprices');
-    // Sidebar: hide for best prices (no source filter needed) or keep
-    if (tab === 'bestprices') loadBestPrices(true);
+    if (tab === 'bestprices' && !document.getElementById('bp-list').dataset.loaded) loadBestPrices(true);
   }
 
+  // ─── Sources ────────────────────────────────────────────────────────────────
   async function loadSources() {
     try {
       const res = await fetch(`${API_BASE}/api/sources?limit=200`, { headers: { 'Authorization': `Bearer ${currentToken}` } });
@@ -346,7 +545,6 @@
       document.getElementById('source-list').innerHTML = `<div class="state-box"><p>Source load error</p></div>`;
     }
   }
-
   function renderSourceList(sources) {
     const list = document.getElementById('source-list');
     if (!sources.length) { list.innerHTML = `<div class="state-box"><p>No sources</p></div>`; return; }
@@ -354,42 +552,38 @@
     for (const s of sources) {
       const name = s.source_filename || s.sender_name || s.supplier_name || '(unnamed)';
       const date = s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB') : '';
-      html += `<div class="source-item ${s.id === activeSourceId ? 'active' : ''}" onclick="selectSource('${s.id}', '${escapeHtml(name)}')">
+      html += `<div class="source-item ${s.id === activeSourceId ? 'active' : ''}" onclick="selectSource('${s.id}', '${escapeAttr(name)}')">
         <div class="source-item-name">${escapeHtml(name)}</div>
-        <div class="source-item-meta"><span>${date}</span><span class="source-badge">${s.product_count ?? 0} offers</span></div>
+        <div class="source-item-meta"><span>${date}</span><span class="source-badge">${s.product_count ?? 0}</span></div>
       </div>`;
     }
     list.innerHTML = html;
   }
-
   function filterSourceList() {
     const q = document.getElementById('source-search').value.toLowerCase();
     renderSourceList(allSources.filter(s => (s.source_filename || s.sender_name || s.supplier_name || '').toLowerCase().includes(q)));
   }
-
-  window.selectSource = function(id, name) {
+  window.selectSource = function(id) {
     activeSourceId = id;
-    document.getElementById('main-title').textContent = name ? escapeHtml(name) : 'All Offers';
     filterSourceList();
     loadRecords(true);
   };
 
-  // ─── RECORDS ────────────────────────────────────────────────────────────────
-
+  // ─── Records ────────────────────────────────────────────────────────────────
   async function loadRecords(reset = false) {
     if (loadingRecords) return;
     loadingRecords = true;
     if (reset) {
       recordsSkip = 0; allRawItemsCache = [];
-      document.getElementById('records-grid').innerHTML = `<div class="state-box" style="grid-column:1/-1"><div class="spinner"></div><p>Fetching offers...</p></div>`;
+      document.getElementById('offers-tbody').innerHTML = `<tr><td colspan="11"><div class="state-box"><div class="spinner"></div><p>Fetching offers…</p></div></td></tr>`;
       document.getElementById('load-more-wrap').style.display = 'none';
     }
     try {
       let url = `${API_BASE}/api/records?skip=${recordsSkip}&limit=${PAGE_SIZE}`;
       if (activeSourceId) url += `&source_file_id=${activeSourceId}`;
       if (globalSearchText) url += `&search=${encodeURIComponent(globalSearchText)}`;
-      if (categoryFilter) url += `&category=${encodeURIComponent(categoryFilter)}`;
-      if (subCategoryFilter) url += `&sub_category=${encodeURIComponent(subCategoryFilter)}`;
+      if (filters.category) url += `&category=${encodeURIComponent(filters.category)}`;
+      if (filters.sub_category) url += `&sub_category=${encodeURIComponent(filters.sub_category)}`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
       const data = await res.json();
       const items = data.records || [];
@@ -398,310 +592,479 @@
       if (reset) allRawItemsCache = [...items];
       else allRawItemsCache = [...allRawItemsCache, ...items];
 
-      // client-side filter: custom_status only (category/subcat handled server-side)
-      let filtered = filterByStatus(allRawItemsCache);
+      // Update dropdowns from what we've seen
+      items.forEach(collectFilterValues);
+      applyDropdownUpdates();
 
-      // collect categories/subcategories for dropdowns
-      items.forEach(i => { if (i.category) availableCategories.add(i.category); if (i.sub_category) availableSubCategories.add(i.sub_category); });
-      updateDropdown('filter-category', availableCategories, 'All Categories', categoryFilter);
-      updateDropdown('filter-subcategory', availableSubCategories, 'All Subcategories', subCategoryFilter);
+      // client-side filters: everything except category/sub_category (server) + search
+      let filtered = applyClientFilters(allRawItemsCache);
+      filtered = sortItems(filtered, sortKey);
 
       document.getElementById('stat-records').innerHTML = `<b>${recordsTotal}</b> Offers`;
       document.getElementById('records-count').textContent = filtered.length;
-      const grid = document.getElementById('records-grid');
-      if (reset) grid.innerHTML = '';
-      if (!filtered.length && reset) {
-        grid.innerHTML = `<div class="state-box"><p>No offers match your filters.</p></div>`;
-      } else {
-        (reset ? filtered : filtered.slice(allRawItemsCache.length - items.length)).forEach(item => grid.insertAdjacentHTML('beforeend', recordCard(item)));
-        if (reset) { /* already rendered */ } else { grid.innerHTML = ''; filtered.forEach(item => grid.insertAdjacentHTML('beforeend', recordCard(item))); }
-        recordsSkip = allRawItemsCache.length;
-        document.getElementById('load-more-wrap').style.display = recordsSkip < recordsTotal ? 'flex' : 'none';
-        document.getElementById('load-more-btn').disabled = false;
-      }
+      document.getElementById('records-total').textContent = recordsTotal;
+
+      renderOffersTable(filtered);
+      recordsSkip = allRawItemsCache.length;
+      document.getElementById('load-more-wrap').style.display = recordsSkip < recordsTotal ? 'flex' : 'none';
+      markSortedHeader();
     } catch(e) {
-      console.error(e);
-      if (reset) document.getElementById('records-grid').innerHTML = `<div class="state-box"><p>Failed to load records</p></div>`;
-    } finally { loadingRecords = false; }
+      document.getElementById('offers-tbody').innerHTML = `<tr><td colspan="11"><div class="state-box"><p>Error loading offers.</p></div></td></tr>`;
+    } finally {
+      loadingRecords = false;
+    }
+  }
+  function loadMoreRecords() { loadRecords(false); }
+
+  function collectFilterValues(i) {
+    if (i.category) availableFilters.category.add(i.category);
+    if (i.sub_category) availableFilters.sub_category.add(i.sub_category);
+    if (i.supplier_name) availableFilters.supplier.add(i.supplier_name);
+    if (i.unit_volume_ml) availableFilters.bottle.add(String(i.unit_volume_ml));
+    if (i.packaging) availableFilters.packaging.add(i.packaging);
+    if (i.incoterm) availableFilters.incoterm.add(i.incoterm);
+    if (i.location) availableFilters.location.add(i.location);
+    if (i.currency) availableFilters.currency.add(i.currency);
+  }
+  function applyDropdownUpdates() {
+    updateDropdown('filter-category', availableFilters.category, 'All Categories', filters.category);
+    updateDropdown('filter-subcategory', availableFilters.sub_category, 'All Sub-categories', filters.sub_category);
+    updateDropdown('filter-supplier', availableFilters.supplier, 'All Suppliers', filters.supplier);
+    updateDropdown('filter-bottle', availableFilters.bottle, 'All Bottle Sizes', filters.bottle, v => `${v} ml`);
+    updateDropdown('filter-packaging', availableFilters.packaging, 'All Packagings', filters.packaging);
+    updateDropdown('filter-incoterm', availableFilters.incoterm, 'All Incoterms', filters.incoterm);
+    updateDropdown('filter-location', availableFilters.location, 'All Locations', filters.location);
+    updateDropdown('filter-currency', availableFilters.currency, 'All Currencies', filters.currency);
+  }
+  function updateDropdown(id, valueSet, placeholder, currentVal, formatter = v => v) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const prev = el.value;
+    el.innerHTML = `<option value="">${placeholder}</option>` +
+      [...valueSet].sort((a,b) => String(a).localeCompare(String(b))).map(v => `<option value="${escapeAttr(v)}" ${v == currentVal ? 'selected' : ''}>${escapeHtml(formatter(v))}</option>`).join('');
+    if (prev && [...valueSet].some(v => String(v) === prev)) el.value = prev;
   }
 
-  function filterByStatus(items) {
-    if (!customStatusFilter) return items;
-    if (customStatusFilter === 'review') return items.filter(i => i.needs_manual_review === true);
-    return items.filter(i => i.custom_status === customStatusFilter);
+  function applyClientFilters(items) {
+    return items.filter(i => {
+      if (customStatusFilter === 'review' && !i.needs_manual_review) return false;
+      if (customStatusFilter && customStatusFilter !== 'review' && i.custom_status !== customStatusFilter) return false;
+      if (filters.supplier && i.supplier_name !== filters.supplier) return false;
+      if (filters.bottle && String(i.unit_volume_ml) !== filters.bottle) return false;
+      if (filters.packaging && i.packaging !== filters.packaging) return false;
+      if (filters.incoterm && i.incoterm !== filters.incoterm) return false;
+      if (filters.location && i.location !== filters.location) return false;
+      if (filters.currency && i.currency !== filters.currency) return false;
+      return true;
+    });
   }
 
-  window.loadMoreRecords = async function() {
-    if (loadingRecords) return;
-    loadingRecords = true;
-    document.getElementById('load-more-btn').disabled = true;
-    try {
-      let url = `${API_BASE}/api/records?skip=${allRawItemsCache.length}&limit=${PAGE_SIZE}`;
-      if (activeSourceId) url += `&source_file_id=${activeSourceId}`;
-      if (globalSearchText) url += `&search=${encodeURIComponent(globalSearchText)}`;
-      if (categoryFilter) url += `&category=${encodeURIComponent(categoryFilter)}`;
-      if (subCategoryFilter) url += `&sub_category=${encodeURIComponent(subCategoryFilter)}`;
-      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
-      const data = await res.json();
-      const newItems = data.records || [];
-      recordsTotal = data.total ?? recordsTotal;
-      allRawItemsCache = [...allRawItemsCache, ...newItems];
-      newItems.forEach(i => { if (i.category) availableCategories.add(i.category); if (i.sub_category) availableSubCategories.add(i.sub_category); });
-      updateDropdown('filter-category', availableCategories, 'All Categories', categoryFilter);
-      updateDropdown('filter-subcategory', availableSubCategories, 'All Subcategories', subCategoryFilter);
-      const filtered = filterByStatus(allRawItemsCache);
-      const grid = document.getElementById('records-grid');
-      grid.innerHTML = '';
-      filtered.forEach(item => grid.insertAdjacentHTML('beforeend', recordCard(item)));
-      document.getElementById('records-count').textContent = filtered.length;
-      document.getElementById('load-more-wrap').style.display = allRawItemsCache.length < recordsTotal ? 'flex' : 'none';
-      document.getElementById('load-more-btn').disabled = false;
-    } catch(e) { console.error(e); } finally { loadingRecords = false; }
-  };
-
-  function updateDropdown(id, valSet, placeholder, currentVal) {
-    const select = document.getElementById(id);
-    let opts = `<option value="">${placeholder}</option>`;
-    Array.from(valSet).sort().forEach(v => { opts += `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`; });
-    select.innerHTML = opts;
-    if (currentVal && valSet.has(currentVal)) select.value = currentVal;
+  function sortItems(items, key) {
+    const withNulls = (val, dir) => val == null ? (dir === 'asc' ? Infinity : -Infinity) : val;
+    const cmp = (a, b, dir=1) => (a < b ? -1 : a > b ? 1 : 0) * dir;
+    switch (key) {
+      case 'price_per_unit_eur_asc':
+        return [...items].sort((a,b) => cmp(withNulls(a.price_per_unit_eur, 'asc'), withNulls(b.price_per_unit_eur, 'asc'), 1));
+      case 'price_per_case_eur_asc':
+        return [...items].sort((a,b) => cmp(withNulls(a.price_per_case_eur, 'asc'), withNulls(b.price_per_case_eur, 'asc'), 1));
+      case 'offer_date_desc':
+        return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), -1));
+      case 'quantity_case_desc':
+        return [...items].sort((a,b) => cmp(withNulls(a.quantity_case, 'desc'), withNulls(b.quantity_case, 'desc'), -1));
+      case 'supplier_asc':
+        return [...items].sort((a,b) => (a.supplier_name || '').localeCompare(b.supplier_name || ''));
+      default: return items;
+    }
   }
 
-  // ─── BEST PRICES ─────────────────────────────────────────────────────────────
+  function markSortedHeader() {
+    document.querySelectorAll('table.offers thead th.sortable').forEach(th => {
+      th.classList.toggle('sorted', th.dataset.sort === sortKey);
+      const arrow = th.querySelector('.sort-arrow');
+      if (arrow) arrow.remove();
+      if (th.dataset.sort === sortKey) {
+        const dir = sortKey.endsWith('_desc') ? '↓' : '↑';
+        th.insertAdjacentHTML('beforeend', `<span class="sort-arrow">${dir}</span>`);
+      }
+    });
+  }
 
+  function renderOffersTable(items) {
+    const tbody = document.getElementById('offers-tbody');
+    if (!items.length) {
+      tbody.innerHTML = `<tr><td colspan="11"><div class="state-box"><p>No offers match your filters.</p></div></td></tr>`;
+      return;
+    }
+    tbody.innerHTML = items.map((i, idx) => rowHtml(i, idx)).join('');
+    // Row click → drawer
+    [...tbody.querySelectorAll('tr[data-uid]')].forEach(tr => {
+      tr.addEventListener('click', () => openDrawer(items.find(x => x.uid === tr.dataset.uid)));
+    });
+  }
+
+  function rowHtml(i) {
+    const pack = formatPack(i);
+    const brand = i.brand || '';
+    const name = [i.product_name, i.vintage].filter(v => v && v !== 'Not Found').join(' · ');
+    const abv = i.alcohol_percent != null ? `${Number(i.alcohol_percent).toFixed(1)}%` : nullCell();
+    const sup = supplierCell(i);
+    const qty = i.quantity_case != null ? `${Number(i.quantity_case)} cs` : nullCell();
+    const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : nullCell();
+    const pcEur = i.price_per_case_eur != null ? `€${Number(i.price_per_case_eur).toFixed(2)}` : nullCell();
+    const incoterm = i.incoterm && i.incoterm !== 'Not Found' ? `<span class="pill">${escapeHtml(i.incoterm)}</span>` : nullCell();
+    const loc = i.location && i.location !== 'Not Found' ? escapeHtml(i.location) : nullCell();
+    const date = i.offer_date ? new Date(i.offer_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) : (i.created_at ? new Date(i.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) : nullCell());
+    const flags = classifyFlags(i.error_flags || []);
+    const needsReview = i.needs_manual_review || flags.needs.length > 0;
+    return `<tr data-uid="${escapeAttr(i.uid)}" ${needsReview ? 'class="needs-review"' : ''}>
+      <td class="product">
+        <div class="prod-brand">${escapeHtml(brand)}</div>
+        <div class="prod-name">${escapeHtml(name || i.product_name || '—')}</div>
+        <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
+      </td>
+      <td class="pack">${escapeHtml(pack)}</td>
+      <td class="abv">${abv}</td>
+      <td class="supplier">${sup}</td>
+      <td class="qty">${qty}</td>
+      <td class="price">${puEur}</td>
+      <td class="price">${pcEur}</td>
+      <td class="incoterm">${incoterm}</td>
+      <td class="location">${loc}</td>
+      <td class="date">${date}</td>
+      <td class="review-cell">${needsReview ? '<span class="review-dot" title="Needs manual review"></span>' : ''}</td>
+    </tr>`;
+  }
+  function supplierCell(i) {
+    if (i.supplier_name) {
+      const country = i.supplier_country ? `<span class="sup-country">${escapeHtml(i.supplier_country)}</span>` : '';
+      return `<b>${escapeHtml(i.supplier_name)}</b>${country}`;
+    }
+    if (i.sender_name) return `<b>${escapeHtml(i.sender_name)}</b><span class="sup-country">(sender)</span>`;
+    return nullCell();
+  }
+  function formatPack(i) {
+    const upc = i.units_per_case;
+    const vol = i.unit_volume_ml;
+    if (upc && vol) {
+      const volStr = vol >= 1000 ? `${(vol/1000).toFixed(vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L` : `${vol}ml`;
+      return `${upc}×${volStr}`;
+    }
+    if (vol) return vol >= 1000 ? `${(vol/1000).toFixed(vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L` : `${vol}ml`;
+    return '—';
+  }
+  function nullCell() { return `<span class="null-cell">—</span>`; }
+
+  // ─── Flag categorization ────────────────────────────────────────────────────
+  function classifyFlags(flags) {
+    const info = [], needs = [];
+    for (const f of flags || []) {
+      const s = String(f).toLowerCase();
+      const isInfo = /calc(ulated)?|inferred|auto[- ]?derived|assumed default|derived/.test(s);
+      const isNeeds = /ambigu|assume|assumption|missing|conflict|mismatch|error|invalid|unknown|out of range|suspicious/.test(s);
+      if (isNeeds && !isInfo) needs.push(f);
+      else if (isInfo) info.push(f);
+      else needs.push(f); // default to material — safer
+    }
+    return { info, needs };
+  }
+
+  // ─── Drawer ─────────────────────────────────────────────────────────────────
+  function openDrawer(item) {
+    if (!item) return;
+    const drawer = document.getElementById('drawer');
+    const scrim = document.getElementById('drawer-scrim');
+
+    document.getElementById('drawer-brand').textContent = (item.brand && item.brand !== 'Not Found') ? item.brand : '';
+    document.getElementById('drawer-name').textContent = item.product_name || '—';
+    document.getElementById('drawer-sub').innerHTML = [
+      [item.category, item.sub_category].filter(x => x && x !== 'Not Found').join(' · '),
+      formatPack(item),
+      item.alcohol_percent != null ? `${Number(item.alcohol_percent).toFixed(1)}% ABV` : null,
+      item.ean_code && item.ean_code !== 'Not Found' ? `EAN ${item.ean_code}` : null,
+    ].filter(Boolean).map(escapeHtml).join(' &nbsp;|&nbsp; ');
+
+    document.getElementById('drawer-body').innerHTML = drawerBodyHtml(item);
+    drawer.classList.add('open');
+    scrim.classList.add('open');
+
+    // Toggle collapsibles
+    [...document.querySelectorAll('.drawer-section h3.toggler')].forEach(h => {
+      h.addEventListener('click', () => h.parentElement.classList.toggle('collapsed'));
+    });
+  }
+  function closeDrawer() {
+    document.getElementById('drawer').classList.remove('open');
+    document.getElementById('drawer-scrim').classList.remove('open');
+  }
+
+  function drawerBodyHtml(i) {
+    const flags = classifyFlags(i.error_flags || []);
+    const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : '—';
+    const pcEur = i.price_per_case_eur != null ? `€${Number(i.price_per_case_eur).toFixed(2)}` : '—';
+    const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${Number(i.price_per_unit).toFixed(2)}` : null;
+    const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${Number(i.price_per_case).toFixed(2)}` : null;
+    const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
+
+    return `
+      <!-- PRICE HERO -->
+      <div class="drawer-section">
+        <h3>Price</h3>
+        <div class="price-hero">
+          <div class="primary">
+            <div class="big">${puEur}</div>
+            <div class="lbl">per bottle (EUR)</div>
+          </div>
+          <div class="secondary">
+            <div class="med">${pcEur}</div>
+            <div class="lbl">per case (EUR)</div>
+          </div>
+          ${(originalPuStr || originalPcStr || fxStr) ? `
+            <div class="original">
+              ${originalPuStr ? `<div class="small">${originalPuStr} / bottle</div>` : ''}
+              ${originalPcStr ? `<div class="small">${originalPcStr} / case</div>` : ''}
+              ${fxStr ? `<div class="fx">${fxStr}</div>` : ''}
+            </div>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- COMMERCIAL -->
+      <div class="drawer-section">
+        <h3>Commercial conditions</h3>
+        <div class="kv-grid three">
+          ${kv('Supplier', supplierRich(i))}
+          ${kv('Available qty', i.quantity_case != null ? `${Number(i.quantity_case)} cs` : null, true)}
+          ${kv('MOQ', i.moq_cases != null ? `${Number(i.moq_cases)} cs` : null, true)}
+          ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true)}
+          ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null)}
+          ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null)}
+          ${kv('Offer date', formatDate(i.offer_date))}
+          ${kv('Valid until', formatDate(i.valid_until))}
+          ${kv('Best before', formatDate(i.best_before_date))}
+        </div>
+      </div>
+
+      <!-- FLAGS -->
+      ${(flags.needs.length || flags.info.length || i.needs_manual_review) ? `
+        <div class="drawer-section">
+          <h3>Review &amp; system notes</h3>
+          ${flags.needs.length || i.needs_manual_review ? `
+            <div class="flag-block needs">
+              <div class="flag-head">⚠ Needs review</div>
+              ${(i.needs_manual_review && !flags.needs.length) ? `<div class="flag-item">Marked for manual review</div>` : ''}
+              ${flags.needs.map(f => `<div class="flag-item">${escapeHtml(f)}</div>`).join('')}
+            </div>
+          ` : ''}
+          ${flags.info.length ? `
+            <div class="flag-block info">
+              <div class="flag-head">ℹ Calculated / inferred</div>
+              ${flags.info.map(f => `<div class="flag-item">${escapeHtml(f)}</div>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+      ` : ''}
+
+      <!-- SECONDARY PRODUCT INFO -->
+      <div class="drawer-section collapsed">
+        <h3 class="toggler">Additional product info <span class="chev">▾</span></h3>
+        <div class="drawer-section-body">
+          <div class="kv-grid three">
+            ${kv('Bottle/can type', i.bottle_or_can_type)}
+            ${kv('Packaging (raw)', i.packaging_raw)}
+            ${kv('Cases / pallet', i.cases_per_pallet, true)}
+            ${kv('Refillable', i.refillable_status)}
+            ${kv('Label language', i.label_language)}
+            ${kv('Gift box', i.gift_box)}
+            ${kv('Supplier reference', i.supplier_reference)}
+            ${kv('Product reference', i.product_reference)}
+            ${kv('Product key', i.product_key)}
+            ${kv('Status', i.custom_status ? statusBadge(i.custom_status) : null, true)}
+          </div>
+        </div>
+      </div>
+
+      <!-- SOURCE / TRACEABILITY -->
+      <div class="drawer-section collapsed">
+        <h3 class="toggler">Source &amp; traceability <span class="chev">▾</span></h3>
+        <div class="drawer-section-body">
+          <div class="kv-grid">
+            ${kv('Channel', i.source_channel)}
+            ${kv('Sender name', i.sender_name)}
+            ${kv('Sender email', i.sender_email)}
+            ${kv('Source filename', i.source_filename)}
+            ${kv('Source message id', i.source_message_id, true)}
+            ${kv('Attachments', i.attachment_count != null ? `${i.attachment_count} file(s)` : null, true)}
+            ${kv('Received', formatDate(i.date_received))}
+          </div>
+        </div>
+      </div>
+
+      <!-- TECHNICAL -->
+      <div class="drawer-section collapsed">
+        <h3 class="toggler">Technical / debug <span class="chev">▾</span></h3>
+        <div class="drawer-section-body">
+          <div class="kv-grid">
+            ${kv('UID', i.uid, true)}
+            ${kv('Job ID', i.job_id, true)}
+            ${kv('Source file ID', i.source_file_id, true)}
+            ${kv('Processing version', i.processing_version, true)}
+            ${kv('Confidence', i.confidence_score != null ? `${Math.round(i.confidence_score * 100)}%` : null, true)}
+            ${kv('Created', formatDate(i.created_at))}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  function supplierRich(i) {
+    if (!i.supplier_name) return null;
+    const bits = [i.supplier_name];
+    if (i.supplier_country) bits.push(`(${i.supplier_country})`);
+    return bits.join(' ');
+  }
+  function statusBadge(s) {
+    const cls = s === 'T1' ? 'status-t1' : (s === 'T2' ? 'status-t2' : '');
+    return `<span class="badge ${cls}">${escapeHtml(s)}</span>`;
+  }
+  function kv(label, value, mono = false) {
+    if (value == null || value === '' || value === 'Not Found') {
+      return `<div class="kv"><div class="lbl">${escapeHtml(label)}</div><div class="val null">—</div></div>`;
+    }
+    const val = (typeof value === 'string' && value.startsWith('<')) ? value : escapeHtml(String(value));
+    return `<div class="kv"><div class="lbl">${escapeHtml(label)}</div><div class="val ${mono ? 'mono' : ''}">${val}</div></div>`;
+  }
+  function formatDate(s) {
+    if (!s) return null;
+    const d = new Date(s);
+    if (isNaN(d)) return s;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  // ─── Best Prices ────────────────────────────────────────────────────────────
   async function loadBestPrices(reset = false) {
     if (loadingBp) return;
     loadingBp = true;
     if (reset) {
       bpSkip = 0;
-      document.getElementById('bp-grid').innerHTML = `<div class="state-box"><div class="spinner"></div><p>Loading best prices...</p></div>`;
+      document.getElementById('bp-list').innerHTML = `<div class="state-box"><div class="spinner"></div><p>Loading best prices…</p></div>`;
       document.getElementById('bp-load-more-wrap').style.display = 'none';
     }
     try {
-      let url = `${API_BASE}/api/best-prices?skip=${bpSkip}&limit=${PAGE_SIZE}`;
+      let url = `${API_BASE}/api/best-prices?skip=${bpSkip}&limit=24`;
       if (bpSearch) url += `&search=${encodeURIComponent(bpSearch)}`;
       if (bpCategory) url += `&category=${encodeURIComponent(bpCategory)}`;
       if (bpSubCategory) url += `&sub_category=${encodeURIComponent(bpSubCategory)}`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
       const data = await res.json();
       const groups = data.groups || [];
-      bpTotal = data.total ?? 0;
+      bpTotal = data.total ?? groups.length;
+
+      groups.forEach(g => {
+        if (g.category) bpAvail.category.add(g.category);
+        if (g.sub_category) bpAvail.sub_category.add(g.sub_category);
+      });
+      updateDropdown('bp-filter-category', bpAvail.category, 'All Categories', bpCategory);
+      updateDropdown('bp-filter-subcategory', bpAvail.sub_category, 'All Sub-categories', bpSubCategory);
+
+      renderBestPrices(groups, reset);
+      document.getElementById('bp-count').textContent = groups.length;
+      document.getElementById('bp-list').dataset.loaded = 'true';
       bpSkip += groups.length;
-
-      // collect categories for bp dropdowns
-      groups.forEach(g => { if (g.category) bpCategories.add(g.category); if (g.sub_category) bpSubCategories.add(g.sub_category); });
-      updateDropdown('bp-filter-category', bpCategories, 'All Categories', bpCategory);
-      updateDropdown('bp-filter-subcategory', bpSubCategories, 'All Subcategories', bpSubCategory);
-
-      document.getElementById('bp-count').textContent = bpTotal + ' total offers';
-      const grid = document.getElementById('bp-grid');
-      if (reset) grid.innerHTML = '';
-      if (!groups.length && reset) {
-        grid.innerHTML = `<div class="state-box"><p>No products found with multiple supplier offers.</p></div>`;
-      } else {
-        groups.forEach(g => grid.insertAdjacentHTML('beforeend', bestPriceGroup(g)));
-        document.getElementById('bp-load-more-wrap').style.display = bpSkip < bpTotal ? 'flex' : 'none';
-        document.getElementById('bp-load-more-btn').disabled = false;
-      }
+      document.getElementById('bp-load-more-wrap').style.display = bpSkip < bpTotal ? 'flex' : 'none';
     } catch(e) {
-      console.error(e);
-      if (reset) document.getElementById('bp-grid').innerHTML = `<div class="state-box"><p>Failed to load best prices</p></div>`;
-    } finally { loadingBp = false; }
+      document.getElementById('bp-list').innerHTML = `<div class="state-box"><p>Error loading best prices.</p></div>`;
+    } finally {
+      loadingBp = false;
+    }
+  }
+  function loadMoreBestPrices() { loadBestPrices(false); }
+
+  function renderBestPrices(groups, reset) {
+    const list = document.getElementById('bp-list');
+    if (reset) list.innerHTML = '';
+    if (!groups.length && reset) { list.innerHTML = `<div class="state-box"><p>No comparable groups yet. Need 2+ suppliers for the same product.</p></div>`; return; }
+    for (const g of groups) list.insertAdjacentHTML('beforeend', bpGroupHtml(g));
   }
 
-  window.loadMoreBestPrices = async function() {
-    document.getElementById('bp-load-more-btn').disabled = true;
-    await loadBestPrices(false);
-  };
+  function bpGroupHtml(g) {
+    const offers = [...(g.offers || [])].sort((a,b) => (a.price_per_unit_eur ?? Infinity) - (b.price_per_unit_eur ?? Infinity));
+    const best = offers[0];
+    const bestUnit = best?.price_per_unit_eur;
+    const pack = formatPack({ units_per_case: offers[0]?.units_per_case, unit_volume_ml: g.unit_volume_ml });
 
-  function bestPriceGroup(g) {
-    const name = g.product_name || '—';
-    const brand = g.brand || '—';
-    const cat = g.category || '—';
-    const subcat = g.sub_category || '';
-    const vol = g.unit_volume_ml ? `${g.unit_volume_ml} ml` : '—';
-    const bestPrice = g.best_price_eur != null ? `€${Number(g.best_price_eur).toFixed(2)}` : '—';
-    const offers = g.offers || [];
-    const minPriceEur = Math.min(...offers.map(o => o.price_per_unit_eur || Infinity));
-
-    let rows = offers.map((o, idx) => {
-      const isBest = o.price_per_unit_eur != null && o.price_per_unit_eur === minPriceEur;
-      const supplier = o.supplier_name || o.sender_name || '—';
-      const email = o.supplier_email || o.sender_email || '—';
-      const pricePU = o.price_per_unit_eur != null ? `€${Number(o.price_per_unit_eur).toFixed(2)}` : (o.price_per_unit ? `${o.currency||''}${Number(o.price_per_unit).toFixed(2)}` : null);
-      const pricePC = o.price_per_case_eur != null ? `€${Number(o.price_per_case_eur).toFixed(2)}` : (o.price_per_case ? `${o.currency||''}${Number(o.price_per_case).toFixed(2)}` : null);
-      const country = o.supplier_country || '—';
-      const incoterm = o.incoterm || '—';
-      const moq = o.moq_cases != null ? o.moq_cases : '—';
-      const leadTime = o.lead_time || '—';
-      const conf = o.confidence_score != null ? Math.round(o.confidence_score * 100) + '%' : '—';
-
-      return `<tr class="${isBest ? 'best-row' : ''}">
-        <td>${escapeHtml(supplier)}${isBest ? '<span class="best-marker">BEST</span>' : ''}<br><span style="color:var(--muted);font-size:10px;">${escapeHtml(email)}</span></td>
-        <td class="${pricePU ? 'price-cell' : 'null-cell'}">${pricePU || 'N/A'}</td>
-        <td class="${pricePC ? 'price-cell' : 'null-cell'}">${pricePC || 'N/A'}</td>
-        <td>${escapeHtml(country)}</td>
-        <td>${escapeHtml(incoterm)}</td>
-        <td>${moq}</td>
-        <td>${escapeHtml(leadTime)}</td>
-        <td>${conf}</td>
+    const rows = offers.map((o, idx) => {
+      const isBest = idx === 0;
+      const pu = o.price_per_unit_eur;
+      const pc = o.price_per_case_eur;
+      const delta = (pu != null && bestUnit != null && bestUnit > 0)
+        ? ((pu - bestUnit) / bestUnit) * 100
+        : null;
+      let deltaBadge = '';
+      if (isBest) deltaBadge = `<span class="delta-badge best">BEST</span>`;
+      else if (delta != null) deltaBadge = `<span class="delta-badge up">+${delta.toFixed(1)}%</span>`;
+      const dateStr = o.offer_date ? new Date(o.offer_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) : (o.created_at ? new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—');
+      return `<tr class="${isBest ? 'best' : ''}" data-uid="${escapeAttr(o.uid)}">
+        <td>${supplierCell(o)}</td>
+        <td class="bp-mono">${o.quantity_case != null ? `${Number(o.quantity_case)} cs` : '—'}</td>
+        <td class="bp-mono" style="color:${pu != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
+        <td class="bp-mono" style="color:${pc != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
+        <td>${o.incoterm && o.incoterm !== 'Not Found' ? `<span class="badge">${escapeHtml(o.incoterm)}</span>` : '—'}</td>
+        <td>${o.location && o.location !== 'Not Found' ? escapeHtml(o.location) : '—'}</td>
+        <td class="bp-mono">${dateStr}</td>
+        <td>${deltaBadge}</td>
       </tr>`;
     }).join('');
 
-    return `<div class="price-group-card">
-      <div class="price-group-header">
-        <div>
-          <div class="price-group-title">${escapeHtml(name)}</div>
-          <div class="price-group-meta">${escapeHtml(brand)} &bull; ${escapeHtml(cat)}${subcat ? ' / ' + escapeHtml(subcat) : ''} &bull; ${vol}</div>
+    return `<div class="bp-group">
+      <div class="bp-group-head">
+        <div class="bp-title">
+          <div class="bp-brand">${escapeHtml(g.brand || '—')}</div>
+          <div class="bp-name">${escapeHtml(g.product_name || '—')}</div>
+          <div class="bp-sub">${pack} · ${escapeHtml([g.category, g.sub_category].filter(x => x && x !== 'Not Found').join(' · '))} · ${g.supplier_count || offers.length} suppliers</div>
         </div>
-        <span class="supplier-count-badge">${g.supplier_count} suppliers</span>
-        <span class="best-price-tag">Best: ${bestPrice}</span>
+        <div class="bp-best-banner">
+          <div class="bp-best-label">Best Price</div>
+          <div class="bp-best-price">${bestUnit != null ? `€${Number(bestUnit).toFixed(2)}` : '—'} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
+          <div class="bp-best-sup">${escapeHtml(best?.supplier_name || best?.sender_name || '—')}</div>
+        </div>
       </div>
-      <table class="offers-table">
-        <thead><tr>
-          <th>Supplier</th><th>Unit Price</th><th>Case Price</th>
-          <th>Country</th><th>Incoterm</th><th>MOQ</th><th>Lead Time</th><th>Confidence</th>
-        </tr></thead>
+      <table class="bp-offers">
+        <thead>
+          <tr>
+            <th>Supplier</th>
+            <th>Qty</th>
+            <th>€/Bottle</th>
+            <th>€/Case</th>
+            <th>Incoterm</th>
+            <th>Location</th>
+            <th>Offer</th>
+            <th></th>
+          </tr>
+        </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
   }
 
-  // ─── RECORD CARD ─────────────────────────────────────────────────────────────
+  // ─── Utils ──────────────────────────────────────────────────────────────────
+  function escapeHtml(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function escapeAttr(s) { return escapeHtml(s).replace(/`/g, '&#96;'); }
 
-  function val(v) {
-    if (v === null || v === undefined || v === '' || v === 'Not Found') return `<value class="null-val">—</value>`;
-    return `<value>${escapeHtml(String(v))}</value>`;
-  }
-  function priceVal(v, currency) {
-    if (v === null || v === undefined || v === 0) return `<value class="null-val">—</value>`;
-    return `<value class="price">${currency || ''}${Number(v).toFixed(2)}</value>`;
-  }
-
-  function recordCard(item) {
-    const name = item.product_name || '—';
-    const category = item.category || '';
-    const subcat = item.sub_category || '';
-    const brand = item.brand || '';
-    const vintage = item.vintage || '';
-    const originCountry = item.origin_country || '—';
-    const supplierCountry = item.supplier_country || '—';
-    const supplier = item.supplier_name || item.sender_name || '—';
-    const supplierEmail = item.supplier_email || item.sender_email || '';
-    const senderName = item.sender_name || '—';
-    const senderEmail = item.sender_email || '—';
-    const customStatus = item.custom_status || (item.needs_manual_review ? 'needs_review' : 'standard');
-    const needsReview = item.needs_manual_review;
-    const conf = item.confidence_score != null ? Math.round(item.confidence_score * 100) : null;
-    const offerDate = item.offer_date ? new Date(item.offer_date).toLocaleDateString('en-GB') : '—';
-    const dateReceived = item.date_received ? new Date(item.date_received).toLocaleDateString('en-GB') : '—';
-    const createdAt = item.created_at ? new Date(item.created_at).toLocaleDateString('en-GB') : '—';
-    const currency = item.currency || 'EUR';
-
-    let statusColor = '#9b59b6';
-    if (customStatus === 'T1') statusColor = '#e67e22';
-    if (customStatus === 'T2') statusColor = '#3498db';
-    if (needsReview) statusColor = '#f39c12';
-
-    const confHtml = conf != null ? `<div class="confidence"><div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${conf>=80?'#2ecc71':conf>=50?'#f39c12':'#e74c3c'}"></div></div><span>${conf}%</span></div>` : '';
-
-    const errorFlagsHtml = (item.error_flags && item.error_flags.length)
-      ? `<div class="error-flags"><div class="error-flags-title">Flags (${item.error_flags.length})</div>${item.error_flags.map(f => `<span class="flag-item">${escapeHtml(f)}</span>`).join('')}</div>`
-      : '';
-
-    const attachments = (item.attachment_filenames || []).join(', ') || '—';
-
-    return `<div class="record-card">
-      <div class="card-top">
-        <div class="card-product-name">${escapeHtml(name)}</div>
-        ${category ? `<span class="card-category">${escapeHtml(category)}</span>` : ''}
-      </div>
-      <div class="card-meta-row">
-        <b>${escapeHtml(brand) || 'Unknown brand'}</b>
-        ${subcat ? `<span class="meta-pill">${escapeHtml(subcat)}</span>` : ''}
-        ${vintage ? `<span class="meta-pill">${escapeHtml(vintage)}</span>` : ''}
-        <span class="meta-pill">${escapeHtml(originCountry)}</span>
-      </div>
-
-      <div class="card-grid">
-        <div class="card-field"><label>Unit Price (EUR)</label>${priceVal(item.price_per_unit_eur, '€')}</div>
-        <div class="card-field"><label>Case Price (EUR)</label>${priceVal(item.price_per_case_eur, '€')}</div>
-        <div class="card-field"><label>Unit Price (${currency})</label>${priceVal(item.price_per_unit, item.currency ? item.currency + ' ' : '')}</div>
-        <div class="card-field"><label>Case Price (${currency})</label>${priceVal(item.price_per_case, item.currency ? item.currency + ' ' : '')}</div>
-        <div class="card-field"><label>Volume (ml)</label>${val(item.unit_volume_ml)}</div>
-        <div class="card-field"><label>Units / Case</label>${val(item.units_per_case)}</div>
-        <div class="card-field"><label>Cases / Pallet</label>${val(item.cases_per_pallet)}</div>
-        <div class="card-field"><label>Qty (cases)</label>${val(item.quantity_case)}</div>
-        <div class="card-field"><label>Alcohol %</label>${val(item.alcohol_percent)}</div>
-        <div class="card-field"><label>FX Rate</label>${val(item.fx_rate)}</div>
-        <div class="card-field"><label>Currency</label>${val(item.currency)}</div>
-        <div class="card-field"><label>FX Date</label>${val(item.fx_date)}</div>
-      </div>
-
-      <button class="detail-toggle" onclick="
-        var next = this.nextElementSibling;
-        var open = next.style.display !== 'none' && next.style.display !== '';
-        next.style.display = open ? 'none' : 'grid';
-        this.textContent = open ? 'Show more details' : 'Hide details';
-      ">Show more details</button>
-
-      <div class="card-grid" style="display:none; margin-top:0;">
-        <div class="card-field"><label>Packaging</label>${val(item.packaging)}</div>
-        <div class="card-field"><label>Packaging Raw</label>${val(item.packaging_raw)}</div>
-        <div class="card-field"><label>Bottle / Can Type</label>${val(item.bottle_or_can_type)}</div>
-        <div class="card-field"><label>Gift Box</label>${val(item.gift_box)}</div>
-        <div class="card-field"><label>Refillable Status</label>${val(item.refillable_status || null)}</div>
-        <div class="card-field"><label>EAN Code</label>${val(item.ean_code)}</div>
-        <div class="card-field"><label>MOQ (cases)</label>${val(item.moq_cases)}</div>
-        <div class="card-field"><label>Lead Time</label>${val(item.lead_time)}</div>
-        <div class="card-field"><label>Incoterm</label>${val(item.incoterm)}</div>
-        <div class="card-field"><label>Location</label>${val(item.location)}</div>
-        <div class="card-field"><label>Valid Until</label>${val(item.valid_until)}</div>
-        <div class="card-field"><label>Best Before</label>${val(item.best_before_date)}</div>
-        <div class="card-field"><label>Label Language</label>${val(item.label_language)}</div>
-        <div class="card-field"><label>Product Key</label>${val(item.product_key)}</div>
-        <div class="card-field"><label>Product Reference</label>${val(item.product_reference)}</div>
-        <div class="card-field"><label>Supplier Reference</label>${val(item.supplier_reference)}</div>
-        <div class="card-field"><label>Supplier Country</label>${val(supplierCountry)}</div>
-        <div class="card-field"><label>Supplier Email</label>${val(supplierEmail)}</div>
-        <div class="card-field"><label>Sender Name</label>${val(senderName)}</div>
-        <div class="card-field"><label>Sender Email</label>${val(senderEmail)}</div>
-        <div class="card-field"><label>Source Channel</label>${val(item.source_channel)}</div>
-        <div class="card-field"><label>Source Filename</label>${val(item.source_filename)}</div>
-        <div class="card-field"><label>Processing Version</label>${val(item.processing_version)}</div>
-        <div class="card-field"><label>UID</label>${val(item.uid)}</div>
-        <div class="card-field"><label>Job ID</label>${val(item.job_id)}</div>
-        <div class="card-field"><label>Source File ID</label>${val(item.source_file_id)}</div>
-        <div class="card-field"><label>Source Message ID</label>${val(item.source_message_id)}</div>
-        <div class="card-field"><label>Attachment Count</label>${val(item.attachment_count)}</div>
-        <div class="card-field" style="grid-column:1/-1"><label>Attachment Filenames</label>${val(attachments)}</div>
-        <div class="card-field"><label>Offer Date</label>${val(item.offer_date)}</div>
-        <div class="card-field"><label>Date Received</label>${val(item.date_received)}</div>
-        <div class="card-field"><label>Created At</label>${val(item.created_at)}</div>
-      </div>
-
-      ${errorFlagsHtml}
-
-      <div class="card-footer">
-        <div class="card-supplier" title="${escapeHtml(supplierEmail)}"><b>${escapeHtml(supplier)}</b>${item.supplier_reference ? ` · ref: ${escapeHtml(item.supplier_reference)}` : ''}</div>
-        <div class="badge-group">
-          <span class="custom-status-badge" style="background:${statusColor};">${escapeHtml(customStatus)}</span>
-          ${needsReview ? `<span class="review-flag warn">Needs Review</span>` : `<span class="review-flag ok">Validated</span>`}
-          ${confHtml}
-        </div>
-      </div>
-      <div class="bottom-meta">
-        <span>Sender: ${escapeHtml(senderName)}</span>
-        <span>Offer: ${offerDate}</span>
-        <span>${item.attachment_count || 0} attachments</span>
-      </div>
-    </div>`;
-  }
-
-  function escapeHtml(str) {
-    if (!str && str !== 0) return '';
-    return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  }
+  // Delegated click on best-prices offers → drawer (needs raw item; refetch via cache)
+  document.addEventListener('click', async (e) => {
+    const tr = e.target.closest('table.bp-offers tbody tr[data-uid]');
+    if (!tr) return;
+    const uid = tr.dataset.uid;
+    // Prefer cached
+    const hit = allRawItemsCache.find(x => x.uid === uid);
+    if (hit) { openDrawer(hit); return; }
+    // Fallback: search server for this record
+    try {
+      const res = await fetch(`${API_BASE}/api/records?limit=1&search=${encodeURIComponent(uid)}`, { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      const data = await res.json();
+      if (data.records?.length) openDrawer(data.records[0]);
+    } catch(_) {}
+  });
 </script>
+
 </body>
 </html>
