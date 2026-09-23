@@ -59,6 +59,52 @@
     .nav-tab:hover:not(.active) { background: var(--pill); color: var(--text); }
     .logout-btn { background: transparent; border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
     .logout-btn:hover { border-color: var(--red); color: var(--red); }
+    .primary-tab { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+    .primary-tab:hover { background: var(--accent); color: white; }
+    .alert-badge { background: var(--red); color: white; border-radius: 10px; padding: 1px 6px; font-size: 10px; font-weight: 700; margin-left: 4px; }
+
+    /* Alerts page */
+    .alerts-list { padding: 16px 24px 40px; overflow-y: auto; flex: 1; }
+    .alert-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; margin-bottom: 12px; display: flex; gap: 16px; align-items: center; cursor: pointer; transition: background 0.15s; }
+    .alert-card:hover { background: var(--card-hover); border-color: var(--accent); }
+    .alert-icon { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0; font-size: 17px; }
+    .alert-icon.new-low { background: rgba(52,211,153,0.15); color: var(--green); }
+    .alert-icon.competitive { background: rgba(93,158,255,0.15); color: var(--accent); }
+    .alert-body { flex: 1; min-width: 0; }
+    .alert-title { font-size: 13px; font-weight: 600; color: white; }
+    .alert-msg { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+    .alert-meta { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted); margin-top: 4px; }
+    .alert-delta { font-family: 'DM Mono', monospace; font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 12px; }
+    .alert-delta.good { background: rgba(52,211,153,0.15); color: var(--green); }
+    .alert-delta.mid { background: rgba(251,191,36,0.15); color: var(--amber); }
+
+    /* Modal for new offer / edit */
+    .modal-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 500; display: none; align-items: center; justify-content: center; padding: 20px; }
+    .modal-scrim.open { display: flex; }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
+    .modal h3 { font-size: 18px; font-weight: 700; margin-bottom: 6px; color: white; }
+    .modal .subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 20px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+    .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+    .form-field { display: flex; flex-direction: column; }
+    .form-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+    .form-field input, .form-field select, .form-field textarea { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); font-size: 13px; font-family: inherit; outline: none; }
+    .form-field input:focus, .form-field select:focus { border-color: var(--accent); }
+    .form-field textarea { min-height: 60px; resize: vertical; font-family: inherit; }
+    .form-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--accent); font-weight: 700; grid-column: 1 / -1; margin-top: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .modal-actions .btn-outline { border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 10px; padding: 8px 20px; font-size: 13px; cursor: pointer; font-family: inherit; }
+    .modal-err { color: var(--red); font-size: 12px; margin-top: 8px; display: none; }
+
+    /* Inline edit mode in the drawer */
+    .drawer-edit-toggle { background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent); padding: 4px 12px; border-radius: 8px; font-size: 11px; cursor: pointer; font-family: inherit; font-weight: 600; margin-left: auto; }
+    .drawer-edit-toggle:hover { background: var(--accent); color: white; }
+    .drawer.editing .kv .val { display: none; }
+    .drawer .kv input.edit-input { display: none; }
+    .drawer.editing .kv input.edit-input { display: block; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; color: var(--text); font-size: 13px; font-family: inherit; width: 100%; margin-top: 2px; }
+    .drawer .edit-actions { display: none; gap: 8px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); position: sticky; bottom: 0; background: var(--surface); padding-bottom: 14px; }
+    .drawer.editing .edit-actions { display: flex; }
+    .edit-actions .btn-save { background: var(--green); color: #0a0c12; border: none; padding: 8px 20px; border-radius: 8px; font-weight: 700; cursor: pointer; font-family: inherit; font-size: 13px; }
 
     /* ─── Layout ─── */
     .layout { display: flex; height: calc(100vh - var(--header-h)); }
@@ -297,6 +343,8 @@
   <div class="header-right">
     <button class="nav-tab active" id="tab-offers" onclick="switchTab('offers')">All Offers</button>
     <button class="nav-tab" id="tab-bestprices" onclick="switchTab('bestprices')">Best Prices</button>
+    <button class="nav-tab" id="tab-alerts" onclick="switchTab('alerts')">Alerts <span id="alert-badge" class="alert-badge" hidden>0</span></button>
+    <button class="nav-tab primary-tab" onclick="openNewOfferModal()">+ New offer</button>
     <div class="stat-chip" id="stat-sources"><b>—</b> Sources</div>
     <div class="stat-chip" id="stat-records"><b>—</b> Offers</div>
     <button class="logout-btn" onclick="handleLogout()">Logout</button>
@@ -431,6 +479,21 @@
       </div>
     </div>
 
+    <!-- ALERTS PAGE -->
+    <div class="page" id="page-alerts">
+      <div class="search-bar">
+        <div class="big-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
+          <input id="alerts-window" placeholder="Window: last N days" value="7" style="max-width: 220px; padding-left: 46px;" />
+        </div>
+        <div class="search-hint">Recent trading events — new best prices and newly competitive suppliers based on canonical product identity (same brand, product, size, packaging, incoterm).</div>
+      </div>
+      <div class="toolbar">
+        <div class="count"><b id="alerts-count">—</b> alerts in the last <b id="alerts-window-label">7</b> days</div>
+      </div>
+      <div class="alerts-list" id="alerts-list"><div class="state-box"><div class="spinner"></div><p>Loading alerts…</p></div></div>
+    </div>
+
     <!-- BEST PRICES PAGE -->
     <div class="page" id="page-bestprices">
       <div class="search-bar">
@@ -460,6 +523,49 @@
   </main>
 </div>
 
+<!-- New offer modal -->
+<div class="modal-scrim" id="new-offer-scrim" onclick="if(event.target===this) closeNewOfferModal()">
+  <div class="modal" role="dialog" aria-label="Add new offer">
+    <h3>Add new offer</h3>
+    <div class="subtitle">For phone / meeting offers you want to log manually. All fields except product name are optional.</div>
+    <div class="form-grid">
+      <div class="form-section-title">Product</div>
+      <div class="form-field"><label>Brand</label><input id="nf-brand" placeholder="e.g. Grey Goose" /></div>
+      <div class="form-field"><label>Product name <span style="color:var(--red);">*</span></label><input id="nf-product_name" placeholder="e.g. Original" required /></div>
+      <div class="form-field"><label>Category</label><input id="nf-category" placeholder="e.g. Spirits" /></div>
+      <div class="form-field"><label>Sub-category</label><input id="nf-sub_category" placeholder="e.g. Vodka" /></div>
+      <div class="form-field"><label>Bottle size (ml)</label><input id="nf-unit_volume_ml" type="number" step="0.01" placeholder="700" /></div>
+      <div class="form-field"><label>Units per case</label><input id="nf-units_per_case" type="number" step="1" placeholder="6" /></div>
+      <div class="form-field"><label>Alcohol %</label><input id="nf-alcohol_percent" type="number" step="0.1" placeholder="40" /></div>
+      <div class="form-field"><label>EAN / GTIN</label><input id="nf-ean_code" placeholder="optional" /></div>
+
+      <div class="form-section-title">Price</div>
+      <div class="form-field"><label>Currency</label><select id="nf-currency"><option>EUR</option><option>USD</option><option>GBP</option><option>CHF</option></select></div>
+      <div class="form-field"><label>Price per unit</label><input id="nf-price_per_unit" type="number" step="0.01" placeholder="16.00" /></div>
+      <div class="form-field"><label>Price per case</label><input id="nf-price_per_case" type="number" step="0.01" placeholder="96.00" /></div>
+      <div class="form-field"><label>FX rate → EUR (if not EUR)</label><input id="nf-fx_rate" type="number" step="0.0001" value="1.0" /></div>
+
+      <div class="form-section-title">Commercial</div>
+      <div class="form-field"><label>Supplier</label><input id="nf-supplier_name" placeholder="Supplier company name" /></div>
+      <div class="form-field"><label>Supplier email</label><input id="nf-supplier_email" type="email" /></div>
+      <div class="form-field"><label>Incoterm</label><select id="nf-incoterm"><option value="">—</option><option>EXW</option><option>DAP</option><option>FOB</option><option>CIF</option><option>DDP</option></select></div>
+      <div class="form-field"><label>Location</label><input id="nf-location" placeholder="e.g. Loendersloot" /></div>
+      <div class="form-field"><label>Available quantity (cases)</label><input id="nf-quantity_case" type="number" step="1" /></div>
+      <div class="form-field"><label>MOQ (cases)</label><input id="nf-moq_cases" type="number" step="1" /></div>
+      <div class="form-field"><label>Lead time</label><input id="nf-lead_time" placeholder="e.g. 2 weeks" /></div>
+      <div class="form-field"><label>T1 / T2</label><select id="nf-custom_status"><option value="">—</option><option>T1</option><option>T2</option></select></div>
+      <div class="form-field"><label>Offer date</label><input id="nf-offer_date" type="date" /></div>
+      <div class="form-field"><label>Valid until</label><input id="nf-valid_until" type="date" /></div>
+      <div class="form-field" style="grid-column: 1 / -1;"><label>Notes (optional)</label><textarea id="nf-notes" placeholder="Any extra context"></textarea></div>
+    </div>
+    <div class="modal-err" id="nf-err"></div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeNewOfferModal()">Cancel</button>
+      <button class="btn" onclick="submitNewOffer()">Save offer</button>
+    </div>
+  </div>
+</div>
+
 <!-- Detail drawer -->
 <div class="drawer-scrim" id="drawer-scrim" onclick="closeDrawer()"></div>
 <aside class="drawer" id="drawer">
@@ -469,9 +575,14 @@
       <div class="name" id="drawer-name">—</div>
       <div class="sub" id="drawer-sub">—</div>
     </div>
+    <button class="drawer-edit-toggle" id="drawer-edit-toggle" onclick="toggleDrawerEdit()">Edit</button>
     <button class="drawer-close" onclick="closeDrawer()" title="Close">✕</button>
   </div>
   <div class="drawer-body" id="drawer-body"></div>
+  <div class="edit-actions" id="edit-actions">
+    <button class="btn-outline" onclick="cancelDrawerEdit()">Cancel</button>
+    <button class="btn-save" onclick="saveDrawerEdit()">Save changes</button>
+  </div>
 </aside>
 
 <script>
@@ -616,17 +727,197 @@
       });
     });
 
-    // Escape closes drawer
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+    // Escape closes drawer / modal
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeDrawer();
+        closeNewOfferModal();
+      }
+    });
+
+    // Alerts window
+    const alertsWin = document.getElementById('alerts-window');
+    if (alertsWin) alertsWin.addEventListener('change', loadAlerts);
+
+    // Show alert badge on load (background poll — cheap)
+    setTimeout(loadAlertBadge, 800);
+  }
+
+  async function loadAlertBadge() {
+    try {
+      const res = await fetch(`${API_BASE}/api/alerts?days=7&limit=1`,
+        { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      const d = await res.json();
+      const badge = document.getElementById('alert-badge');
+      if (d.count > 0) { badge.textContent = d.count; badge.hidden = false; }
+    } catch(_) {}
   }
 
   function switchTab(tab) {
     currentTab = tab;
-    document.getElementById('tab-offers').classList.toggle('active', tab === 'offers');
-    document.getElementById('tab-bestprices').classList.toggle('active', tab === 'bestprices');
-    document.getElementById('page-offers').classList.toggle('active', tab === 'offers');
-    document.getElementById('page-bestprices').classList.toggle('active', tab === 'bestprices');
+    ['offers','bestprices','alerts'].forEach(t => {
+      const tabBtn = document.getElementById('tab-' + t);
+      const page = document.getElementById('page-' + t);
+      if (tabBtn) tabBtn.classList.toggle('active', t === tab);
+      if (page) page.classList.toggle('active', t === tab);
+    });
     if (tab === 'bestprices' && !document.getElementById('bp-list').dataset.loaded) loadBestPrices(true);
+    if (tab === 'alerts') loadAlerts();
+  }
+
+  // ─── Alerts ────────────────────────────────────────────────────────────────
+  async function loadAlerts() {
+    const days = Number(document.getElementById('alerts-window').value) || 7;
+    document.getElementById('alerts-window-label').textContent = days;
+    const listEl = document.getElementById('alerts-list');
+    listEl.innerHTML = `<div class="state-box"><div class="spinner"></div><p>Loading alerts…</p></div>`;
+    try {
+      const res = await fetch(`${API_BASE}/api/alerts?days=${days}&limit=100`,
+        { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      const data = await res.json();
+      const alerts = data.alerts || [];
+      document.getElementById('alerts-count').textContent = alerts.length;
+      const badge = document.getElementById('alert-badge');
+      if (alerts.length > 0) { badge.textContent = alerts.length; badge.hidden = false; } else badge.hidden = true;
+      if (!alerts.length) {
+        listEl.innerHTML = `<div class="state-box"><p>No trading events in the last ${days} days. When a new best price lands or a new supplier undercuts an incumbent, it will appear here.</p></div>`;
+        return;
+      }
+      listEl.innerHTML = alerts.map(a => alertCardHtml(a)).join('');
+      [...listEl.querySelectorAll('[data-uid]')].forEach(el => {
+        el.addEventListener('click', () => openDrawerByUid(el.dataset.uid));
+      });
+    } catch (e) {
+      listEl.innerHTML = `<div class="state-box"><p>Error loading alerts.</p></div>`;
+    }
+  }
+
+  function alertCardHtml(a) {
+    const iconCls = a.type === 'new_best_price' ? 'new-low' : 'competitive';
+    const icon = a.type === 'new_best_price' ? '↓' : '★';
+    const delta = a.previous_best.delta_pct;
+    const deltaCls = delta < -5 ? 'good' : (delta < 5 ? 'mid' : 'mid');
+    const ageInfo = formatAge(a.current.offer_date);
+    return `<div class="alert-card" data-uid="${escapeAttr(a.current.uid)}">
+      <div class="alert-icon ${iconCls}">${icon}</div>
+      <div class="alert-body">
+        <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
+        <div class="alert-msg">${escapeHtml(a.message || '')}</div>
+        <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + ' ago' : ''} · click to open</div>
+      </div>
+      <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
+    </div>`;
+  }
+
+  // ─── New offer modal ───────────────────────────────────────────────────────
+  function openNewOfferModal() {
+    document.getElementById('new-offer-scrim').classList.add('open');
+    document.getElementById('nf-product_name').focus();
+  }
+  function closeNewOfferModal() {
+    document.getElementById('new-offer-scrim').classList.remove('open');
+    document.getElementById('nf-err').style.display = 'none';
+  }
+  async function submitNewOffer() {
+    const gv = (id) => document.getElementById('nf-' + id).value.trim() || null;
+    const gn = (id) => { const v = gv(id); return v ? Number(v) : null; };
+    const payload = {
+      product_name: gv('product_name'),
+      brand: gv('brand'), category: gv('category'), sub_category: gv('sub_category'),
+      unit_volume_ml: gn('unit_volume_ml'), units_per_case: gn('units_per_case'),
+      alcohol_percent: gn('alcohol_percent'), ean_code: gv('ean_code'),
+      currency: gv('currency') || 'EUR', price_per_unit: gn('price_per_unit'),
+      price_per_case: gn('price_per_case'), fx_rate: gn('fx_rate') || 1.0,
+      supplier_name: gv('supplier_name'), supplier_email: gv('supplier_email'),
+      incoterm: gv('incoterm'), location: gv('location'),
+      quantity_case: gn('quantity_case'), moq_cases: gn('moq_cases'),
+      lead_time: gv('lead_time'), custom_status: gv('custom_status'),
+      offer_date: gv('offer_date'), valid_until: gv('valid_until'),
+      notes: gv('notes'), source_channel: 'manual',
+    };
+    if (!payload.product_name) {
+      const err = document.getElementById('nf-err');
+      err.textContent = 'Product name is required.'; err.style.display = 'block';
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/offers`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${currentToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      closeNewOfferModal();
+      // Clear the form so the next open starts fresh
+      ['brand','product_name','category','sub_category','unit_volume_ml','units_per_case','alcohol_percent','ean_code','price_per_unit','price_per_case','supplier_name','supplier_email','location','quantity_case','moq_cases','lead_time','offer_date','valid_until','notes'].forEach(k => document.getElementById('nf-' + k).value = '');
+      loadRecords(true);
+    } catch (e) {
+      const err = document.getElementById('nf-err');
+      err.textContent = 'Failed to save: ' + String(e).slice(0, 200);
+      err.style.display = 'block';
+    }
+  }
+
+  // ─── Drawer inline edit ─────────────────────────────────────────────────────
+  let drawerCurrentItem = null;
+  const drawerOriginalOpen = openDrawer;
+  window.openDrawer = function(item) {
+    drawerCurrentItem = item;
+    drawerOriginalOpen(item);
+    document.getElementById('drawer').classList.remove('editing');
+  };
+  function toggleDrawerEdit() {
+    const drawer = document.getElementById('drawer');
+    const editing = drawer.classList.toggle('editing');
+    if (editing) attachEditInputs();
+    document.getElementById('drawer-edit-toggle').textContent = editing ? 'Cancel edit' : 'Edit';
+  }
+  function attachEditInputs() {
+    // For each .kv, add an <input> matching the field name (data-field attr)
+    [...document.querySelectorAll('.drawer-body .kv[data-field]')].forEach(kv => {
+      if (kv.querySelector('input.edit-input')) return;
+      const field = kv.dataset.field;
+      const cur = drawerCurrentItem?.[field];
+      const inp = document.createElement('input');
+      inp.className = 'edit-input';
+      inp.dataset.field = field;
+      inp.value = cur == null ? '' : String(cur);
+      kv.appendChild(inp);
+    });
+  }
+  function cancelDrawerEdit() {
+    document.getElementById('drawer').classList.remove('editing');
+    document.getElementById('drawer-edit-toggle').textContent = 'Edit';
+    [...document.querySelectorAll('.drawer-body .kv input.edit-input')].forEach(i => i.remove());
+  }
+  async function saveDrawerEdit() {
+    if (!drawerCurrentItem) return;
+    const changes = {};
+    [...document.querySelectorAll('.drawer-body input.edit-input')].forEach(inp => {
+      const field = inp.dataset.field;
+      const raw = inp.value.trim();
+      const cur = drawerCurrentItem[field];
+      const newVal = raw === '' ? null : raw;
+      const numFields = new Set(['unit_volume_ml','units_per_case','cases_per_pallet','quantity_case','moq_cases','alcohol_percent','price_per_unit','price_per_case','fx_rate']);
+      const parsed = numFields.has(field) && newVal !== null ? Number(newVal) : newVal;
+      if (String(cur ?? '') !== String(parsed ?? '')) changes[field] = parsed;
+    });
+    if (Object.keys(changes).length === 0) { cancelDrawerEdit(); return; }
+    try {
+      const res = await fetch(`${API_BASE}/api/offers/${drawerCurrentItem.uid}`, {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${currentToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: changes, edited_by: 'admin' }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      // Apply changes locally + refresh
+      Object.assign(drawerCurrentItem, changes);
+      cancelDrawerEdit();
+      openDrawer(drawerCurrentItem);
+      loadRecords(true);
+    } catch (e) {
+      alert('Save failed: ' + String(e).slice(0, 200));
+    }
   }
 
   // ─── Sources ────────────────────────────────────────────────────────────────
@@ -1156,15 +1447,15 @@
       <div class="drawer-section">
         <h3>Commercial conditions</h3>
         <div class="kv-grid three">
-          ${kv('Supplier', supplierRich(i))}
-          ${kv('Available qty', i.quantity_case != null ? `${Number(i.quantity_case)} cs` : null, true)}
-          ${kv('MOQ', i.moq_cases != null ? `${Number(i.moq_cases)} cs` : null, true)}
-          ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true)}
-          ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null)}
-          ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null)}
-          ${kv('Offer date', formatDate(i.offer_date))}
-          ${kv('Valid until', formatDate(i.valid_until))}
-          ${kv('Best before', formatDate(i.best_before_date))}
+          ${kv('Supplier', supplierRich(i), false, 'supplier_name')}
+          ${kv('Available qty', i.quantity_case != null ? `${Number(i.quantity_case)} cs` : null, true, 'quantity_case')}
+          ${kv('MOQ', i.moq_cases != null ? `${Number(i.moq_cases)} cs` : null, true, 'moq_cases')}
+          ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true, 'incoterm')}
+          ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
+          ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null, false, 'lead_time')}
+          ${kv('Offer date', formatDate(i.offer_date), false, 'offer_date')}
+          ${kv('Valid until', formatDate(i.valid_until), false, 'valid_until')}
+          ${kv('Best before', formatDate(i.best_before_date), false, 'best_before_date')}
         </div>
       </div>
 
@@ -1284,12 +1575,13 @@
     const cls = s === 'T1' ? 'status-t1' : (s === 'T2' ? 'status-t2' : '');
     return `<span class="badge ${cls}">${escapeHtml(s)}</span>`;
   }
-  function kv(label, value, mono = false) {
+  function kv(label, value, mono = false, field = null) {
+    const fieldAttr = field ? ` data-field="${escapeAttr(field)}"` : '';
     if (value == null || value === '' || value === 'Not Found') {
-      return `<div class="kv"><div class="lbl">${escapeHtml(label)}</div><div class="val null">—</div></div>`;
+      return `<div class="kv"${fieldAttr}><div class="lbl">${escapeHtml(label)}</div><div class="val null">—</div></div>`;
     }
     const val = (typeof value === 'string' && value.startsWith('<')) ? value : escapeHtml(String(value));
-    return `<div class="kv"><div class="lbl">${escapeHtml(label)}</div><div class="val ${mono ? 'mono' : ''}">${val}</div></div>`;
+    return `<div class="kv"${fieldAttr}><div class="lbl">${escapeHtml(label)}</div><div class="val ${mono ? 'mono' : ''}">${val}</div></div>`;
   }
   function formatDate(s) {
     if (!s) return null;

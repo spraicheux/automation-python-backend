@@ -5,6 +5,7 @@ from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional
 from core.database import get_db
+from core.normalization import canonical_key
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -42,26 +43,19 @@ async def get_benchmarks(
     days = _WINDOW_DAYS.get(window, 365)
     cutoff = datetime.utcnow() - timedelta(days=days) if days else None
 
-    q = db.query(
-        func.lower(func.coalesce(OfferItemDB.brand, '')).label('brand_lc'),
-        func.lower(func.coalesce(OfferItemDB.product_name, '')).label('name_lc'),
-        func.coalesce(OfferItemDB.unit_volume_ml, 0).label('vol'),
-        func.coalesce(OfferItemDB.units_per_case, 0).label('upc'),
-        # Incoterm is part of comparability — EXW €20 and DAP €21 are not the
-        # same offer even for the same product. See client feedback: freight
-        # / landed-cost is not yet normalised so we key by incoterm.
-        func.upper(func.coalesce(OfferItemDB.incoterm, '')).label('inco'),
-        OfferItemDB.uid,
-        OfferItemDB.price_per_unit_eur,
-        OfferItemDB.offer_date,
-    ).filter(OfferItemDB.price_per_unit_eur.isnot(None))
+    q = db.query(OfferItemDB).filter(OfferItemDB.price_per_unit_eur.isnot(None))
     if cutoff:
         q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) >= cutoff)
 
     rows = q.all()
     peers = {}
     for r in rows:
-        key = f"{r.brand_lc}|{r.name_lc}|{r.vol}|{r.upc}|{r.inco}"
+        # Use the canonical key so "Baileys" / "Bailey's" / "Baileys Original"
+        # collapse into one peer group. Incoterm is part of the key so EXW €20
+        # and DAP €21 aren't treated as apples-to-apples until landed-cost
+        # normalisation exists.
+        key = canonical_key(r.brand, r.product_name, r.unit_volume_ml,
+                            r.units_per_case, r.incoterm)
         p = peers.get(key)
         if p is None:
             peers[key] = {
