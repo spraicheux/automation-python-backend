@@ -51,9 +51,19 @@ def process_document_task(self, job_id: str, payload_dict: dict):
             raise
 
         loop = get_or_create_eventloop()
-        
-        # We reuse the existing core processing logic which returns nothing but updates Redis with the final "done" status and "result_data" mapping
-        loop.run_until_complete(process_offer(payload, job_id))
+
+        # Hard timeout on the whole extraction (9 min). asyncio.wait_for works
+        # regardless of celery pool type, unlike soft_time_limit which is a
+        # no-op under --pool=solo. On timeout the task marks the job "failed"
+        # and celery is free to pick up the next queued job.
+        try:
+            loop.run_until_complete(
+                asyncio.wait_for(process_offer(payload, job_id), timeout=540.0)
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Extraction timed out (>9min) for JobID: {job_id}. Marking failed, moving on.")
+            redis_manager.set_job_status(job_id, "failed")
+            return
 
         result = redis_manager.get_job_result(job_id)
         if result:
