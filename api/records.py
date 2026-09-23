@@ -102,10 +102,22 @@ async def get_records(
     sub_category: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
+    # Deduplicate by GENUINELY comparable identity so 70cl and 20cl of the same
+    # product name never collapse into one row (see client feedback: bottle size
+    # and packaging define distinct products). Partition on brand + name + volume
+    # + units_per_case + supplier so different suppliers of the same reference
+    # also stay visible.
     subquery = db.query(
         OfferItemDB.uid,
         func.row_number().over(
-            partition_by=func.coalesce(func.lower(OfferItemDB.product_name), OfferItemDB.uid),
+            partition_by=(
+                func.lower(func.coalesce(OfferItemDB.brand, '')),
+                func.lower(func.coalesce(OfferItemDB.product_name, '')),
+                func.coalesce(OfferItemDB.unit_volume_ml, 0),
+                func.coalesce(OfferItemDB.units_per_case, 0),
+                func.coalesce(OfferItemDB.supplier_name, ''),
+                OfferItemDB.source_file_id,
+            ),
             order_by=[
                 nulls_last(OfferItemDB.price_per_unit_eur.asc()),
                 nulls_last(OfferItemDB.price_per_case_eur.asc()),
