@@ -553,6 +553,23 @@ async def process_offer(payload, job_id: str):
                 logger.info(f"Dedup: {len(all_products)} → {len(deduped)} products")
             all_products = deduped
 
+            # ── Deterministic backend rules (see core/deterministic_rules.py) ───
+            # Any fact that's derivable from the document header (currency,
+            # incoterm) should NOT depend on the LLM. If the source says
+            # "Net price (EUR)" every row gets currency=EUR regardless of
+            # whether the model captured it correctly.
+            from core.deterministic_rules import apply_deterministic_defaults
+            header_text = (payload.text_body or "")
+            if payload.attachments:
+                # Prepend the subject/sender so header rules can also fire from
+                # forwarded emails whose price list is in an attachment.
+                header_text = f"Subject: {payload.subject or ''}\nFrom: {payload.sender_email or ''}\n\n" + header_text
+            all_products, drule_corrections = apply_deterministic_defaults(all_products, header_text)
+            if drule_corrections:
+                logger.info(f"Deterministic rules applied {len(drule_corrections)} corrections:")
+                for c in drule_corrections[:10]:
+                    logger.info(f"  - {c}")
+
         # Create offers
         offers = []
 
