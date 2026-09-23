@@ -13,6 +13,8 @@ from core.logging_utils import setup_logging
 # Initialize global logging to stdout for Azure visibility
 setup_logging(level=logging.INFO)
 
+from celery.exceptions import SoftTimeLimitExceeded
+
 from core.celery_app import celery_app
 from workers.processor import process_offer
 from core.redis_client import redis_manager
@@ -30,7 +32,11 @@ def get_or_create_eventloop():
             return asyncio.get_event_loop()
 
 
-@celery_app.task(bind=True, max_retries=5)
+# soft_time_limit raises SoftTimeLimitExceeded inside the worker → our try/except
+# catches it, marks the job "failed", and stops retrying.
+# time_limit is the hard kill switch so a truly-stuck worker can't monopolise the
+# celery slot on the B1 single-vCPU box.
+@celery_app.task(bind=True, max_retries=2, soft_time_limit=600, time_limit=900)
 def process_document_task(self, job_id: str, payload_dict: dict):
     try:
         logger.info(f"Celery processing started for JobID: {job_id}")
@@ -57,6 +63,11 @@ def process_document_task(self, job_id: str, payload_dict: dict):
         else:
             logger.error(f"Job {job_id} finished but no result was found in RedisManager.")
 
+    except SoftTimeLimitExceeded:
+        # 10-minute soft limit hit — extraction was too slow. Mark failed and stop.
+        logger.error(f"Celery soft time limit exceeded for JobID: {job_id}. Marking failed, no retry.")
+        redis_manager.set_job_status(job_id, "failed")
+        return
     except Exception as exc:
         logger.error(f"Processing failed in celery for JobID: {job_id}. Err: {exc}\n{traceback.format_exc()}")
         redis_manager.set_job_status(job_id, "failed")

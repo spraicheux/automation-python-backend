@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# 90-second per-request timeout so a single slow OpenAI call can't hang the
+# celery worker forever. On timeout the SDK raises `openai.APITimeoutError`
+# which the surrounding try/except catches and moves on to the next batch.
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=90.0, max_retries=1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
