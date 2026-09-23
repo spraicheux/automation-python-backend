@@ -47,6 +47,10 @@ async def get_benchmarks(
         func.lower(func.coalesce(OfferItemDB.product_name, '')).label('name_lc'),
         func.coalesce(OfferItemDB.unit_volume_ml, 0).label('vol'),
         func.coalesce(OfferItemDB.units_per_case, 0).label('upc'),
+        # Incoterm is part of comparability — EXW €20 and DAP €21 are not the
+        # same offer even for the same product. See client feedback: freight
+        # / landed-cost is not yet normalised so we key by incoterm.
+        func.upper(func.coalesce(OfferItemDB.incoterm, '')).label('inco'),
         OfferItemDB.uid,
         OfferItemDB.price_per_unit_eur,
         OfferItemDB.offer_date,
@@ -57,7 +61,7 @@ async def get_benchmarks(
     rows = q.all()
     peers = {}
     for r in rows:
-        key = f"{r.brand_lc}|{r.name_lc}|{r.vol}|{r.upc}"
+        key = f"{r.brand_lc}|{r.name_lc}|{r.vol}|{r.upc}|{r.inco}"
         p = peers.get(key)
         if p is None:
             peers[key] = {
@@ -182,13 +186,16 @@ async def get_best_prices(
     """
     from sqlalchemy import case, cast, String
 
-    # Build a subquery that counts distinct suppliers per product group
+    # Build a subquery that counts distinct suppliers per product group.
+    # Incoterm is part of the group key so an EXW €20 and DAP €21 offer for
+    # the same product don't get lined up as apples-to-apples comparisons.
     group_cols = [
         func.lower(func.coalesce(OfferItemDB.product_name, '')),
         func.coalesce(OfferItemDB.unit_volume_ml, 0),
         func.lower(func.coalesce(OfferItemDB.category, '')),
         func.lower(func.coalesce(OfferItemDB.sub_category, '')),
         func.lower(func.coalesce(OfferItemDB.brand, '')),
+        func.upper(func.coalesce(OfferItemDB.incoterm, '')),
     ]
 
     multi_supplier_subq = (
@@ -198,6 +205,7 @@ async def get_best_prices(
             func.lower(func.coalesce(OfferItemDB.category, '')).label("cat"),
             func.lower(func.coalesce(OfferItemDB.sub_category, '')).label("subcat"),
             func.lower(func.coalesce(OfferItemDB.brand, '')).label("brand"),
+            func.upper(func.coalesce(OfferItemDB.incoterm, '')).label("inco"),
             func.count(func.distinct(
                 func.coalesce(OfferItemDB.supplier_name, OfferItemDB.sender_email, '')
             )).label("supplier_count")
@@ -219,7 +227,8 @@ async def get_best_prices(
             (func.coalesce(OfferItemDB.unit_volume_ml, 0) == multi_supplier_subq.c.vol) &
             (func.lower(func.coalesce(OfferItemDB.category, '')) == multi_supplier_subq.c.cat) &
             (func.lower(func.coalesce(OfferItemDB.sub_category, '')) == multi_supplier_subq.c.subcat) &
-            (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand)
+            (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand) &
+            (func.upper(func.coalesce(OfferItemDB.incoterm, '')) == multi_supplier_subq.c.inco)
         )
     )
 
@@ -257,6 +266,7 @@ async def get_best_prices(
             (row.category or '').lower(),
             (row.sub_category or '').lower(),
             (row.brand or '').lower(),
+            (row.incoterm or '').upper(),
         )
         groups[key].append(row.to_dict())
 
@@ -269,6 +279,7 @@ async def get_best_prices(
             "category": items[0].get("category"),
             "sub_category": items[0].get("sub_category"),
             "unit_volume_ml": items[0].get("unit_volume_ml"),
+            "incoterm": items[0].get("incoterm"),  # comparison anchor
             "supplier_count": len(items),
             "best_price_eur": items_sorted[0].get("price_per_unit_eur"),
             "offers": items_sorted,

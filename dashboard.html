@@ -198,6 +198,9 @@
     .delta-badge.up { background: rgba(248,113,113,0.12); color: var(--red); }
     .xm-low-link { color: var(--green); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
     .xm-low-link:hover { color: var(--accent); }
+    .sample-count { color: var(--muted); font-size: 10px; font-weight: 400; margin-left: 2px; }
+    .delta-badge.new-low { background: var(--green); color: #0a0c12; font-weight: 700; letter-spacing: 0.3px; padding: 3px 10px; box-shadow: 0 0 0 3px rgba(52,211,153,0.15); }
+    .review-pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; background: rgba(251,191,36,0.18); color: var(--amber); border: 1px solid rgba(251,191,36,0.35); vertical-align: middle; }
     .bp-mono { font-family: 'DM Mono', monospace; }
 
     /* ─── Detail drawer ─── */
@@ -384,14 +387,16 @@
             <option value="ALL">ALL</option>
           </select>
           &nbsp;·&nbsp; Sort by:
-          <select id="sort-select" class="filter-select" style="min-width: 210px;">
-            <option value="quality_desc">Cleanest data first</option>
+          <select id="sort-select" class="filter-select" style="min-width: 230px;">
+            <option value="offer_date_desc">Newest first</option>
+            <option value="offer_date_asc">Oldest first</option>
+            <option value="delta_low_asc">Closest to Xm Low</option>
+            <option value="new_low_first">New Xm Low first</option>
+            <option value="quantity_case_desc">Largest quantity</option>
             <option value="price_per_unit_eur_asc">Lowest €/Unit</option>
             <option value="price_per_case_eur_asc">Lowest €/Case</option>
-            <option value="delta_low_asc">Best vs Xm Low</option>
-            <option value="offer_date_desc">Newest offer</option>
-            <option value="quantity_case_desc">Largest quantity</option>
             <option value="supplier_asc">Supplier A-Z</option>
+            <option value="quality_desc">Cleanest data first</option>
           </select>
         </div>
       </div>
@@ -406,8 +411,8 @@
               <th>Supplier</th>
               <th class="sortable" data-sort="quantity_case_desc">Qty</th>
               <th class="sortable" data-sort="price_per_unit_eur_asc" style="text-align:right;">€/Unit</th>
-              <th style="text-align:right;" title="Historical low €/Unit within selected window">Xm Low</th>
-              <th style="text-align:right;" title="% delta vs Xm Low">Δ Low</th>
+              <th style="text-align:right;" title="Historical low €/Unit within selected window (same brand, product, volume, pack, incoterm)"><span id="th-low">12M Low</span></th>
+              <th style="text-align:right;" title="% delta vs the low above"><span id="th-delta">Δ 12M Low</span></th>
               <th class="sortable" data-sort="price_per_case_eur_asc" style="text-align:right;">€/Case</th>
               <th>Incoterm</th>
               <th>Location</th>
@@ -484,7 +489,7 @@
   let recordsSkip = 0, recordsTotal = 0, loadingRecords = false;
   let globalSearchText = "", customStatusFilter = "", flagStateFilter = "", ageDaysFilter = "";
   let filters = { brand:"", category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"", abv:"", availability:"" };
-  let sortKey = "quality_desc";  // default: cleanest data first
+  let sortKey = "offer_date_desc";  // default: newest offer first (best for daily trading)
   let allRawItemsCache = [];
   const availableFilters = {
     brand: new Set(), category: new Set(), sub_category: new Set(), supplier: new Set(),
@@ -563,11 +568,12 @@
     document.getElementById('global-search').addEventListener('input', () => { clearTimeout(debounceTimer); debounceTimer = setTimeout(triggerFilters, 350); });
     document.getElementById('benchmark-window').addEventListener('change', async () => {
       benchmarkWindow = document.getElementById('benchmark-window').value;
+      updateBenchmarkLabels();
       await loadBenchmarks();
-      // re-render current items so Xm Low columns update
       const filtered = sortItems(applyClientFilters(allRawItemsCache), sortKey);
       renderOffersTable(filtered);
     });
+    updateBenchmarkLabels();
     ['filter-custom-status','filter-flag-state','filter-age','filter-brand','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','filter-abv','filter-availability','sort-select']
       .forEach(id => document.getElementById(id).addEventListener('change', triggerFilters));
 
@@ -675,7 +681,10 @@
     const name = (item.product_name || '').toLowerCase();
     const vol = item.unit_volume_ml || 0;
     const upc = item.units_per_case || 0;
-    return `${brand}|${name}|${vol}|${upc}`;
+    const inco = (item.incoterm || '').toUpperCase();
+    // Incoterm is part of the key — EXW €20 and DAP €21 are not comparable until
+    // freight/landed-cost normalisation exists.
+    return `${brand}|${name}|${vol}|${upc}|${inco}`;
   }
 
   function getBenchmark(item) {
@@ -687,6 +696,12 @@
     const isNewLow = cur <= p.low_eur + 0.001; // fp tolerance
     const deltaAvg = p.avg_eur ? ((cur - p.avg_eur) / p.avg_eur) * 100 : null;
     return { ...p, delta, delta_avg: deltaAvg, is_new_low: isNewLow };
+  }
+
+  function updateBenchmarkLabels() {
+    const w = benchmarkWindow;
+    const el1 = document.getElementById('th-low'); if (el1) el1.textContent = `${w} Low`;
+    const el2 = document.getElementById('th-delta'); if (el2) el2.textContent = `Δ ${w} Low`;
   }
 
   // ─── Records ────────────────────────────────────────────────────────────────
@@ -853,14 +868,18 @@
     if (isNaN(d)) return null;
     const diffMs = Date.now() - d.getTime();
     const days = Math.floor(diffMs / (24*60*60*1000));
-    if (days < 0) return { text: 'future', cls: 'old', title: d.toLocaleDateString('en-GB') };
+    // Verbose title includes both exact date and relative age
+    const exact = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      + (d.getHours() || d.getMinutes() ? ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
+    const title = `Offer date: ${exact}`;
+    if (days < 0) return { text: 'future', cls: 'old', title };
     if (days < 1) {
       const hrs = Math.floor(diffMs / (60*60*1000));
-      return { text: hrs <= 0 ? 'now' : hrs + 'h', cls: 'fresh', title: d.toLocaleString('en-GB') };
+      return { text: hrs <= 0 ? 'now' : hrs + 'h', cls: 'fresh', title };
     }
-    if (days < 60) return { text: days + 'd', cls: days <= 7 ? 'fresh' : days <= 30 ? '' : 'stale', title: d.toLocaleDateString('en-GB') };
-    if (days < 365) return { text: Math.round(days/30) + 'mo', cls: 'stale', title: d.toLocaleDateString('en-GB') };
-    return { text: (days/365).toFixed(1) + 'y', cls: 'old', title: d.toLocaleDateString('en-GB') };
+    if (days < 60) return { text: days + 'd', cls: days <= 7 ? 'fresh' : days <= 30 ? '' : 'stale', title };
+    if (days < 365) return { text: Math.round(days/30) + 'mo', cls: 'stale', title };
+    return { text: (days/365).toFixed(1) + 'y', cls: 'old', title };
   }
 
   function sortItems(items, key) {
@@ -875,6 +894,16 @@
         return [...items].sort((a,b) => cmp(withNulls(a.price_per_case_eur, 'asc'), withNulls(b.price_per_case_eur, 'asc'), 1));
       case 'offer_date_desc':
         return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), -1));
+      case 'offer_date_asc':
+        return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), 1));
+      case 'new_low_first':
+        return [...items].sort((a,b) => {
+          const ba = getBenchmark(a); const bb = getBenchmark(b);
+          const na = (ba && ba.is_new_low) ? 0 : 1;
+          const nb = (bb && bb.is_new_low) ? 0 : 1;
+          if (na !== nb) return na - nb;
+          return (ba?.delta ?? Infinity) - (bb?.delta ?? Infinity);
+        });
       case 'quantity_case_desc':
         return [...items].sort((a,b) => cmp(withNulls(a.quantity_case, 'desc'), withNulls(b.quantity_case, 'desc'), -1));
       case 'supplier_asc':
@@ -940,12 +969,13 @@
     let lowCell = nullCell(), deltaCell = nullCell();
     if (bench && bench.low_eur != null) {
       const clickable = bench.low_uid && bench.low_uid !== i.uid;
+      const tip = `${benchmarkWindow} Low: €${bench.low_eur.toFixed(2)} · ${bench.samples} comparable offer${bench.samples === 1 ? '' : 's'} · avg €${bench.avg_eur.toFixed(2)}`;
       const lowLink = clickable
-        ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.low_uid)}" title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)} · click to see the offer behind this low">€${bench.low_eur.toFixed(2)}</a>`
-        : `<span title="Samples: ${bench.samples} · Avg €${bench.avg_eur.toFixed(2)}">€${bench.low_eur.toFixed(2)}</span>`;
+        ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.low_uid)}" title="${escapeAttr(tip)} · click to open">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.samples})</span></a>`
+        : `<span title="${escapeAttr(tip)}">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.samples})</span></span>`;
       lowCell = lowLink;
       if (bench.is_new_low) {
-        deltaCell = `<span class="delta-badge best" title="This offer IS the lowest we've seen in the last ${benchmarkWindow} (${bench.samples} samples)">NEW ${benchmarkWindow} LOW</span>`;
+        deltaCell = `<span class="delta-badge best new-low" title="This offer IS the lowest we've seen in the last ${benchmarkWindow} (${bench.samples} samples)">NEW ${benchmarkWindow} LOW</span>`;
       } else if (bench.delta != null) {
         const sign = bench.delta >= 0 ? '+' : '';
         const cls = bench.delta <= 5 ? 'best' : (bench.delta <= 15 ? '' : 'up');
@@ -965,8 +995,12 @@
 
     // Flag dot + tooltip
     let dotHtml = '';
+    let dotAria = '';
     if (hasNeeds || hasInfo) {
       const dotCls = hasNeeds ? '' : 'info';
+      dotAria = hasNeeds
+        ? `Needs review — ${flags.needs.length || 1} item${flags.needs.length === 1 ? '' : 's'} to check`
+        : `Calculated / inferred — ${flags.info.length} auto-derivation${flags.info.length === 1 ? '' : 's'}`;
       const tipCls = 'flag-tip' + (hasNeeds ? ' has-needs' : '') + (hasInfo ? ' has-info' : '');
       const needsPart = hasNeeds
         ? `<div class="tip-sec needs">⚠ Needs Review</div>` +
@@ -979,12 +1013,13 @@
           `<div class="tip-sec info">ℹ Calculated / Inferred</div>` +
           flags.info.map(f => `<div class="tip-item info">${escapeHtml(f)}</div>`).join('')
         : '';
-      dotHtml = `<span class="review-dot ${dotCls}"></span><div class="${tipCls}">${needsPart}${infoPart}</div>`;
+      dotHtml = `<span class="review-dot ${dotCls}" title="${escapeAttr(dotAria)}"></span><div class="${tipCls}">${needsPart}${infoPart}</div>`;
     }
+    const reviewPill = hasNeeds ? `<span class="review-pill" title="Extraction flagged this row for manual review">REVIEW</span>` : '';
 
     return `<tr data-uid="${escapeAttr(i.uid)}" ${hasNeeds ? 'class="needs-review"' : ''}>
       <td class="product">
-        <div class="prod-brand">${escapeHtml(brand)}</div>
+        <div class="prod-brand">${escapeHtml(brand)}${reviewPill}</div>
         <div class="prod-name">${escapeHtml(name || i.product_name || '—')}</div>
         <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
       </td>
