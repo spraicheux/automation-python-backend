@@ -94,10 +94,22 @@ class OfferItemDB(Base):
     )
 
     def to_dict(self) -> dict:
-        """Return a plain dict representation (mirrors OfferItem schema)."""
+        """Return a plain dict representation (mirrors OfferItem schema).
+
+        Also emits `peer_group_id`, the canonical peer identity computed from
+        this row's brand + product + volume + pack + incoterm. The backend
+        is the single source of truth for that identity: the dashboard reads
+        `peer_group_id` off the record and uses it verbatim to look up
+        `/api/benchmarks?peers` — no client-side re-derivation, no drift.
+        """
         import json
+        from core.normalization import canonical_key
         return {
             "uid": self.uid,
+            "peer_group_id": canonical_key(
+                self.brand, self.product_name, self.unit_volume_ml,
+                self.units_per_case, self.incoterm,
+            ),
             "job_id": self.job_id,
             "source_file_id": self.source_file_id,
             "product_name": self.product_name,

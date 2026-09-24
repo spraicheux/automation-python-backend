@@ -968,37 +968,20 @@
     } catch (_) { benchmarks = {}; }
   }
 
-  // Mirror of core/normalization.canonical_brand / canonical_product / canonical_key.
-  // Backend & frontend MUST derive the same peer identity or a row's benchmark
-  // silently vanishes ("Peñasol" vs "pe asol" was exactly this bug).
-  const _CANONICAL_NOISE = new Set([
-    'the','and','original','classic','edition','premium',
-    'int','intl','international',
-  ]);
-  function canonicalBrand(s) {
-    if (!s) return '';
-    let v = String(s).toLowerCase();
-    v = v.replace(/['’‘]/g, '');
-    v = v.replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
-    return v;
-  }
-  function canonicalProduct(s) {
-    if (!s) return '';
-    let v = String(s).toLowerCase();
-    v = v.replace(/['’‘]/g, '');
-    v = v.replace(/\b(gbx|gb|nrf|rf|coded|not\s+found)\b/g, ' ');
-    v = v.replace(/[^a-z0-9]+/g, ' ');
-    const toks = v.split(/\s+/).filter(t => t && !_CANONICAL_NOISE.has(t));
-    return toks.join(' ');
-  }
+  // Peer identity is derived by the backend and returned on every offer as
+  // `peer_group_id`. The frontend must not re-hash — any divergence between
+  // the two implementations silently breaks the benchmark lookup for whatever
+  // spelling the two sides disagree on (Peñasol vs pe asol was that bug).
+  // Fall back to a coarse locally-computed key only when the API hasn't been
+  // redeployed yet, so old clients still limp along instead of dropping every
+  // benchmark to null.
   function peerKey(item) {
-    const brand = canonicalBrand(item.brand);
-    const name  = canonicalProduct(item.product_name);
+    if (item && typeof item.peer_group_id === 'string') return item.peer_group_id;
+    const brand = (item.brand || '').toLowerCase();
+    const name  = (item.product_name || '').toLowerCase();
     const vol   = Math.trunc(item.unit_volume_ml || 0);
     const upc   = Math.trunc(item.units_per_case || 0);
     const inco  = (item.incoterm || '').toUpperCase();
-    // Incoterm is part of the key — EXW €20 and DAP €21 are not comparable
-    // until freight/landed-cost normalisation exists.
     return `${brand}|${name}|${vol}|${upc}|${inco}`;
   }
 
