@@ -105,6 +105,16 @@ def _normalize_location(s: str | None) -> str:
     return tokens[0] if tokens else ""
 
 
+def _norm_incoterm(s: str | None) -> str:
+    """Normalise incoterm; unknown / 'Not Found' collapses to empty."""
+    if not s:
+        return ""
+    v = str(s).upper().strip()
+    if v in {"NOT FOUND", "NONE", "UNKNOWN", "N/A", "NA", ""}:
+        return ""
+    return v
+
+
 def _norm_num(v, decimals: int = 0) -> str:
     """Numeric field to a canonical string. Empty for None so blanks collapse."""
     if v in (None, ""):
@@ -175,7 +185,7 @@ def peer_group_id(
         canonical_product_id(brand, product_name),
         _norm_num(unit_volume_ml, 0),
         _norm_num(units_per_case, 0),
-        (incoterm or "").upper().strip(),
+        _norm_incoterm(incoterm),
         _normalize_location(location),
         _norm_num(alcohol_percent, 1),
         _norm_text(vintage),

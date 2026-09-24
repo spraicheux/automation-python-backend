@@ -143,6 +143,11 @@ class TestLocationInPeerGroup:
         b = peer_group_id("Grey Goose", "Original", incoterm="EXW", location=None)
         assert a == b
 
+    def test_not_found_incoterm_treated_as_empty(self):
+        a = peer_group_id("Grey Goose", "Original", incoterm="Not Found")
+        b = peer_group_id("Grey Goose", "Original", incoterm=None)
+        assert a == b
+
 
 class TestCommercialDiscriminators:
     """ABV, vintage, age statement must break peer identity when they differ."""
