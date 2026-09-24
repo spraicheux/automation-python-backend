@@ -1655,7 +1655,13 @@ def clean_product_data(product: dict) -> dict:
     ppu = cleaned_product.get('price_per_unit')
     ppc = cleaned_product.get('price_per_case')
 
-    if units and isinstance(units, (int, float)) and units > 0:
+    # PRICE CALC is strictly units_per_case × price_per_unit — NEVER from
+    # quantity_case. `quantity_case` is a stock/availability quantity, not a
+    # pack size, and mixing the two silently produced fake per-case prices
+    # in the past (see MIX SPIRITS HNS fix). Also skip the calc when
+    # units_per_case = 1 — no real case pack in the source, so a "per case"
+    # price would just duplicate the per-bottle price and pollute the DB.
+    if units and isinstance(units, (int, float)) and units > 1:
 
         if ppu and isinstance(ppu, (int, float)) and ppu > 0:
             if not ppc or not isinstance(ppc, (int, float)) or ppc <= 0:
@@ -1674,6 +1680,7 @@ def clean_product_data(product: dict) -> dict:
 
         if ppc and isinstance(ppc, (int, float)) and ppc > 0:
             if not ppu or not isinstance(ppu, (int, float)) or ppu <= 0:
+                # units > 1 guaranteed by the outer if — safe to divide.
                 calculated_ppu = round(ppc / units, 2)
                 logger.info(
                     f"[clean_product_data] PRICE CALC (case→unit): "
