@@ -29,6 +29,12 @@ class OfferItemDB(Base):
     units_per_case      = Column(Float, nullable=True)
     cases_per_pallet    = Column(Float, nullable=True)
     quantity_case       = Column(Float, nullable=True)
+    # The ORIGINAL unit the source used for `quantity_case`. Preserved so the
+    # dashboard can honestly render "11 btls" when the source said "QTY btls",
+    # even though the numeric value sits in quantity_case. Values are the same
+    # short slugs the extractor emits: "cases" | "bottles" | "pallets" |
+    # "pieces" | "ftl" | "unspecified".
+    quantity_unit       = Column(String(32), nullable=True)
     gift_box            = Column(String(255), nullable=True)
     refillable_status   = Column(String(64), nullable=True)
 
@@ -106,6 +112,7 @@ class OfferItemDB(Base):
             "units_per_case": self.units_per_case,
             "cases_per_pallet": self.cases_per_pallet,
             "quantity_case": self.quantity_case,
+            "quantity_unit": self.quantity_unit,
             "gift_box": self.gift_box,
             "refillable_status": self.refillable_status,
             "currency": self.currency,

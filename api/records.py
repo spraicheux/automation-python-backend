@@ -59,30 +59,32 @@ async def get_benchmarks(
         # deterministic_rules note on document-level location inheritance.
         key = canonical_key(r.brand, r.product_name, r.unit_volume_ml,
                             r.units_per_case, r.incoterm)
-        p = peers.get(key)
-        if p is None:
-            peers[key] = {
-                "low_eur": r.price_per_unit_eur,
-                "low_uid": r.uid,
-                "sum_eur": r.price_per_unit_eur,
-                "samples": 1,
-            }
-        else:
-            if r.price_per_unit_eur < p["low_eur"]:
-                p["low_eur"] = r.price_per_unit_eur
-                p["low_uid"] = r.uid
-            p["sum_eur"] += r.price_per_unit_eur
-            p["samples"] += 1
+        entry = peers.setdefault(key, {"samples": []})
+        entry["samples"].append((r.price_per_unit_eur, r.uid))
 
-    out = {
-        k: {
-            "low_eur": round(v["low_eur"], 4),
-            "low_uid": v["low_uid"],
-            "avg_eur": round(v["sum_eur"] / v["samples"], 4),
-            "samples": v["samples"],
+    out = {}
+    for k, v in peers.items():
+        samples = v["samples"]
+        if not samples:
+            continue
+        # Sort ascending so [0] is the group min and [1] is the second-lowest
+        # (used as prior-low when the current row IS the group min).
+        samples.sort(key=lambda t: t[0])
+        low_price, low_uid = samples[0]
+        second_low_price, second_low_uid = (samples[1] if len(samples) > 1
+                                            else (None, None))
+        avg_price = sum(p for p, _ in samples) / len(samples)
+        out[k] = {
+            "low_eur": round(low_price, 4),
+            "low_uid": low_uid,
+            # The 2nd lowest lets the frontend show a genuine PRIOR low when
+            # the current row is itself the group minimum — otherwise a row
+            # would show up as "12M Low = itself".
+            "second_low_eur": round(second_low_price, 4) if second_low_price is not None else None,
+            "second_low_uid": second_low_uid,
+            "avg_eur": round(avg_price, 4),
+            "samples": len(samples),
         }
-        for k, v in peers.items() if v["samples"] >= 1
-    }
 
     return {
         "window": window,

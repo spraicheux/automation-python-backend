@@ -61,13 +61,25 @@ def get_db():
 
 
 def init_db():
-    """Create all tables defined via Base.metadata if they do not exist."""
+    """Create all tables defined via Base.metadata if they do not exist,
+    then apply any lightweight schema additions (add-only, idempotent)."""
     try:
         # Import models so their tables are registered on Base.metadata
-        from models import offer_item,source_file
+        from models import offer_item, source_file
         engine = get_engine()
         Base.metadata.create_all(bind=engine)
         logger.info("✓ Database tables verified / created")
+
+        # Add-only schema evolution: SQLAlchemy's create_all won't ALTER an
+        # existing table, so new columns need explicit statements. IF NOT
+        # EXISTS keeps this idempotent so restarts are safe.
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE offer_items "
+                "ADD COLUMN IF NOT EXISTS quantity_unit VARCHAR(32)"
+            ))
+        logger.info("✓ Column additions verified")
     except Exception as e:
         logger.error(f"✗ Failed to initialise database: {e}")
         raise

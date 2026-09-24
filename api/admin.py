@@ -73,11 +73,15 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
                 "unit_price": ppu,
                 "old_case_price": ppc,
                 "new_case_price": None,
-                "reason": "price_per_case == qty × unit_price (mis-mapped Total column)",
+                "old_quantity_unit": r.quantity_unit,
+                "new_quantity_unit": "bottles",
+                "reason": "price_per_case == qty × unit_price (mis-mapped Total column); quantity was bottles",
             })
             if apply:
                 r.price_per_case = None
                 r.price_per_case_eur = None
+                if not (r.quantity_unit or "").strip():
+                    r.quantity_unit = "bottles"
         elif upc in (1, 1.0) and abs(ppc - ppu) < 0.01:
             case_changes.append({
                 "uid": r.uid,
@@ -85,11 +89,35 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
                 "product": r.product_name,
                 "old_case_price": ppc,
                 "new_case_price": None,
-                "reason": "units_per_case=1 and case_price==unit_price (no real case)",
+                "old_quantity_unit": r.quantity_unit,
+                "new_quantity_unit": "bottles",
+                "reason": "units_per_case=1 and case_price==unit_price (no real case); quantity was bottles",
             })
             if apply:
                 r.price_per_case = None
                 r.price_per_case_eur = None
+                if not (r.quantity_unit or "").strip():
+                    r.quantity_unit = "bottles"
+
+    # ── quantity_unit tidy-up ─────────────────────────────────────
+    # For rows where price_per_case was already cleared in a prior run but
+    # quantity_unit is still null (e.g. the MIX SPIRITS HNS backfill run
+    # before the column existed), infer the unit from the same heuristic:
+    # units_per_case = 1 AND quantity_case > 1 AND no per-case price → the
+    # quantity was expressed in bottles.
+    unit_backfill = 0
+    unit_rows = (db.query(OfferItemDB)
+                   .filter((OfferItemDB.quantity_unit.is_(None)) |
+                           (OfferItemDB.quantity_unit == ""))
+                   .filter(OfferItemDB.quantity_case.isnot(None),
+                           OfferItemDB.quantity_case > 1,
+                           OfferItemDB.units_per_case.in_([1, 1.0]),
+                           OfferItemDB.price_per_case.is_(None))
+                   .all())
+    for r in unit_rows:
+        unit_backfill += 1
+        if apply:
+            r.quantity_unit = "bottles"
 
     # ── supplier re-derivation ────────────────────────────────────
     missing = (db.query(OfferItemDB)
@@ -123,4 +151,5 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         "case_price_samples": case_changes[:20],
         "supplier_fixes": len(supplier_changes),
         "supplier_samples": supplier_changes[:20],
+        "quantity_unit_backfill": unit_backfill,
     }

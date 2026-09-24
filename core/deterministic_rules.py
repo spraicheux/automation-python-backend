@@ -228,10 +228,16 @@ def apply_deterministic_defaults(products: list, source_text: str,
             if abs(ppc - expected_total) / max(expected_total, 0.001) < 0.02:
                 p["price_per_case"] = None
                 p["price_per_case_eur"] = None
+                # The numeric quantity was clearly in bottles (matched a
+                # bottle-count × unit-price total), so the source used a
+                # bottle unit. Record that so the dashboard shows "N btls"
+                # instead of "N cs".
+                if not (p.get("quantity_unit") or "").strip():
+                    p["quantity_unit"] = "bottles"
                 corrections.append(
-                    f"Row {i+1}: price_per_case cleared — value equalled "
-                    f"quantity × price_per_unit, so the source had no per-case "
-                    f"pricing (looks like a mis-mapped 'Total Price' column)"
+                    f"Row {i+1}: price_per_case cleared + quantity_unit='bottles' — "
+                    f"value equalled quantity × price_per_unit, so the source had "
+                    f"no per-case pricing (looks like a mis-mapped 'Total Price' column)"
                 )
         # Also: if units_per_case = 1 AND price_per_case == price_per_unit,
         # the "case" concept doesn't exist here — clear price_per_case to
