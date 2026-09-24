@@ -247,6 +247,13 @@
     .sample-count { color: var(--muted); font-size: 10px; font-weight: 400; margin-left: 2px; }
     .delta-badge.new-low { background: var(--green); color: #0a0c12; font-weight: 700; letter-spacing: 0.3px; padding: 3px 10px; box-shadow: 0 0 0 3px rgba(52,211,153,0.15); }
     .delta-badge.first-obs { background: var(--pill); color: var(--text-dim); font-weight: 500; letter-spacing: 0.3px; padding: 2px 8px; border: 1px dashed var(--border); }
+    /* Unverified: peer group has row(s) with unknown incoterm or location.
+       Comparison shown but visually downgraded — never confuse for a
+       trusted trading signal. */
+    .delta-badge.unverified { background: rgba(251,191,36,0.10); color: #eab308; border: 1px dashed rgba(251,191,36,0.55); font-weight: 500; letter-spacing: 0.2px; }
+    .delta-badge.best.unverified,
+    .delta-badge.up.unverified { opacity: 0.65; border: 1px dashed currentColor; background: transparent; }
+    .unverified-star { color: #eab308; font-weight: 700; margin-left: 1px; cursor: help; }
     .review-pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; background: rgba(251,191,36,0.18); color: var(--amber); border: 1px solid rgba(251,191,36,0.35); vertical-align: middle; }
     .bp-mono { font-family: 'DM Mono', monospace; }
 
@@ -1297,17 +1304,35 @@
         deltaCell = `<span class="delta-badge first-obs" title="${escapeAttr(firstTip)}">${badgeLabel}</span>`;
       } else if (bench.prior_low_eur != null) {
         const priorStr = `${bench.prior_samples} prior offer${bench.prior_samples === 1 ? '' : 's'}`;
-        const tip = `Prior ${benchmarkWindow} Low: €${bench.prior_low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${(bench.avg_eur || 0).toFixed(2)}`;
+        // "Qualified" = every row in this peer group has known incoterm AND
+        // location. Otherwise the comparison rests on incomplete commercial
+        // terms and cannot ground a trusted NEW LOW signal.
+        const qualified = bench.is_qualified !== false;
+        const qualNote = qualified ? '' : ' · commercial terms incomplete (some rows missing incoterm/location)';
+        const tip = `Prior ${benchmarkWindow} Low: €${bench.prior_low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${(bench.avg_eur || 0).toFixed(2)}${qualNote}`;
         const clickable = bench.prior_low_uid && bench.prior_low_uid !== i.uid;
+        const lowNumber = qualified
+          ? `€${bench.prior_low_eur.toFixed(2)}`
+          : `€${bench.prior_low_eur.toFixed(2)}<span class="unverified-star" title="Comparison rests on incomplete commercial terms — see tooltip">*</span>`;
         lowCell = clickable
-          ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.prior_low_uid)}" title="${escapeAttr(tip)} · click to open">€${bench.prior_low_eur.toFixed(2)} <span class="sample-count">(${bench.prior_samples})</span></a>`
-          : `<span title="${escapeAttr(tip)}">€${bench.prior_low_eur.toFixed(2)} <span class="sample-count">(${bench.prior_samples})</span></span>`;
+          ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.prior_low_uid)}" title="${escapeAttr(tip)} · click to open">${lowNumber} <span class="sample-count">(${bench.prior_samples})</span></a>`
+          : `<span title="${escapeAttr(tip)}">${lowNumber} <span class="sample-count">(${bench.prior_samples})</span></span>`;
         if (bench.is_new_low) {
-          deltaCell = `<span class="delta-badge best new-low" title="Beats the prior ${benchmarkWindow} low of €${bench.prior_low_eur.toFixed(2)} (${bench.prior_samples} prior offers)">NEW ${benchmarkWindow} LOW</span>`;
+          // A trusted "NEW LOW" only fires when the peer group is qualified.
+          // Otherwise we surface the delta with an "unverified" badge so
+          // buyers can still see the signal, but can never mistake it for
+          // a confident trading trigger.
+          if (qualified) {
+            deltaCell = `<span class="delta-badge best new-low" title="Beats the prior ${benchmarkWindow} low of €${bench.prior_low_eur.toFixed(2)} (${bench.prior_samples} prior offers)">NEW ${benchmarkWindow} LOW</span>`;
+          } else {
+            deltaCell = `<span class="delta-badge unverified" title="Below the prior low, but comparison rests on incomplete commercial terms — no trusted NEW LOW">LOW · unverified</span>`;
+          }
         } else if (bench.delta != null) {
           const sign = bench.delta >= 0 ? '+' : '';
           const cls = bench.delta <= 5 ? 'best' : (bench.delta <= 15 ? '' : 'up');
-          deltaCell = `<span class="delta-badge ${cls}" title="${bench.delta.toFixed(2)}% vs the prior ${benchmarkWindow} low of €${bench.prior_low_eur.toFixed(2)}">${sign}${bench.delta.toFixed(1)}%</span>`;
+          const modifier = qualified ? '' : ' unverified';
+          const modTitle = qualified ? '' : ' · commercial terms incomplete';
+          deltaCell = `<span class="delta-badge ${cls}${modifier}" title="${bench.delta.toFixed(2)}% vs the prior ${benchmarkWindow} low of €${bench.prior_low_eur.toFixed(2)}${modTitle}">${sign}${bench.delta.toFixed(1)}%${qualified ? '' : ' *'}</span>`;
         }
       }
     }

@@ -134,15 +134,78 @@ def _norm_text(s: str | None) -> str:
     return v
 
 
-def canonical_product_id(brand: str | None, product_name: str | None) -> str:
+def product_family_id(brand: str | None, product_name: str | None) -> str:
     """
-    NAMING identity only. Answers: "are these two rows referring to the same
-    product name, ignoring spelling differences?"
-    Bailey's vs Baileys, Peñasol vs Penasol, Jack Daniel's vs Jack Daniel's
-    — all one canonical product.
-    Used for search / dedup / roll-up — NOT for benchmarking or Best Prices.
+    LEVEL A — FAMILY identity. Answers: "is this the same product family,
+    regardless of size / ABV / edition?"
+      Hennessy VS 350ml and Hennessy VS 700ml → same family
+      Dior Sauvage EDT and Dior Sauvage EDP  → same family
+    Used for: search, cross-size roll-up, storytelling ("all Hennessy VS
+    offers this week"). NEVER for dedup, Best Price, or benchmarking —
+    those need the SKU-level identity below.
     """
     return f"{canonical_brand(brand)}|{canonical_product(product_name)}"
+
+
+# Historical alias — was used everywhere pre-split. Keep pointing at the
+# family identity so old call sites don't silently switch meaning.
+canonical_product_id = product_family_id
+
+
+def sku_identity(
+    brand: str | None,
+    product_name: str | None,
+    unit_volume_ml: float | int | None = None,
+    units_per_case: float | int | None = None,
+    alcohol_percent: float | int | None = None,
+    vintage: str | None = None,
+    age_statement: str | None = None,
+    edition: str | None = None,
+    ean_code: str | None = None,
+    # Reserved for perfumes/cosmetics — same signature, per-category discriminators
+    perfume_format: str | None = None,  # EDT | EDP | Parfum | Cologne
+    retail_state: str | None = None,    # retail | tester | sample
+    gender: str | None = None,
+    shade: str | None = None,
+) -> str:
+    """
+    LEVEL B — SKU / physical-product identity. Answers: "is this the same
+    physical product, regardless of who's selling it or under what terms?"
+    Dedup and 'same SKU across suppliers' comparisons must use THIS key,
+    NOT the family key — otherwise two genuinely different SKUs (Hennessy
+    VS 350ml vs 700ml) collapse together on the Best-Prices roll-up.
+
+    W&S discriminators: volume, pack, ABV, vintage, age statement, edition,
+    EAN. Perfume/cosmetic discriminators added by the same function so
+    the split logic doesn't have to know which category it's serving.
+    """
+    return "|".join([
+        product_family_id(brand, product_name),
+        _norm_num(unit_volume_ml, 0),
+        _norm_num(units_per_case, 0),
+        _norm_num(alcohol_percent, 1),
+        _norm_text(vintage),
+        _norm_text(age_statement),
+        _norm_text(edition),
+        _norm_text(ean_code),
+        _norm_text(perfume_format),
+        _norm_text(retail_state),
+        _norm_text(gender),
+        _norm_text(shade),
+    ])
+
+
+def is_peer_group_qualified(incoterm: str | None, location: str | None) -> bool:
+    """
+    A peer comparison is only "qualified" (i.e. safe to raise a NEW XM LOW
+    or trusted Best Price signal from) when both the commercial term
+    (incoterm) and the origin (location) are known. Two rows both missing
+    incoterm technically hash to the same peer key, but they are NOT a
+    trustworthy apples-to-apples comparison — they might come from any
+    incoterm at any location. Callers must downgrade the signal for
+    unqualified peers.
+    """
+    return bool(_norm_incoterm(incoterm)) and bool(_normalize_location(location))
 
 
 def peer_group_id(
@@ -156,10 +219,16 @@ def peer_group_id(
     vintage: str | None = None,
     age_statement: str | None = None,
     edition: str | None = None,
+    ean_code: str | None = None,
+    perfume_format: str | None = None,
+    retail_state: str | None = None,
+    gender: str | None = None,
+    shade: str | None = None,
 ) -> str:
     """
-    COMMERCIAL peer-group identity. Answers: "are these two offers genuinely
-    comparable for Best Price / historical benchmarking?"
+    LEVEL C — COMMERCIAL peer-group identity. Answers: "are these two
+    offers genuinely comparable for Best Price / historical benchmarking?"
+    Builds on the SKU key (level B) by adding the terms of delivery.
 
     Includes every discriminator that could make two offers not apples-to-
     apples on a trading desk:
@@ -176,21 +245,28 @@ def peer_group_id(
     same principle — never store the raw string in the key, always the fold.
 
     Blank fields collapse (empty string), so a row missing ABV still peers
-    with another row missing ABV. This is a conservative default: a row
-    with location=null does NOT peer with a Rotterdam row (they'd have
-    different location slugs — Rotterdam vs empty). The peer group is the
-    intersection of what we know, not a fuzzy match.
+    with another row missing ABV. But a peer group that contains any row
+    missing incoterm or location is NOT considered qualified for trusted
+    signals — see is_peer_group_qualified(). The dashboard downgrades
+    NEW XM LOW and Best Price alerts on unqualified peers.
     """
     return "|".join([
-        canonical_product_id(brand, product_name),
-        _norm_num(unit_volume_ml, 0),
-        _norm_num(units_per_case, 0),
+        sku_identity(
+            brand, product_name,
+            unit_volume_ml=unit_volume_ml,
+            units_per_case=units_per_case,
+            alcohol_percent=alcohol_percent,
+            vintage=vintage,
+            age_statement=age_statement,
+            edition=edition,
+            ean_code=ean_code,
+            perfume_format=perfume_format,
+            retail_state=retail_state,
+            gender=gender,
+            shade=shade,
+        ),
         _norm_incoterm(incoterm),
         _normalize_location(location),
-        _norm_num(alcohol_percent, 1),
-        _norm_text(vintage),
-        _norm_text(age_statement),
-        _norm_text(edition),
     ])
 
 

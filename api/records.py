@@ -5,7 +5,7 @@ from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional
 from core.database import get_db
-from core.normalization import peer_group_id
+from core.normalization import peer_group_id, is_peer_group_qualified
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -63,8 +63,16 @@ async def get_benchmarks(
             alcohol_percent=r.alcohol_percent,
             vintage=r.vintage,
         )
-        entry = peers.setdefault(key, {"samples": []})
+        entry = peers.setdefault(key, {"samples": [], "all_qualified": True})
         entry["samples"].append((r.price_per_unit_eur, r.uid))
+        # A peer group is "qualified" only when EVERY row it contains has
+        # both a known incoterm and a known location. One unqualified row
+        # poisons the whole group — otherwise a trusted NEW XM LOW could
+        # fire when the current row is Rotterdam-EXW but the "prior best"
+        # is a row with no known origin, and that's exactly the falsely-
+        # precise trading signal the client asked us to avoid.
+        if not is_peer_group_qualified(r.incoterm, r.location):
+            entry["all_qualified"] = False
 
     out = {}
     for k, v in peers.items():
@@ -88,6 +96,10 @@ async def get_benchmarks(
             "second_low_uid": second_low_uid,
             "avg_eur": round(avg_price, 4),
             "samples": len(samples),
+            # True only when every row in this group has known incoterm AND
+            # known location. Callers must downgrade "NEW XM LOW" and other
+            # confident signals when this is False.
+            "is_qualified": v["all_qualified"],
         }
 
     return {
@@ -259,32 +271,55 @@ async def get_best_prices(
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
 
-    # Group results by product key for the response
+    # Group results by SKU identity (level B) + incoterm+location — so two
+    # rows are shown side-by-side ONLY when they're the same physical SKU
+    # AND the commercial terms match. Raw string comparison of brand /
+    # product misses spelling variants (Baileys vs Bailey's), so the
+    # Python-side key uses the canonical sku_identity from
+    # core.normalization.
     from collections import defaultdict
+    from core.normalization import sku_identity, is_peer_group_qualified
+
     groups = defaultdict(list)
     for row in rows:
-        key = (
-            (row.product_name or '').lower(),
-            row.unit_volume_ml or 0,
-            (row.category or '').lower(),
-            (row.sub_category or '').lower(),
-            (row.brand or '').lower(),
-            (row.incoterm or '').upper(),
+        sku = sku_identity(
+            row.brand, row.product_name,
+            unit_volume_ml=row.unit_volume_ml,
+            units_per_case=row.units_per_case,
+            alcohol_percent=row.alcohol_percent,
+            vintage=row.vintage,
+            ean_code=row.ean_code,
         )
-        groups[key].append(row.to_dict())
+        # A Best Price comparison is anchored on the commercial terms, so
+        # the group key IS the peer_group_id (SKU + incoterm + location).
+        # Two same-SKU offers at different incoterms show up as separate
+        # rows, which is the honest read.
+        key = (sku, (row.incoterm or '').upper(), (row.location or '').lower())
+        groups[key].append(row)
 
     grouped_list = []
-    for key, items in groups.items():
-        items_sorted = sorted(items, key=lambda x: x.get('price_per_unit_eur') or float('inf'))
+    for key, rows_in in groups.items():
+        rows_sorted = sorted(rows_in, key=lambda r: r.price_per_unit_eur or float('inf'))
+        items_sorted = [r.to_dict() for r in rows_sorted]
+        # A group is qualified only when every row it contains has known
+        # incoterm AND known location. The Best Price signal degrades to
+        # informational otherwise.
+        is_qualified = all(
+            is_peer_group_qualified(r.incoterm, r.location) for r in rows_in
+        )
+        head = rows_sorted[0]
         grouped_list.append({
-            "product_name": items[0].get("product_name"),
-            "brand": items[0].get("brand"),
-            "category": items[0].get("category"),
-            "sub_category": items[0].get("sub_category"),
-            "unit_volume_ml": items[0].get("unit_volume_ml"),
-            "incoterm": items[0].get("incoterm"),  # comparison anchor
-            "supplier_count": len(items),
-            "best_price_eur": items_sorted[0].get("price_per_unit_eur"),
+            "sku_identity": key[0],
+            "product_name": head.product_name,
+            "brand": head.brand,
+            "category": head.category,
+            "sub_category": head.sub_category,
+            "unit_volume_ml": head.unit_volume_ml,
+            "incoterm": head.incoterm,     # comparison anchor
+            "location": head.location,     # part of the anchor now
+            "supplier_count": len(rows_in),
+            "best_price_eur": head.price_per_unit_eur,
+            "is_qualified": is_qualified,
             "offers": items_sorted,
         })
 

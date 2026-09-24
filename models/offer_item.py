@@ -103,17 +103,33 @@ class OfferItemDB(Base):
         `/api/benchmarks?peers` — no client-side re-derivation, no drift.
         """
         import json
-        from core.normalization import canonical_product_id, peer_group_id
+        from core.normalization import (
+            product_family_id, sku_identity, peer_group_id,
+            is_peer_group_qualified,
+        )
         return {
             "uid": self.uid,
-            # Naming identity — spelling collapse only. Same product across
-            # different pack sizes / incoterms will share this key.
-            "canonical_product_id": canonical_product_id(
+            # ── THREE IDENTITY LEVELS ──────────────────────────────────
+            # A. FAMILY — brand + product name only. Same across sizes /
+            #    editions. Used for search + cross-size roll-up.
+            "product_family_id": product_family_id(
                 self.brand, self.product_name,
             ),
-            # Commercial identity — offers that share this key are genuinely
-            # comparable for Best Price / historical benchmarking. Includes
-            # pack, incoterm, location, ABV, vintage, age statement, edition.
+            # B. SKU — the physical product itself, supplier-agnostic:
+            #    brand + name + volume + pack + ABV + vintage + age + edition
+            #    (+ EAN and perfume fields when we have them). Use this for
+            #    dedup, "same SKU across suppliers" comparisons on Best Prices.
+            "sku_identity": sku_identity(
+                self.brand, self.product_name,
+                unit_volume_ml=self.unit_volume_ml,
+                units_per_case=self.units_per_case,
+                alcohol_percent=self.alcohol_percent,
+                vintage=self.vintage,
+                ean_code=self.ean_code,
+            ),
+            # C. PEER GROUP — SKU + incoterm + location. Use this ONLY for
+            #    Best Price / historical benchmarking. Rows in a peer group
+            #    are genuinely apples-to-apples on the trading desk.
             "peer_group_id": peer_group_id(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,
@@ -122,6 +138,16 @@ class OfferItemDB(Base):
                 location=self.location,
                 alcohol_percent=self.alcohol_percent,
                 vintage=self.vintage,
+                ean_code=self.ean_code,
+            ),
+            # Row-level qualification: does THIS row have all commercial
+            # terms known? An unqualified row poisons its peer group's
+            # confidence — see api.records / api.alerts.
+            "peer_qualified": is_peer_group_qualified(self.incoterm, self.location),
+            # Kept for backward compat — dashboard bundles pre-split still
+            # look for canonical_product_id. Same value as product_family_id.
+            "canonical_product_id": product_family_id(
+                self.brand, self.product_name,
             ),
             "job_id": self.job_id,
             "source_file_id": self.source_file_id,

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.normalization import peer_group_id
+from core.normalization import peer_group_id, is_peer_group_qualified
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -111,6 +111,16 @@ def list_alerts(
                                f"{best_prior.supplier_name} at €{best_prior_price:.2f})")
 
         if not alert_type:
+            continue
+
+        # A trading alert must not fire on a peer group that contains any
+        # unqualified row (incoterm or location unknown on ANY row here).
+        # Otherwise a "NEW LOW" could claim Rotterdam-EXW beats a prior
+        # that has no known origin — a falsely precise signal.
+        is_qualified = all(
+            is_peer_group_qualified(r.incoterm, r.location) for r in rows
+        )
+        if not is_qualified:
             continue
 
         # Deduplicate: same peer group + supplier + alert type → collapse to

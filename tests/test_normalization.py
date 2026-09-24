@@ -17,7 +17,10 @@ from core.normalization import (
     canonical_product,
     canonical_key,
     canonical_product_id,
+    product_family_id,
+    sku_identity,
     peer_group_id,
+    is_peer_group_qualified,
 )
 
 
@@ -197,3 +200,78 @@ class TestCanonicalKeyShim:
         new = peer_group_id("Baileys", "Irish Cream", unit_volume_ml=700,
                             units_per_case=6, incoterm="EXW")
         assert legacy == new
+
+
+class TestThreeIdentityLevels:
+    """
+    The three levels must actually mean different things:
+      family < SKU < peer_group.
+    """
+
+    def test_family_ignores_size(self):
+        # Hennessy VS in different sizes is one FAMILY.
+        f_350 = product_family_id("Hennessy", "VS")
+        f_700 = product_family_id("Hennessy", "VS")
+        assert f_350 == f_700
+
+    def test_sku_splits_by_size(self):
+        # But different sizes are different SKUs.
+        sku_350 = sku_identity("Hennessy", "VS", unit_volume_ml=350, units_per_case=6, alcohol_percent=40)
+        sku_700 = sku_identity("Hennessy", "VS", unit_volume_ml=700, units_per_case=6, alcohol_percent=40)
+        assert sku_350 != sku_700
+
+    def test_sku_splits_by_abv(self):
+        sku_40 = sku_identity("Bacardi", "Superior", unit_volume_ml=700, units_per_case=6, alcohol_percent=40.0)
+        sku_43 = sku_identity("Bacardi", "Superior", unit_volume_ml=700, units_per_case=6, alcohol_percent=43.0)
+        assert sku_40 != sku_43
+
+    def test_sku_ignores_incoterm_and_location(self):
+        # Same physical SKU sold under different terms → same SKU key.
+        exw = sku_identity("Hennessy", "VS", unit_volume_ml=700, units_per_case=6, alcohol_percent=40)
+        dap = sku_identity("Hennessy", "VS", unit_volume_ml=700, units_per_case=6, alcohol_percent=40)
+        assert exw == dap
+
+    def test_peer_group_splits_where_sku_collapses(self):
+        # Same SKU at different incoterms is not a fair comparison.
+        pg_exw = peer_group_id("Hennessy", "VS", unit_volume_ml=700, units_per_case=6,
+                               alcohol_percent=40, incoterm="EXW", location="Rotterdam")
+        pg_dap = peer_group_id("Hennessy", "VS", unit_volume_ml=700, units_per_case=6,
+                               alcohol_percent=40, incoterm="DAP", location="Rotterdam")
+        assert pg_exw != pg_dap
+
+    def test_peer_group_extends_sku(self):
+        # The peer key starts with the SKU key — different SKUs can never
+        # peer, and same SKU + same terms MUST peer.
+        args = dict(unit_volume_ml=700, units_per_case=6, alcohol_percent=40)
+        sku = sku_identity("Hennessy", "VS", **args)
+        pg = peer_group_id("Hennessy", "VS", incoterm="EXW", location="Rotterdam", **args)
+        assert pg.startswith(sku + "|")
+
+    def test_sku_takes_ean_when_present(self):
+        # Perfume/cosmetics parity check — EAN is a SKU-level discriminator.
+        a = sku_identity("Dior", "Sauvage", unit_volume_ml=100, ean_code="3348901234567")
+        b = sku_identity("Dior", "Sauvage", unit_volume_ml=100, ean_code="3348901234568")
+        assert a != b
+
+
+class TestPeerQualification:
+    """
+    A peer comparison is "qualified" only when incoterm AND location are
+    both known. Two rows with unknown terms may hash to the same peer key
+    but must NOT produce trusted trading signals.
+    """
+
+    def test_all_known(self):
+        assert is_peer_group_qualified("EXW", "Rotterdam") is True
+
+    def test_missing_location(self):
+        assert is_peer_group_qualified("EXW", None) is False
+        assert is_peer_group_qualified("EXW", "Not Found") is False
+
+    def test_missing_incoterm(self):
+        assert is_peer_group_qualified(None, "Rotterdam") is False
+        assert is_peer_group_qualified("Not Found", "Rotterdam") is False
+
+    def test_both_missing(self):
+        assert is_peer_group_qualified(None, None) is False
+        assert is_peer_group_qualified("Not Found", "Not Found") is False
