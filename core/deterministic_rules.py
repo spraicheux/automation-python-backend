@@ -234,10 +234,17 @@ def apply_deterministic_defaults(products: list, source_text: str,
                 # instead of "N cs".
                 if not (p.get("quantity_unit") or "").strip():
                     p["quantity_unit"] = "bottles"
+                # No case pack in the source at all — Bottle Size / Case
+                # Pack / Quantity are three separate concepts (client's
+                # data-quality rule). units_per_case=1 as a fallback
+                # invents a phantom 1-bottle case that never existed;
+                # null it so downstream (SKU key, dashboard pack cell)
+                # honestly reads "loose bottles, no case pack".
+                p["units_per_case"] = None
                 corrections.append(
-                    f"Row {i+1}: price_per_case cleared + quantity_unit='bottles' — "
-                    f"value equalled quantity × price_per_unit, so the source had "
-                    f"no per-case pricing (looks like a mis-mapped 'Total Price' column)"
+                    f"Row {i+1}: price_per_case + units_per_case cleared, "
+                    f"quantity_unit='bottles' — source had no case pack, "
+                    f"only loose bottles at a per-bottle price"
                 )
         # Also: if units_per_case = 1 AND price_per_case == price_per_unit,
         # the "case" concept doesn't exist here — clear price_per_case to
@@ -247,9 +254,14 @@ def apply_deterministic_defaults(products: list, source_text: str,
               abs(ppc - ppu) < 0.01):
             p["price_per_case"] = None
             p["price_per_case_eur"] = None
+            # Same rationale as the total-price mis-mapping branch above:
+            # units_per_case=1 with price_per_case==price_per_unit means
+            # the source never had a case pack. Clear the phantom "1" so
+            # the SKU key + dashboard read as loose bottles.
+            p["units_per_case"] = None
             corrections.append(
-                f"Row {i+1}: price_per_case cleared — units_per_case=1 and "
-                f"price_per_case equalled price_per_unit (no real case pack)"
+                f"Row {i+1}: price_per_case + units_per_case cleared — "
+                f"units_per_case=1 and case_price==unit_price (no real case pack)"
             )
 
     return products, corrections

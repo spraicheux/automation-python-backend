@@ -119,6 +119,22 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         if apply:
             r.quantity_unit = "bottles"
 
+    # ── units_per_case tidy-up ────────────────────────────────────
+    # Rows that already went through the "no case pack" cleanup still
+    # carry units_per_case=1 as a legacy fallback. Clear those to null
+    # so the dashboard reads "loose bottles" and the SKU key no longer
+    # invents a phantom 1-bottle case.
+    upc_backfill = 0
+    upc_rows = (db.query(OfferItemDB)
+                  .filter(OfferItemDB.units_per_case.in_([1, 1.0]),
+                          OfferItemDB.quantity_unit == "bottles",
+                          OfferItemDB.price_per_case.is_(None))
+                  .all())
+    for r in upc_rows:
+        upc_backfill += 1
+        if apply:
+            r.units_per_case = None
+
     # ── supplier re-derivation ────────────────────────────────────
     missing = (db.query(OfferItemDB)
                  .filter((OfferItemDB.supplier_name.is_(None)) |
@@ -152,4 +168,5 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         "supplier_fixes": len(supplier_changes),
         "supplier_samples": supplier_changes[:20],
         "quantity_unit_backfill": unit_backfill,
+        "units_per_case_backfill": upc_backfill,
     }

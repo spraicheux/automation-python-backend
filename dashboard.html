@@ -182,6 +182,11 @@
     .prod-name  { font-size: 12px; color: var(--text-dim); font-weight: 500; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .prod-cat   { font-size: 10px; color: var(--muted); margin-top: 3px; letter-spacing: 0.3px; }
     td.pack, td.abv, td.qty, td.date { font-family: 'DM Mono', monospace; color: var(--text); }
+    /* Pack column keeps bottle size + case pack visually distinct so the
+       buyer never has to decode "1×1L" as "loose 1L bottles". */
+    .pack-vol { color: var(--text); font-weight: 500; line-height: 1.25; }
+    .pack-case { color: var(--text-dim); font-size: 10.5px; letter-spacing: 0.02em; line-height: 1.3; margin-top: 2px; }
+    .pack-case.dim { color: var(--text-dim); opacity: 0.7; font-style: italic; }
     td.supplier { max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     td.supplier b { color: white; }
     td.supplier .sup-country { font-size: 10px; color: var(--muted); margin-left: 4px; }
@@ -1400,14 +1405,23 @@
     return nullCell();
   }
   function formatPack(i) {
+    // Three concepts must stay visually distinct:
+    //   Bottle Size = unit_volume_ml           (e.g. 700ml, 1L)
+    //   Case Pack   = units_per_case (>1 real) (e.g. 6, 12, 24)
+    //   Quantity    = quantity_case + unit     (rendered in the QTY column)
+    // When a source has no case concept at all (units_per_case null or 1),
+    // rendering "1×1L" invented a phantom case. Show just the bottle size
+    // with a "loose bottles" hint instead so the buyer sees the truth.
     const upc = i.units_per_case;
     const vol = i.unit_volume_ml;
-    if (upc && vol) {
-      const volStr = vol >= 1000 ? `${(vol/1000).toFixed(vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L` : `${vol}ml`;
-      return `${upc}×${volStr}`;
+    if (!vol) return upc && upc > 1 ? `<div class="pack-vol">—</div><div class="pack-case">${Math.trunc(upc)}/case</div>` : '—';
+    const volStr = vol >= 1000
+      ? `${(vol/1000).toFixed(vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L`
+      : `${vol}ml`;
+    if (upc && upc > 1) {
+      return `<div class="pack-vol">${volStr}</div><div class="pack-case" title="${Math.trunc(upc)} bottles per case">${Math.trunc(upc)}/case</div>`;
     }
-    if (vol) return vol >= 1000 ? `${(vol/1000).toFixed(vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L` : `${vol}ml`;
-    return '—';
+    return `<div class="pack-vol">${volStr}</div><div class="pack-case dim" title="Source has no case pack — loose bottles offered">loose</div>`;
   }
   function nullCell() { return `<span class="null-cell">—</span>`; }
 

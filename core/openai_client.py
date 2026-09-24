@@ -50,6 +50,17 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      today's date. Never use "Not Found" as a stand-in when the date IS in
      the header — read it.
 
+0.24 THREE DISTINCT CONCEPTS — DO NOT MIX
+     Bottle Size (unit_volume_ml)     = the physical bottle (700ml, 1L…)
+     Case Pack   (units_per_case)     = how many bottles per case (6, 12…)
+     Quantity    (quantity_case + unit) = how many are being offered
+     These NEVER conflate. When the source has NO case pack at all (a
+     row-by-row bottle price with no "cs" / case column), set
+     units_per_case = null. Do NOT fall back to 1 — "1 bottle per case"
+     is a real commercial pack that we must not fabricate. The dashboard
+     shows "loose bottles" when units_per_case is null and shows N/case
+     only when the source actually declared a case pack.
+
 0.25 SOURCE COLUMN SEMANTICS — DO NOT MIS-MAP HEADER COLUMNS
      Column headers give you the meaning. If a spreadsheet header explicitly
      says something, the LLM MUST honour it:
