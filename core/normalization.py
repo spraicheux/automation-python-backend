@@ -86,24 +86,125 @@ def canonical_product(s: str | None) -> str:
     return " ".join(tokens)
 
 
+def _normalize_location(s: str | None) -> str:
+    """
+    Fold a location string the same way we fold brands, then take the first
+    proper-noun token so "EXW Rotterdam" / "Rotterdam Port" / "rotterdam"
+    collapse to "rotterdam" but "Rotterdam" and "Dubai" stay separate.
+    """
+    if not s:
+        return ""
+    v = _fold(s)
+    if v.strip() in ("not found", "none", "unknown", "n a", "na", ""):
+        return ""
+    v = re.sub(r"[^a-z0-9]+", " ", v).strip()
+    # Drop leading incoterm-like tokens someone shoved into the location field.
+    tokens = v.split()
+    while tokens and tokens[0] in {"exw", "fob", "cif", "dap", "ddp", "cfr", "cpt", "fca", "ex"}:
+        tokens = tokens[1:]
+    return tokens[0] if tokens else ""
+
+
+def _norm_num(v, decimals: int = 0) -> str:
+    """Numeric field to a canonical string. Empty for None so blanks collapse."""
+    if v in (None, ""):
+        return ""
+    try:
+        return f"{float(v):.{decimals}f}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _norm_text(s: str | None) -> str:
+    """Short text field (vintage, age statement, edition) folded to bare letters."""
+    if not s:
+        return ""
+    v = _fold(s)
+    v = re.sub(r"[^a-z0-9]+", " ", v).strip()
+    return v
+
+
+def canonical_product_id(brand: str | None, product_name: str | None) -> str:
+    """
+    NAMING identity only. Answers: "are these two rows referring to the same
+    product name, ignoring spelling differences?"
+    Bailey's vs Baileys, Peñasol vs Penasol, Jack Daniel's vs Jack Daniel's
+    — all one canonical product.
+    Used for search / dedup / roll-up — NOT for benchmarking or Best Prices.
+    """
+    return f"{canonical_brand(brand)}|{canonical_product(product_name)}"
+
+
+def peer_group_id(
+    brand: str | None,
+    product_name: str | None,
+    unit_volume_ml: float | int | None = None,
+    units_per_case: float | int | None = None,
+    incoterm: str | None = None,
+    location: str | None = None,
+    alcohol_percent: float | int | None = None,
+    vintage: str | None = None,
+    age_statement: str | None = None,
+    edition: str | None = None,
+) -> str:
+    """
+    COMMERCIAL peer-group identity. Answers: "are these two offers genuinely
+    comparable for Best Price / historical benchmarking?"
+
+    Includes every discriminator that could make two offers not apples-to-
+    apples on a trading desk:
+      - unit_volume_ml, units_per_case   → pack format
+      - incoterm                         → term of delivery
+      - location                         → EXW Rotterdam ≠ EXW Dubai
+      - alcohol_percent (0.1° bin)       → 40% ≠ 43% is a different SKU
+      - vintage                          → 2018 ≠ 2019 for wines
+      - age_statement                    → 12YO ≠ 18YO for whisky
+      - edition                          → Special / Limited / Reserve
+
+    Multi-category will add: EAN, format (EDT/EDP/Parfum), tester/retail,
+    size, gender, shade. Perfume-safe fields fold via `_norm_text` on the
+    same principle — never store the raw string in the key, always the fold.
+
+    Blank fields collapse (empty string), so a row missing ABV still peers
+    with another row missing ABV. This is a conservative default: a row
+    with location=null does NOT peer with a Rotterdam row (they'd have
+    different location slugs — Rotterdam vs empty). The peer group is the
+    intersection of what we know, not a fuzzy match.
+    """
+    return "|".join([
+        canonical_product_id(brand, product_name),
+        _norm_num(unit_volume_ml, 0),
+        _norm_num(units_per_case, 0),
+        (incoterm or "").upper().strip(),
+        _normalize_location(location),
+        _norm_num(alcohol_percent, 1),
+        _norm_text(vintage),
+        _norm_text(age_statement),
+        _norm_text(edition),
+    ])
+
+
+# ── Backward-compat shim ────────────────────────────────────────────────────
+# Older call sites still pass the pre-split (brand, name, vol, upc, incoterm)
+# signature. Keep the function name resolving to peer_group_id so nothing
+# silently disagrees on identity mid-migration.
 def canonical_key(brand: str | None, product_name: str | None,
                   unit_volume_ml: float | int | None,
                   units_per_case: float | int | None,
-                  incoterm: str | None = None) -> str:
-    """
-    The one peer-group identity used everywhere: benchmarks lookup, records
-    serialization, alert dedup. Deriving it in more than one place is how
-    silent mismatches (Peñasol → pe asol on the backend vs peñasol on the
-    frontend) creep in — hence a single implementation here plus a
-    `peer_group_id` field the API emits per row.
-    """
-    return "|".join([
-        canonical_brand(brand),
-        canonical_product(product_name),
-        str(int(unit_volume_ml or 0)),
-        str(int(units_per_case or 0)),
-        (incoterm or "").upper(),
-    ])
+                  incoterm: str | None = None,
+                  location: str | None = None,
+                  alcohol_percent: float | int | None = None,
+                  vintage: str | None = None) -> str:
+    """Alias for peer_group_id. Prefer peer_group_id directly in new code."""
+    return peer_group_id(
+        brand, product_name,
+        unit_volume_ml=unit_volume_ml,
+        units_per_case=units_per_case,
+        incoterm=incoterm,
+        location=location,
+        alcohol_percent=alcohol_percent,
+        vintage=vintage,
+    )
 
 
 if __name__ == "__main__":

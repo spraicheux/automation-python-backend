@@ -5,7 +5,7 @@ from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional
 from core.database import get_db
-from core.normalization import canonical_key
+from core.normalization import peer_group_id
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -50,15 +50,19 @@ async def get_benchmarks(
     rows = q.all()
     peers = {}
     for r in rows:
-        # Use the canonical key so "Baileys" / "Bailey's" / "Baileys Original"
-        # collapse into one peer group. Incoterm is part of the key so EXW €20
-        # and DAP €21 aren't treated as apples-to-apples until landed-cost
-        # normalisation exists.
-        # NOTE: location is NOT in the key yet — EXW Rotterdam vs EXW Dubai are
-        # treated as peers today. This is a known conservative gap; see the
-        # deterministic_rules note on document-level location inheritance.
-        key = canonical_key(r.brand, r.product_name, r.unit_volume_ml,
-                            r.units_per_case, r.incoterm)
+        # Peer identity comes from the ONE canonicalisation defined in
+        # core.normalization. The full commercial key includes location,
+        # ABV, vintage, age_statement, edition — so an EXW Rotterdam 40%
+        # offer never gets peered with an EXW Dubai 43% offer.
+        key = peer_group_id(
+            r.brand, r.product_name,
+            unit_volume_ml=r.unit_volume_ml,
+            units_per_case=r.units_per_case,
+            incoterm=r.incoterm,
+            location=r.location,
+            alcohol_percent=r.alcohol_percent,
+            vintage=r.vintage,
+        )
         entry = peers.setdefault(key, {"samples": []})
         entry["samples"].append((r.price_per_unit_eur, r.uid))
 

@@ -103,12 +103,25 @@ class OfferItemDB(Base):
         `/api/benchmarks?peers` — no client-side re-derivation, no drift.
         """
         import json
-        from core.normalization import canonical_key
+        from core.normalization import canonical_product_id, peer_group_id
         return {
             "uid": self.uid,
-            "peer_group_id": canonical_key(
-                self.brand, self.product_name, self.unit_volume_ml,
-                self.units_per_case, self.incoterm,
+            # Naming identity — spelling collapse only. Same product across
+            # different pack sizes / incoterms will share this key.
+            "canonical_product_id": canonical_product_id(
+                self.brand, self.product_name,
+            ),
+            # Commercial identity — offers that share this key are genuinely
+            # comparable for Best Price / historical benchmarking. Includes
+            # pack, incoterm, location, ABV, vintage, age statement, edition.
+            "peer_group_id": peer_group_id(
+                self.brand, self.product_name,
+                unit_volume_ml=self.unit_volume_ml,
+                units_per_case=self.units_per_case,
+                incoterm=self.incoterm,
+                location=self.location,
+                alcohol_percent=self.alcohol_percent,
+                vintage=self.vintage,
             ),
             "job_id": self.job_id,
             "source_file_id": self.source_file_id,

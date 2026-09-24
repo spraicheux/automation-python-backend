@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.normalization import canonical_key, canonical_brand, canonical_product
+from core.normalization import peer_group_id
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -37,7 +37,7 @@ def list_alerts(
     Payload:
       [{
         type: "new_best_price" | "competitive_supplier",
-        canonical_key: "...",
+        peer_group_id: "...",
         product: {brand, name, size_ml, upc, incoterm},
         current: {uid, supplier, price_eur, offer_date},
         previous_best: {uid, supplier, price_eur, offer_date, delta_pct},
@@ -52,12 +52,19 @@ def list_alerts(
     # Group all rows by canonical key
     by_key = defaultdict(list)
     for r in all_rows:
-        k = canonical_key(r.brand, r.product_name, r.unit_volume_ml,
-                          r.units_per_case, r.incoterm)
+        k = peer_group_id(
+            r.brand, r.product_name,
+            unit_volume_ml=r.unit_volume_ml,
+            units_per_case=r.units_per_case,
+            incoterm=r.incoterm,
+            location=r.location,
+            alcohol_percent=r.alcohol_percent,
+            vintage=r.vintage,
+        )
         by_key[k].append(r)
 
     alerts = []
-    # Track (canonical_key, supplier, alert_type) so we don't emit the same
+    # Track (peer_group_id, supplier, alert_type) so we don't emit the same
     # supplier/product situation twice — most recent event per identity wins.
     seen = set()
     for k, rows in by_key.items():
@@ -117,7 +124,7 @@ def list_alerts(
 
         alerts.append({
             "type": alert_type,
-            "canonical_key": k,
+            "peer_group_id": k,
             "created_at": (latest.offer_date or latest.created_at).isoformat(),
             "product": {
                 "brand": latest.brand,

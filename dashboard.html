@@ -968,21 +968,13 @@
     } catch (_) { benchmarks = {}; }
   }
 
-  // Peer identity is derived by the backend and returned on every offer as
-  // `peer_group_id`. The frontend must not re-hash — any divergence between
-  // the two implementations silently breaks the benchmark lookup for whatever
-  // spelling the two sides disagree on (Peñasol vs pe asol was that bug).
-  // Fall back to a coarse locally-computed key only when the API hasn't been
-  // redeployed yet, so old clients still limp along instead of dropping every
-  // benchmark to null.
+  // Peer identity is derived exclusively by the backend (core.normalization
+  // .peer_group_id) and returned on every offer. Any client-side re-hashing
+  // is how the two implementations silently drift apart (Peñasol vs pe asol
+  // was that bug). If a row arrives without peer_group_id the offer simply
+  // has no benchmark for this session — never a locally-computed fake one.
   function peerKey(item) {
-    if (item && typeof item.peer_group_id === 'string') return item.peer_group_id;
-    const brand = (item.brand || '').toLowerCase();
-    const name  = (item.product_name || '').toLowerCase();
-    const vol   = Math.trunc(item.unit_volume_ml || 0);
-    const upc   = Math.trunc(item.units_per_case || 0);
-    const inco  = (item.incoterm || '').toUpperCase();
-    return `${brand}|${name}|${vol}|${upc}|${inco}`;
+    return (item && typeof item.peer_group_id === 'string') ? item.peer_group_id : null;
   }
 
   function getBenchmark(item) {

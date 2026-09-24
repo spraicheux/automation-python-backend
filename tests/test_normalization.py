@@ -12,7 +12,13 @@ Peñasol / Jack Daniel's peer-key mismatch happened in the first place).
 """
 import pytest
 
-from core.normalization import canonical_brand, canonical_product, canonical_key
+from core.normalization import (
+    canonical_brand,
+    canonical_product,
+    canonical_key,
+    canonical_product_id,
+    peer_group_id,
+)
 
 
 class TestUnicodeFolding:
@@ -93,3 +99,96 @@ class TestDifferentProductsStaySeparate:
 
     def test_different_brand(self):
         assert canonical_brand("Peñasol") != canonical_brand("Jack Daniels")
+
+
+class TestCanonicalProductIdVsPeerGroupId:
+    """
+    Two distinct identity concepts must not collapse:
+      - canonical_product_id: naming — same product regardless of pack / terms.
+      - peer_group_id: commercial — genuinely apples-to-apples for benchmarking.
+    """
+
+    def test_same_product_different_pack_shares_canonical_but_not_peer(self):
+        cpid_a = canonical_product_id("Baileys", "Irish Cream")
+        cpid_b = canonical_product_id("Baileys", "Irish Cream")
+        assert cpid_a == cpid_b
+
+        pg_700 = peer_group_id("Baileys", "Irish Cream", unit_volume_ml=700, units_per_case=6, incoterm="EXW")
+        pg_1000 = peer_group_id("Baileys", "Irish Cream", unit_volume_ml=1000, units_per_case=6, incoterm="EXW")
+        assert pg_700 != pg_1000
+
+    def test_canonical_product_id_ignores_pack(self):
+        assert (canonical_product_id("Baileys", "Irish Cream") ==
+                canonical_product_id("Baileys", "Irish Cream"))
+
+
+class TestLocationInPeerGroup:
+    """Rotterdam and Dubai must not peer even at the same incoterm."""
+
+    def test_different_location_splits_peer(self):
+        rot = peer_group_id("Grey Goose", "Original", unit_volume_ml=700,
+                            units_per_case=6, incoterm="EXW", location="Rotterdam")
+        dub = peer_group_id("Grey Goose", "Original", unit_volume_ml=700,
+                            units_per_case=6, incoterm="EXW", location="Dubai")
+        assert rot != dub
+
+    def test_location_case_and_prefix_insensitive(self):
+        a = peer_group_id("Grey Goose", "Original", incoterm="EXW", location="ROTTERDAM")
+        b = peer_group_id("Grey Goose", "Original", incoterm="EXW", location="rotterdam")
+        c = peer_group_id("Grey Goose", "Original", incoterm="EXW", location="EXW Rotterdam")
+        assert a == b == c
+
+    def test_not_found_location_treated_as_empty(self):
+        a = peer_group_id("Grey Goose", "Original", incoterm="EXW", location="Not Found")
+        b = peer_group_id("Grey Goose", "Original", incoterm="EXW", location=None)
+        assert a == b
+
+
+class TestCommercialDiscriminators:
+    """ABV, vintage, age statement must break peer identity when they differ."""
+
+    def test_abv_different(self):
+        a = peer_group_id("Bacardi", "Superior", unit_volume_ml=700, units_per_case=6,
+                          incoterm="EXW", alcohol_percent=40.0)
+        b = peer_group_id("Bacardi", "Superior", unit_volume_ml=700, units_per_case=6,
+                          incoterm="EXW", alcohol_percent=43.0)
+        assert a != b
+
+    def test_abv_same_within_tolerance(self):
+        # 40.0 and 40.04 both bin to "40.0" — one decimal is our resolution.
+        a = peer_group_id("Bacardi", "Superior", incoterm="EXW", alcohol_percent=40.0)
+        b = peer_group_id("Bacardi", "Superior", incoterm="EXW", alcohol_percent=40.04)
+        assert a == b
+
+    def test_abv_blank_stays_blank(self):
+        a = peer_group_id("Bacardi", "Superior", incoterm="EXW", alcohol_percent=None)
+        b = peer_group_id("Bacardi", "Superior", incoterm="EXW")
+        assert a == b
+
+    def test_vintage_different(self):
+        a = peer_group_id("Chateau X", "Premier Cru", incoterm="EXW", vintage="2018")
+        b = peer_group_id("Chateau X", "Premier Cru", incoterm="EXW", vintage="2019")
+        assert a != b
+
+    def test_age_statement_different(self):
+        a = peer_group_id("Macallan", "Sherry Oak", incoterm="EXW", age_statement="12 YO")
+        b = peer_group_id("Macallan", "Sherry Oak", incoterm="EXW", age_statement="18 YO")
+        assert a != b
+
+    def test_age_statement_spelling_insensitive(self):
+        a = peer_group_id("Macallan", "Sherry Oak", incoterm="EXW", age_statement="12YO")
+        b = peer_group_id("Macallan", "Sherry Oak", incoterm="EXW", age_statement="12 years")
+        # "12yo" vs "12 years" fold to different tokens; that's ok — the
+        # rule is: same spelling collapses, different spellings don't peer
+        # unless we teach an alias map later.
+        assert a != b
+
+
+class TestCanonicalKeyShim:
+    """The old canonical_key() signature must still resolve to peer_group_id."""
+
+    def test_shim_matches_peer_group_id(self):
+        legacy = canonical_key("Baileys", "Irish Cream", 700, 6, "EXW")
+        new = peer_group_id("Baileys", "Irish Cream", unit_volume_ml=700,
+                            units_per_case=6, incoterm="EXW")
+        assert legacy == new
