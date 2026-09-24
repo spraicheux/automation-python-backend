@@ -152,6 +152,22 @@ def product_family_id(brand: str | None, product_name: str | None) -> str:
 canonical_product_id = product_family_id
 
 
+def ean_key(ean_code: str | None) -> str:
+    """
+    Normalise an EAN / GTIN to bare digits. Suppliers write them in many
+    forms — "3348901234567", "3348901.234567", "EAN 3348901234567". Keep
+    only the digits so all forms fold to the same slug; return "" when
+    nothing usable is present, so downstream can treat "no EAN provided"
+    as a fallback path (see the resolver logic in the Best Prices API).
+    """
+    if not ean_code:
+        return ""
+    digits = re.sub(r"\D+", "", str(ean_code))
+    # A real EAN is 8, 12, 13 or 14 digits (EAN-8 / UPC / EAN-13 / GTIN-14).
+    # Anything else is data we don't trust — treat as unknown.
+    return digits if len(digits) in (8, 12, 13, 14) else ""
+
+
 def sku_identity(
     brand: str | None,
     product_name: str | None,
@@ -161,7 +177,6 @@ def sku_identity(
     vintage: str | None = None,
     age_statement: str | None = None,
     edition: str | None = None,
-    ean_code: str | None = None,
     # Reserved for perfumes/cosmetics — same signature, per-category discriminators
     perfume_format: str | None = None,  # EDT | EDP | Parfum | Cologne
     retail_state: str | None = None,    # retail | tester | sample
@@ -169,15 +184,20 @@ def sku_identity(
     shade: str | None = None,
 ) -> str:
     """
-    LEVEL B — SKU / physical-product identity. Answers: "is this the same
-    physical product, regardless of who's selling it or under what terms?"
-    Dedup and 'same SKU across suppliers' comparisons must use THIS key,
-    NOT the family key — otherwise two genuinely different SKUs (Hennessy
-    VS 350ml vs 700ml) collapse together on the Best-Prices roll-up.
+    LEVEL B — SKU / physical-product identity from ATTRIBUTES ONLY.
+    Answers: "is this the same physical product on paper, regardless of
+    who's selling it or under what terms?" Dedup and "same SKU across
+    suppliers" comparisons use this key ANDed with the EAN resolver
+    (see ean_key + best-prices API): two rows are the same SKU when
+    this key matches AND their EANs are compatible (both blank, one
+    blank, or the same digits). Rows with contradicting EANs stay
+    separate and get a needs-review flag.
 
-    W&S discriminators: volume, pack, ABV, vintage, age statement, edition,
-    EAN. Perfume/cosmetic discriminators added by the same function so
-    the split logic doesn't have to know which category it's serving.
+    EAN is DELIBERATELY NOT in the hash. A supplier who left EAN blank
+    would otherwise never match against a supplier who filled it in.
+    Keeping EAN out of the key and reconciling it separately is what
+    lets us honour the client's "one EAN known → fall back to full
+    attributes" rule.
     """
     return "|".join([
         product_family_id(brand, product_name),
@@ -187,7 +207,6 @@ def sku_identity(
         _norm_text(vintage),
         _norm_text(age_statement),
         _norm_text(edition),
-        _norm_text(ean_code),
         _norm_text(perfume_format),
         _norm_text(retail_state),
         _norm_text(gender),
@@ -250,6 +269,12 @@ def peer_group_id(
     signals — see is_peer_group_qualified(). The dashboard downgrades
     NEW XM LOW and Best Price alerts on unqualified peers.
     """
+    # EAN sits in the peer key so two rows with genuinely different EANs
+    # (different SKUs that share every text attribute — reformulations,
+    # regional variants) don't get benchmarked against each other. Rows
+    # without EAN slot into the ""-EAN bucket and rely on the attribute
+    # match; the Best Prices resolver then reconciles blank-vs-known EAN
+    # per the client's fallback rule (one EAN known → attributes decide).
     return "|".join([
         sku_identity(
             brand, product_name,
@@ -259,12 +284,12 @@ def peer_group_id(
             vintage=vintage,
             age_statement=age_statement,
             edition=edition,
-            ean_code=ean_code,
             perfume_format=perfume_format,
             retail_state=retail_state,
             gender=gender,
             shade=shade,
         ),
+        ean_key(ean_code),
         _norm_incoterm(incoterm),
         _normalize_location(location),
     ])

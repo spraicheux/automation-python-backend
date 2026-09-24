@@ -243,6 +243,26 @@
     table.bp-offers th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 700; text-align: left; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border-soft); }
     table.bp-offers td { padding: 10px 16px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
     table.bp-offers tr.best td { background: rgba(52,211,153,0.05); }
+    /* Best Prices two-level roll-up: SKU container holds N peer blocks. */
+    .bp-peers { display: flex; flex-direction: column; gap: 0; }
+    .bp-peer { border-top: 1px solid var(--border-soft); }
+    .bp-peer.unqualified { background: rgba(251,191,36,0.03); }
+    .bp-peer-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--border-soft); }
+    .bp-peer.unqualified .bp-peer-head { background: rgba(251,191,36,0.04); }
+    .bp-peer-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .bp-peer-right { display: flex; align-items: center; gap: 8px; }
+    .peer-terms { font-size: 13px; color: var(--text); letter-spacing: 0.02em; }
+    .peer-terms.unqualified { color: #eab308; font-style: italic; }
+    .qual-pip { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
+    .qual-pip.ok { background: rgba(52,211,153,0.12); color: var(--green); }
+    .qual-pip.warn { background: rgba(251,191,36,0.12); color: #eab308; border: 1px dashed rgba(251,191,36,0.55); }
+    .peer-count { font-size: 11px; color: var(--muted); letter-spacing: 0.03em; }
+    .peer-best-price { font-family: 'DM Mono', monospace; font-weight: 700; color: var(--green); font-size: 15px; }
+    .bp-peer.unqualified .peer-best-price { color: #eab308; }
+    .peer-best-sub { font-size: 11px; color: var(--text-dim); font-weight: 500; margin-left: 6px; letter-spacing: 0.02em; }
+    .ean-badge { display: inline-block; margin-left: 10px; font-size: 10px; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 6px; font-family: 'DM Mono', monospace; font-weight: 600; }
+    .ean-badge.ok { background: rgba(52,211,153,0.10); color: var(--green); }
+    .ean-badge.conflict { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.4); }
     table.bp-offers tr:hover td { background: var(--row-hover); }
     .delta-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; }
     .delta-badge.best { background: rgba(52,211,153,0.15); color: var(--green); }
@@ -1734,63 +1754,106 @@
   }
 
   function bpGroupHtml(g) {
-    const offers = [...(g.offers || [])].sort((a,b) => (a.price_per_unit_eur ?? Infinity) - (b.price_per_unit_eur ?? Infinity));
-    const best = offers[0];
-    const bestUnit = best?.price_per_unit_eur;
-    const pack = formatPack({ units_per_case: offers[0]?.units_per_case, unit_volume_ml: g.unit_volume_ml });
+    // New response shape: SKU-level container carries `peers` (per commercial
+    // peer group) instead of a flat `offers` list. Trusted headline Best
+    // Price only comes from a qualified peer; unqualified peers still show
+    // their best but with an "unverified" mark.
+    const peers = g.peers || [];
+    const pack = formatPack({ units_per_case: g.units_per_case, unit_volume_ml: g.unit_volume_ml });
+    const trustedBest = g.trusted_best_price_eur;
+    const trustedPeer = peers.find(p => p.peer_group_id === g.trusted_best_peer_id);
+    const trustedSupplier = trustedPeer?.best_supplier || '—';
+    const trustedTerms = trustedPeer
+      ? `${escapeHtml(trustedPeer.incoterm || '—')} · ${escapeHtml(trustedPeer.location || '—')}`
+      : '';
 
-    const rows = offers.map((o, idx) => {
-      const isBest = idx === 0;
-      const pu = o.price_per_unit_eur;
-      const pc = o.price_per_case_eur;
-      const delta = (pu != null && bestUnit != null && bestUnit > 0)
-        ? ((pu - bestUnit) / bestUnit) * 100
-        : null;
-      let deltaBadge = '';
-      if (isBest) deltaBadge = `<span class="delta-badge best">BEST</span>`;
-      else if (delta != null) deltaBadge = `<span class="delta-badge up">+${delta.toFixed(1)}%</span>`;
-      const ai = formatAge(o.offer_date || o.created_at);
-      const dateStr = ai ? `<span title="${escapeAttr(ai.title)}">${escapeHtml(ai.text)}</span>` : '—';
-      return `<tr class="${isBest ? 'best' : ''}" data-uid="${escapeAttr(o.uid)}">
-        <td>${supplierCell(o)}</td>
-        <td class="bp-mono">${o.quantity_case != null ? formatQuantity(o) : '—'}</td>
-        <td class="bp-mono" style="color:${pu != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
-        <td class="bp-mono" style="color:${pc != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
-        <td>${o.incoterm && o.incoterm !== 'Not Found' ? `<span class="badge">${escapeHtml(o.incoterm)}</span>` : '—'}</td>
-        <td>${o.location && o.location !== 'Not Found' ? escapeHtml(o.location) : '—'}</td>
-        <td class="bp-mono">${dateStr}</td>
-        <td>${deltaBadge}</td>
-      </tr>`;
+    // EAN reconciliation badges — client's rule: contradiction is Needs Review.
+    let eanBadge = '';
+    if (g.ean_conflict) {
+      const eanList = (g.known_eans || []).join(' · ');
+      eanBadge = `<span class="ean-badge conflict" title="Suppliers reported different EANs for the same-attribute SKU — needs review before treating as one product. EANs: ${escapeAttr(eanList)}">EAN CONFLICT</span>`;
+    } else if ((g.known_eans || []).length === 1) {
+      eanBadge = `<span class="ean-badge ok" title="EAN ${escapeAttr(g.known_eans[0])} — same across suppliers who provided it">EAN ${escapeHtml(g.known_eans[0])}</span>`;
+    }
+
+    const peerBlocks = peers.map(p => {
+      const offers = p.offers || [];
+      const bestUnit = p.best_price_eur;
+      const rows = offers.map((o, idx) => {
+        const isBest = idx === 0;
+        const pu = o.price_per_unit_eur;
+        const pc = o.price_per_case_eur;
+        const delta = (pu != null && bestUnit != null && bestUnit > 0)
+          ? ((pu - bestUnit) / bestUnit) * 100 : null;
+        let deltaBadge = '';
+        if (isBest) deltaBadge = p.is_qualified
+          ? `<span class="delta-badge best">BEST</span>`
+          : `<span class="delta-badge unverified">BEST · unverified</span>`;
+        else if (delta != null) deltaBadge = `<span class="delta-badge up">+${delta.toFixed(1)}%</span>`;
+        const ai = formatAge(o.offer_date || o.created_at);
+        const dateStr = ai ? `<span title="${escapeAttr(ai.title)}">${escapeHtml(ai.text)}</span>` : '—';
+        return `<tr class="${isBest ? 'best' : ''}" data-uid="${escapeAttr(o.uid)}">
+          <td>${supplierCell(o)}</td>
+          <td class="bp-mono">${o.quantity_case != null ? formatQuantity(o) : '—'}</td>
+          <td class="bp-mono" style="color:${pu != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono" style="color:${pc != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono">${dateStr}</td>
+          <td>${deltaBadge}</td>
+        </tr>`;
+      }).join('');
+
+      const termsLabel = p.is_qualified
+        ? `<span class="peer-terms"><b>${escapeHtml(p.incoterm || '—')}</b> · ${escapeHtml(p.location || '—')}</span>`
+        : `<span class="peer-terms unqualified" title="Incoterm or location unknown for at least one offer — Best Price on this peer is not trusted">Commercial terms unknown</span>`;
+      const bestNumber = bestUnit != null
+        ? `<span class="peer-best-price">€${Number(bestUnit).toFixed(2)}<span class="peer-best-sub">/bottle · ${escapeHtml(p.best_supplier || '—')}</span></span>`
+        : '<span class="peer-best-price">—</span>';
+      const qualBadge = p.is_qualified
+        ? `<span class="qual-pip ok" title="Both incoterm and location known for every offer in this peer group">qualified</span>`
+        : `<span class="qual-pip warn" title="One or more offers in this peer group have unknown incoterm or location. Best Price shown but not trusted.">unverified</span>`;
+
+      return `<div class="bp-peer ${p.is_qualified ? '' : 'unqualified'}">
+        <div class="bp-peer-head">
+          <div class="bp-peer-left">${termsLabel}${qualBadge}<span class="peer-count">${p.supplier_count} supplier${p.supplier_count === 1 ? '' : 's'}</span></div>
+          <div class="bp-peer-right">${bestNumber}</div>
+        </div>
+        <table class="bp-offers">
+          <thead>
+            <tr>
+              <th>Supplier</th>
+              <th>Qty</th>
+              <th>€/Bottle</th>
+              <th>€/Case</th>
+              <th>Age</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
     }).join('');
+
+    const headlineBanner = trustedBest != null
+      ? `<div class="bp-best-banner">
+           <div class="bp-best-label">Trusted best price</div>
+           <div class="bp-best-price">€${Number(trustedBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
+           <div class="bp-best-sup">${escapeHtml(trustedSupplier)} · ${trustedTerms}</div>
+         </div>`
+      : `<div class="bp-best-banner">
+           <div class="bp-best-label" style="color: var(--text-dim);">No trusted best yet</div>
+           <div class="bp-best-price" style="color: var(--text-dim); font-size: 14px; font-weight: 500;">All peer groups have unknown terms.</div>
+         </div>`;
 
     return `<div class="bp-group">
       <div class="bp-group-head">
         <div class="bp-title">
           <div class="bp-brand">${escapeHtml(g.brand || '—')}</div>
           <div class="bp-name">${escapeHtml(g.product_name || '—')}</div>
-          <div class="bp-sub">${pack} · ${escapeHtml([g.category, g.sub_category].filter(x => x && x !== 'Not Found').join(' · '))} · ${g.supplier_count || offers.length} suppliers</div>
+          <div class="bp-sub">${pack} · ${escapeHtml([g.category, g.sub_category].filter(x => x && x !== 'Not Found').join(' · '))} · ${g.supplier_count || 0} suppliers · ${g.peer_count || peers.length} peer group${(g.peer_count || peers.length) === 1 ? '' : 's'} ${eanBadge}</div>
         </div>
-        <div class="bp-best-banner">
-          <div class="bp-best-label">Best Price</div>
-          <div class="bp-best-price">${bestUnit != null ? `€${Number(bestUnit).toFixed(2)}` : '—'} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
-          <div class="bp-best-sup">${escapeHtml(best?.supplier_name || best?.sender_name || '—')}</div>
-        </div>
+        ${headlineBanner}
       </div>
-      <table class="bp-offers">
-        <thead>
-          <tr>
-            <th>Supplier</th>
-            <th>Qty</th>
-            <th>€/Bottle</th>
-            <th>€/Case</th>
-            <th>Incoterm</th>
-            <th>Location</th>
-            <th>Age</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <div class="bp-peers">${peerBlocks}</div>
     </div>`;
   }
 

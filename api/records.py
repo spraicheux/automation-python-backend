@@ -271,16 +271,26 @@ async def get_best_prices(
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
 
-    # Group results by SKU identity (level B) + incoterm+location — so two
-    # rows are shown side-by-side ONLY when they're the same physical SKU
-    # AND the commercial terms match. Raw string comparison of brand /
-    # product misses spelling variants (Baileys vs Bailey's), so the
-    # Python-side key uses the canonical sku_identity from
-    # core.normalization.
+    # ── Best Prices: two-level roll-up ───────────────────────────────
+    # Level 1 (outer): sku_identity — gather all competing offers for the
+    # same physical SKU so a buyer sees every option side by side.
+    # Level 2 (inner): peer_group_id — determine the trusted Best Price
+    # per commercial peer. Same SKU at EXW Rotterdam and DAP Paris shows
+    # BOTH prices with their own trusted-best label; we never mash them
+    # into a single "best" that mixes commercial terms.
+    #
+    # EAN reconciliation. sku_identity is attribute-only, so a supplier
+    # who left EAN blank still merges with an EAN-bearing supplier of the
+    # same product. Within an SKU group we then look at the distinct EANs
+    # present:
+    #   - 0 or 1 distinct EAN → clean merge (client's fallback rule).
+    #   - ≥ 2 distinct EANs   → ean_conflict=True; buyer sees Needs Review.
     from collections import defaultdict
-    from core.normalization import sku_identity, is_peer_group_qualified
+    from core.normalization import (
+        sku_identity, ean_key, peer_group_id, is_peer_group_qualified,
+    )
 
-    groups = defaultdict(list)
+    sku_groups = defaultdict(list)
     for row in rows:
         sku = sku_identity(
             row.brand, row.product_name,
@@ -288,39 +298,84 @@ async def get_best_prices(
             units_per_case=row.units_per_case,
             alcohol_percent=row.alcohol_percent,
             vintage=row.vintage,
-            ean_code=row.ean_code,
         )
-        # A Best Price comparison is anchored on the commercial terms, so
-        # the group key IS the peer_group_id (SKU + incoterm + location).
-        # Two same-SKU offers at different incoterms show up as separate
-        # rows, which is the honest read.
-        key = (sku, (row.incoterm or '').upper(), (row.location or '').lower())
-        groups[key].append(row)
+        sku_groups[sku].append(row)
 
     grouped_list = []
-    for key, rows_in in groups.items():
-        rows_sorted = sorted(rows_in, key=lambda r: r.price_per_unit_eur or float('inf'))
-        items_sorted = [r.to_dict() for r in rows_sorted]
-        # A group is qualified only when every row it contains has known
-        # incoterm AND known location. The Best Price signal degrades to
-        # informational otherwise.
-        is_qualified = all(
-            is_peer_group_qualified(r.incoterm, r.location) for r in rows_in
-        )
-        head = rows_sorted[0]
+    for sku_key, rows_in in sku_groups.items():
+        # EAN reconciliation across the SKU cluster
+        distinct_eans = {ean_key(r.ean_code) for r in rows_in}
+        known_eans = sorted(e for e in distinct_eans if e)
+        ean_conflict = len(known_eans) > 1
+
+        # Sub-group by commercial peer for trusted-best-per-peer.
+        peer_buckets = defaultdict(list)
+        for r in rows_in:
+            pg = peer_group_id(
+                r.brand, r.product_name,
+                unit_volume_ml=r.unit_volume_ml,
+                units_per_case=r.units_per_case,
+                incoterm=r.incoterm, location=r.location,
+                alcohol_percent=r.alcohol_percent, vintage=r.vintage,
+                ean_code=r.ean_code,
+            )
+            peer_buckets[pg].append(r)
+
+        peers = []
+        trusted_best_price = None
+        trusted_best_peer = None
+        for pg_key, pg_rows in peer_buckets.items():
+            pg_sorted = sorted(pg_rows, key=lambda r: r.price_per_unit_eur or float('inf'))
+            head = pg_sorted[0]
+            qualified = all(
+                is_peer_group_qualified(r.incoterm, r.location) for r in pg_rows
+            )
+            entry = {
+                "peer_group_id": pg_key,
+                "incoterm": head.incoterm,
+                "location": head.location,
+                "is_qualified": qualified,
+                "supplier_count": len({(r.supplier_name or r.sender_email or '') for r in pg_rows}),
+                "best_price_eur": head.price_per_unit_eur,
+                "best_uid": head.uid,
+                "best_supplier": head.supplier_name,
+                "offers": [r.to_dict() for r in pg_sorted],
+            }
+            peers.append(entry)
+            # A trusted Best Price signal only comes from a qualified peer.
+            # An unqualified peer's best is shown but never elevated to
+            # the SKU-level trusted headline.
+            if qualified and head.price_per_unit_eur is not None:
+                if trusted_best_price is None or head.price_per_unit_eur < trusted_best_price:
+                    trusted_best_price = head.price_per_unit_eur
+                    trusted_best_peer = pg_key
+
+        # Sort peers: qualified first, then by best price ascending.
+        peers.sort(key=lambda p: (not p["is_qualified"],
+                                  p["best_price_eur"] or float('inf')))
+
+        head_row = rows_in[0]
+        supplier_count = len({(r.supplier_name or r.sender_email or '') for r in rows_in})
+
         grouped_list.append({
-            "sku_identity": key[0],
-            "product_name": head.product_name,
-            "brand": head.brand,
-            "category": head.category,
-            "sub_category": head.sub_category,
-            "unit_volume_ml": head.unit_volume_ml,
-            "incoterm": head.incoterm,     # comparison anchor
-            "location": head.location,     # part of the anchor now
-            "supplier_count": len(rows_in),
-            "best_price_eur": head.price_per_unit_eur,
-            "is_qualified": is_qualified,
-            "offers": items_sorted,
+            "sku_identity": sku_key,
+            "brand": head_row.brand,
+            "product_name": head_row.product_name,
+            "category": head_row.category,
+            "sub_category": head_row.sub_category,
+            "unit_volume_ml": head_row.unit_volume_ml,
+            "units_per_case": head_row.units_per_case,
+            "known_eans": known_eans,
+            "ean_conflict": ean_conflict,
+            "supplier_count": supplier_count,
+            "peer_count": len(peers),
+            # Headline "Best Price" is the lowest qualified peer's best.
+            # None when no qualified peer exists — the buyer sees the
+            # unqualified peers' prices in the peer list, but the
+            # SKU-level trusted claim is intentionally withheld.
+            "trusted_best_price_eur": trusted_best_price,
+            "trusted_best_peer_id": trusted_best_peer,
+            "peers": peers,
         })
 
     return {

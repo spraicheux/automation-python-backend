@@ -104,32 +104,34 @@ class OfferItemDB(Base):
         """
         import json
         from core.normalization import (
-            product_family_id, sku_identity, peer_group_id,
+            product_family_id, sku_identity, ean_key, peer_group_id,
             is_peer_group_qualified,
         )
         return {
             "uid": self.uid,
-            # ── THREE IDENTITY LEVELS ──────────────────────────────────
-            # A. FAMILY — brand + product name only. Same across sizes /
-            #    editions. Used for search + cross-size roll-up.
+            # ── THREE IDENTITY LEVELS + EAN AS A SEPARATE SIGNAL ─────
+            # A. FAMILY — brand + product name only. Used for search +
+            #    cross-size roll-up.
             "product_family_id": product_family_id(
                 self.brand, self.product_name,
             ),
-            # B. SKU — the physical product itself, supplier-agnostic:
-            #    brand + name + volume + pack + ABV + vintage + age + edition
-            #    (+ EAN and perfume fields when we have them). Use this for
-            #    dedup, "same SKU across suppliers" comparisons on Best Prices.
+            # B. SKU — physical product from ATTRIBUTES only (no EAN).
+            #    Rows with EAN and rows without EAN can still match here.
+            #    The EAN is emitted separately so the resolver can apply
+            #    the "one EAN known → fall back to attributes" rule.
             "sku_identity": sku_identity(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,
                 units_per_case=self.units_per_case,
                 alcohol_percent=self.alcohol_percent,
                 vintage=self.vintage,
-                ean_code=self.ean_code,
             ),
-            # C. PEER GROUP — SKU + incoterm + location. Use this ONLY for
-            #    Best Price / historical benchmarking. Rows in a peer group
-            #    are genuinely apples-to-apples on the trading desk.
+            # Bare digits when a real EAN was extracted; empty otherwise.
+            # A pair of rows counts as "same SKU" when sku_identity matches
+            # AND their EANs are compatible (both empty, one empty, or same).
+            "sku_ean": ean_key(self.ean_code),
+            # C. PEER GROUP — SKU + EAN + incoterm + location. Trusted
+            #    trading signal only.
             "peer_group_id": peer_group_id(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,
@@ -140,12 +142,7 @@ class OfferItemDB(Base):
                 vintage=self.vintage,
                 ean_code=self.ean_code,
             ),
-            # Row-level qualification: does THIS row have all commercial
-            # terms known? An unqualified row poisons its peer group's
-            # confidence — see api.records / api.alerts.
             "peer_qualified": is_peer_group_qualified(self.incoterm, self.location),
-            # Kept for backward compat — dashboard bundles pre-split still
-            # look for canonical_product_id. Same value as product_family_id.
             "canonical_product_id": product_family_id(
                 self.brand, self.product_name,
             ),

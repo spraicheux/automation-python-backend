@@ -19,6 +19,7 @@ from core.normalization import (
     canonical_product_id,
     product_family_id,
     sku_identity,
+    ean_key,
     peer_group_id,
     is_peer_group_qualified,
 )
@@ -247,11 +248,60 @@ class TestThreeIdentityLevels:
         pg = peer_group_id("Hennessy", "VS", incoterm="EXW", location="Rotterdam", **args)
         assert pg.startswith(sku + "|")
 
-    def test_sku_takes_ean_when_present(self):
-        # Perfume/cosmetics parity check — EAN is a SKU-level discriminator.
-        a = sku_identity("Dior", "Sauvage", unit_volume_ml=100, ean_code="3348901234567")
-        b = sku_identity("Dior", "Sauvage", unit_volume_ml=100, ean_code="3348901234568")
-        assert a != b
+    def test_sku_ignores_ean_by_design(self):
+        # EAN is deliberately outside sku_identity so a blank-EAN row can
+        # still merge with an EAN-bearing row of the same product (client's
+        # "one EAN known → fall back to attributes" rule). EAN handling is
+        # reconciled by the API resolver, not by the hash.
+        a = sku_identity("Dior", "Sauvage", unit_volume_ml=100)
+        b = sku_identity("Dior", "Sauvage", unit_volume_ml=100)
+        assert a == b
+
+
+class TestEANReconciliation:
+    """
+    EAN handling per client rules:
+      - both known + same    → strong same-SKU match
+      - both known + differ  → keep separate (SKU-level flag ean_conflict)
+      - one known / none     → fall back to full attributes
+      - EAN vs attributes contradiction → Needs Review (resolver's job)
+    """
+
+    def test_ean_folded_to_digits(self):
+        assert ean_key("3348901234567") == "3348901234567"
+        assert ean_key(" 3348-9012-34567 ") == "3348901234567"
+        assert ean_key("EAN 3348901234567") == "3348901234567"
+
+    def test_short_junk_rejected(self):
+        # A "code" like "123" is not a real EAN — treat as unknown so we
+        # never build a false-signal on stray data.
+        assert ean_key("123") == ""
+        assert ean_key("") == ""
+        assert ean_key(None) == ""
+
+    def test_valid_ean_lengths(self):
+        assert ean_key("12345678") == "12345678"          # EAN-8
+        assert ean_key("123456789012") == "123456789012"  # UPC
+        assert ean_key("1234567890123") == "1234567890123"      # EAN-13
+        assert ean_key("12345678901234") == "12345678901234"    # GTIN-14
+
+    def test_blank_ean_sku_matches_ean_bearing_sku(self):
+        # Same attributes, one row with EAN, the other without → sku_identity
+        # is the same. The resolver treats them as one SKU (fallback rule).
+        a = sku_identity("Dior", "Sauvage", unit_volume_ml=100, alcohol_percent=None)
+        b = sku_identity("Dior", "Sauvage", unit_volume_ml=100, alcohol_percent=None)
+        assert a == b
+        # And their EAN keys differ ("" vs "3348...") but the SKU key doesn't.
+        assert ean_key(None) != ean_key("3348901234567")
+
+    def test_peer_group_still_splits_on_ean(self):
+        # If both rows have EAN and they differ, the peer key catches it
+        # so a "trusted best" never mixes them.
+        pg_a = peer_group_id("Dior", "Sauvage", unit_volume_ml=100,
+                             ean_code="3348901234567", incoterm="EXW", location="Rotterdam")
+        pg_b = peer_group_id("Dior", "Sauvage", unit_volume_ml=100,
+                             ean_code="3348901234568", incoterm="EXW", location="Rotterdam")
+        assert pg_a != pg_b
 
 
 class TestPeerQualification:
