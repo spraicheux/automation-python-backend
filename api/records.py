@@ -149,6 +149,10 @@ async def get_records(
                 func.coalesce(OfferItemDB.price_per_case, 0),
                 func.coalesce(OfferItemDB.currency, ''),
                 func.coalesce(OfferItemDB.quantity_case, 0),
+                # quantity_unit MUST be part of the fingerprint — "11 btls",
+                # "11 cs" and "11 pallets" all have quantity_case=11 but
+                # are completely different commercial lines.
+                func.lower(func.coalesce(OfferItemDB.quantity_unit, '')),
                 func.coalesce(OfferItemDB.ean_code, ''),
                 func.coalesce(OfferItemDB.product_reference, ''),
                 func.coalesce(OfferItemDB.valid_until, ''),
@@ -341,14 +345,18 @@ async def get_best_prices(
             peer_buckets[pg].append(r)
 
         peers = []
-        # SKU-level "lowest nominal price" is what the client renamed the
-        # cross-peer headline. It is deliberately NOT called "Trusted Best
-        # Price": €20 EXW Rotterdam and €21 DAP Paris cannot be traded
-        # against each other without freight/landed-cost normalisation,
-        # which we don't have yet. Each peer group has its own trusted
-        # best; the SKU-level number is nominal only and clearly labelled.
-        lowest_nominal_price = None
-        lowest_nominal_peer = None
+        # SKU-level headline: "lowest QUALIFIED nominal price". Precision
+        # matters here — this is the min across peer groups whose commercial
+        # terms are known (is_peer_group_qualified). An unqualified offer
+        # at a lower raw price is intentionally EXCLUDED, so the label
+        # reads "lowest qualified nominal" rather than "lowest nominal"
+        # (there could be a lower unqualified offer sitting in the data).
+        # It is NOT "Trusted Best Price": €20 EXW Rotterdam and €21 DAP
+        # Paris still can't be traded against each other without freight /
+        # landed-cost normalisation. Each peer group has its own trusted
+        # best; the SKU-level number is nominal-only and clearly labelled.
+        lowest_qualified_nominal_price = None
+        lowest_qualified_nominal_peer = None
         for pg_key, pg_rows in peer_buckets.items():
             pg_sorted = sorted(pg_rows, key=lambda r: r.price_per_unit_eur or float('inf'))
             head = pg_sorted[0]
@@ -368,9 +376,9 @@ async def get_best_prices(
             }
             peers.append(entry)
             if qualified and head.price_per_unit_eur is not None:
-                if lowest_nominal_price is None or head.price_per_unit_eur < lowest_nominal_price:
-                    lowest_nominal_price = head.price_per_unit_eur
-                    lowest_nominal_peer = pg_key
+                if lowest_qualified_nominal_price is None or head.price_per_unit_eur < lowest_qualified_nominal_price:
+                    lowest_qualified_nominal_price = head.price_per_unit_eur
+                    lowest_qualified_nominal_peer = pg_key
 
         # Sort peers: qualified first, then by best price ascending.
         peers.sort(key=lambda p: (not p["is_qualified"],
@@ -385,8 +393,8 @@ async def get_best_prices(
         # card, but the cross-peer comparison is disabled until the
         # conflict is resolved (client's rule).
         if ean_conflict:
-            lowest_nominal_price = None
-            lowest_nominal_peer = None
+            lowest_qualified_nominal_price = None
+            lowest_qualified_nominal_peer = None
 
         grouped_list.append({
             "sku_identity": sku_key,
@@ -404,8 +412,8 @@ async def get_best_prices(
             # it does not correct for freight or terms, and it stays null
             # when peer groups have unknown terms OR the SKU has an EAN
             # conflict. Real trusted bests live inside each peer block.
-            "lowest_nominal_price_eur": lowest_nominal_price,
-            "lowest_nominal_peer_id": lowest_nominal_peer,
+            "lowest_qualified_nominal_price_eur": lowest_qualified_nominal_price,
+            "lowest_qualified_nominal_peer_id": lowest_qualified_nominal_peer,
             "peers": peers,
         })
 

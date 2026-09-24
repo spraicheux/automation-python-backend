@@ -1761,11 +1761,14 @@
     // their best but with an "unverified" mark.
     const peers = g.peers || [];
     const pack = formatPack({ units_per_case: g.units_per_case, unit_volume_ml: g.unit_volume_ml });
-    // "Lowest nominal price" — the cross-peer headline. NOT a trusted best:
-    // it doesn't correct for freight or terms, and it's suppressed entirely
-    // on EAN conflicts. Real trusted bests live inside each peer block below.
-    const nominalBest = g.lowest_nominal_price_eur;
-    const nominalPeer = peers.find(p => p.peer_group_id === g.lowest_nominal_peer_id);
+    // "Lowest qualified nominal price" — the cross-peer headline. Only
+    // considers peer groups whose commercial terms are known (any lower
+    // unqualified offer is excluded from the headline by design). Still
+    // nominal-only: doesn't correct for freight or terms. Suppressed
+    // entirely on EAN conflicts. Real trusted bests live inside each
+    // peer block below.
+    const nominalBest = g.lowest_qualified_nominal_price_eur;
+    const nominalPeer = peers.find(p => p.peer_group_id === g.lowest_qualified_nominal_peer_id);
     const nominalSupplier = nominalPeer?.best_supplier || '—';
     const nominalTerms = nominalPeer
       ? `${escapeHtml(nominalPeer.incoterm || '—')} · ${escapeHtml(nominalPeer.location || '—')}`
@@ -1854,7 +1857,7 @@
       </div>`;
     } else if (nominalBest != null) {
       headlineBanner = `<div class="bp-best-banner">
-        <div class="bp-best-label" title="Nominal €/bottle across qualified peer groups. Not adjusted for freight or terms — landed-cost normalisation is a separate step.">Lowest nominal price</div>
+        <div class="bp-best-label" title="Lowest €/bottle across peer groups whose commercial terms are fully known. Offers with unknown incoterm or location are intentionally EXCLUDED from this headline (they may sit at a lower nominal price but their terms can't be verified). Still not landed-cost normalised — this is a nominal figure, not a trading signal.">Lowest qualified nominal price</div>
         <div class="bp-best-price">€${Number(nominalBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
         <div class="bp-best-sup">${escapeHtml(nominalSupplier)} · ${nominalTerms} <span class="nominal-caveat" title="Not landed-cost normalised — EXW vs DAP are not directly comparable">·  nominal only</span></div>
       </div>`;
