@@ -18,6 +18,7 @@ from api.sources import router as sources_router
 from api.auth import router as auth_router
 from api.offers_write import router as offers_write_router
 from api.alerts import router as alerts_router
+from api.admin import router as admin_router
 
 
 app = FastAPI(
@@ -42,6 +43,7 @@ app.include_router(sources_router, prefix="/api", tags=["Sources"])
 app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(offers_write_router, prefix="/api", tags=["Offers-Write"])
 app.include_router(alerts_router, prefix="/api", tags=["Alerts"])
+app.include_router(admin_router, prefix="/api", tags=["Admin"])
 
 
 @app.on_event("startup")

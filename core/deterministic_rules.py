@@ -211,6 +211,41 @@ def apply_deterministic_defaults(products: list, source_text: str,
             p["supplier_name"] = doc_supplier
             corrections.append(f"Row {i+1}: supplier_name=None → {doc_supplier} (inherited from document metadata)")
 
+        # ── €/case sanity: catch "Total Price" mis-mapping ──────────
+        # LLM sometimes puts a source "Total Price" column (qty × unit price)
+        # into price_per_case. That row has no real per-case price. Detect:
+        #   units_per_case is unknown / 1 (no case pack in source)
+        #   AND price_per_case ≈ quantity_case × price_per_unit
+        # → null out price_per_case (it was a lot total, not a case price).
+        upc = p.get("units_per_case")
+        qc = p.get("quantity_case")
+        ppc = p.get("price_per_case")
+        ppu = p.get("price_per_unit")
+        if (ppc and ppu and qc and
+            (upc is None or upc == 1 or upc == 1.0) and
+            qc > 1):
+            expected_total = qc * ppu
+            if abs(ppc - expected_total) / max(expected_total, 0.001) < 0.02:
+                p["price_per_case"] = None
+                p["price_per_case_eur"] = None
+                corrections.append(
+                    f"Row {i+1}: price_per_case cleared — value equalled "
+                    f"quantity × price_per_unit, so the source had no per-case "
+                    f"pricing (looks like a mis-mapped 'Total Price' column)"
+                )
+        # Also: if units_per_case = 1 AND price_per_case == price_per_unit,
+        # the "case" concept doesn't exist here — clear price_per_case to
+        # keep the peer-key clean.
+        elif (ppc and ppu and
+              (upc == 1 or upc == 1.0) and
+              abs(ppc - ppu) < 0.01):
+            p["price_per_case"] = None
+            p["price_per_case_eur"] = None
+            corrections.append(
+                f"Row {i+1}: price_per_case cleared — units_per_case=1 and "
+                f"price_per_case equalled price_per_unit (no real case pack)"
+            )
+
     return products, corrections
 
 

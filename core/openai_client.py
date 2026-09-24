@@ -50,6 +50,28 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      today's date. Never use "Not Found" as a stand-in when the date IS in
      the header — read it.
 
+0.25 SOURCE COLUMN SEMANTICS — DO NOT MIS-MAP HEADER COLUMNS
+     Column headers give you the meaning. If a spreadsheet header explicitly
+     says something, the LLM MUST honour it:
+       - Column "QTY btls" / "Qty bottles" / "Quantity (bottles)" → the value is
+         in BOTTLES. Do NOT put it into quantity_case. Store the value as
+         quantity_case = value / units_per_case (only if units_per_case is
+         known from the pack spec — never from thin air). If units_per_case
+         is unknown, leave quantity_case null and put the raw number in
+         quantity_case with quantity_unit="bottles" (Rule 0.3).
+       - Column "Total Price" / "Total" / "Amount" → the value is total for
+         the LOT, i.e. quantity × unit_price. Do NOT put it into price_per_case.
+         Leave price_per_case null when the source has no explicit per-case
+         column; the frontend will compute it from unit_price × units_per_case
+         only when both are known.
+       - Column "Price EUR" / "Price" (with no "per case" or "per bottle"
+         qualifier) → the value is per bottle unless the source states
+         otherwise. Assign to price_per_unit.
+     When the source has NO units-per-case concept at all (row-by-row bottle
+     lots, no case config), leave BOTH units_per_case AND price_per_case as
+     null. Never invent a case price by multiplying quantity × unit_price —
+     that gives you the lot total, not a case price.
+
 0.3  MOQ + QUANTITY — UNIT AWARENESS IS MANDATORY
      Sources express MOQ and quantity in cases, bottles, pallets, or FTL.
      You MUST normalize to cases in moq_cases and quantity_case AND you
