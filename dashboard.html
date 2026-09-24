@@ -1382,7 +1382,7 @@
         <div class="prod-name">${escapeHtml(name || i.product_name || '—')}</div>
         <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
       </td>
-      <td class="pack">${escapeHtml(pack)}</td>
+      <td class="pack">${pack}</td>
       <td class="abv">${abv}</td>
       <td class="supplier">${sup}</td>
       <td class="qty">${qty}</td>
