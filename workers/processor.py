@@ -561,10 +561,12 @@ async def process_offer(payload, job_id: str):
             from core.deterministic_rules import apply_deterministic_defaults
             header_text = (payload.text_body or "")
             if payload.attachments:
-                # Prepend the subject/sender so header rules can also fire from
-                # forwarded emails whose price list is in an attachment.
                 header_text = f"Subject: {payload.subject or ''}\nFrom: {payload.sender_email or ''}\n\n" + header_text
-            all_products, drule_corrections = apply_deterministic_defaults(all_products, header_text)
+            all_products, drule_corrections = apply_deterministic_defaults(
+                all_products, header_text,
+                source_filename=payload.source_filename,
+                sender_email=payload.sender_email,
+            )
             if drule_corrections:
                 logger.info(f"Deterministic rules applied {len(drule_corrections)} corrections:")
                 for c in drule_corrections[:10]:

@@ -57,9 +57,12 @@ def list_alerts(
         by_key[k].append(r)
 
     alerts = []
+    # Track (canonical_key, supplier, alert_type) so we don't emit the same
+    # supplier/product situation twice — most recent event per identity wins.
+    seen = set()
     for k, rows in by_key.items():
         if len(rows) < 2:
-            continue
+            continue  # No prior peer to beat — not an alert-worthy event
 
         # Chronological order
         rows = sorted(rows, key=lambda x: x.offer_date or x.created_at or datetime.min)
@@ -102,6 +105,13 @@ def list_alerts(
 
         if not alert_type:
             continue
+
+        # Deduplicate: same peer group + supplier + alert type → collapse to
+        # the newest event (the sort at the end promotes the latest).
+        dedup_key = (k, (latest.supplier_name or "").lower().strip(), alert_type)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
 
         delta_pct = ((cur_price - best_prior_price) / best_prior_price) * 100
 

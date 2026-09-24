@@ -246,6 +246,7 @@
     .xm-low-link:hover { color: var(--accent); }
     .sample-count { color: var(--muted); font-size: 10px; font-weight: 400; margin-left: 2px; }
     .delta-badge.new-low { background: var(--green); color: #0a0c12; font-weight: 700; letter-spacing: 0.3px; padding: 3px 10px; box-shadow: 0 0 0 3px rgba(52,211,153,0.15); }
+    .delta-badge.first-obs { background: var(--pill); color: var(--text-dim); font-weight: 500; letter-spacing: 0.3px; padding: 2px 8px; border: 1px dashed var(--border); }
     .review-pill { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; margin-left: 6px; background: rgba(251,191,36,0.18); color: var(--amber); border: 1px solid rgba(251,191,36,0.35); vertical-align: middle; }
     .bp-mono { font-family: 'DM Mono', monospace; }
 
@@ -984,9 +985,15 @@
     const cur = item.price_per_unit_eur;
     if (cur == null || p.low_eur == null || p.samples < 1) return { ...p, delta: null };
     const delta = ((cur - p.low_eur) / p.low_eur) * 100;
-    const isNewLow = cur <= p.low_eur + 0.001; // fp tolerance
+    // samples includes the current offer. "Prior" = comparable offers other than this one.
+    const priorSamples = Math.max(0, p.samples - 1);
+    // A NEW LOW claim only makes sense when there is at least one prior peer to beat.
+    const isNewLow = priorSamples >= 1 && cur <= p.low_eur + 0.001;
+    // A row with no prior peers is the first observation of its kind.
+    const isFirstObservation = priorSamples === 0;
     const deltaAvg = p.avg_eur ? ((cur - p.avg_eur) / p.avg_eur) * 100 : null;
-    return { ...p, delta, delta_avg: deltaAvg, is_new_low: isNewLow };
+    return { ...p, delta, delta_avg: deltaAvg, is_new_low: isNewLow,
+             is_first_observation: isFirstObservation, prior_samples: priorSamples };
   }
 
   function updateBenchmarkLabels() {
@@ -1260,13 +1267,18 @@
     let lowCell = nullCell(), deltaCell = nullCell();
     if (bench && bench.low_eur != null) {
       const clickable = bench.low_uid && bench.low_uid !== i.uid;
-      const tip = `${benchmarkWindow} Low: €${bench.low_eur.toFixed(2)} · ${bench.samples} comparable offer${bench.samples === 1 ? '' : 's'} · avg €${bench.avg_eur.toFixed(2)}`;
+      // Sample count shown is PRIOR samples (excluding the current offer) so
+      // "(0)" honestly reads as "no history to compare against".
+      const priorStr = `${bench.prior_samples} prior offer${bench.prior_samples === 1 ? '' : 's'}`;
+      const tip = `${benchmarkWindow} Low: €${bench.low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${bench.avg_eur.toFixed(2)}`;
       const lowLink = clickable
-        ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.low_uid)}" title="${escapeAttr(tip)} · click to open">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.samples})</span></a>`
-        : `<span title="${escapeAttr(tip)}">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.samples})</span></span>`;
+        ? `<a href="#" class="xm-low-link" data-uid="${escapeAttr(bench.low_uid)}" title="${escapeAttr(tip)} · click to open">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.prior_samples})</span></a>`
+        : `<span title="${escapeAttr(tip)}">€${bench.low_eur.toFixed(2)} <span class="sample-count">(${bench.prior_samples})</span></span>`;
       lowCell = lowLink;
-      if (bench.is_new_low) {
-        deltaCell = `<span class="delta-badge best new-low" title="This offer IS the lowest we've seen in the last ${benchmarkWindow} (${bench.samples} samples)">NEW ${benchmarkWindow} LOW</span>`;
+      if (bench.is_first_observation) {
+        deltaCell = `<span class="delta-badge first-obs" title="No prior comparable offers in the ${benchmarkWindow} window — this is the first observation for this peer group">FIRST</span>`;
+      } else if (bench.is_new_low) {
+        deltaCell = `<span class="delta-badge best new-low" title="Beats the prior ${benchmarkWindow} low of €${bench.low_eur.toFixed(2)} (${bench.prior_samples} prior offers)">NEW ${benchmarkWindow} LOW</span>`;
       } else if (bench.delta != null) {
         const sign = bench.delta >= 0 ? '+' : '';
         const cls = bench.delta <= 5 ? 'best' : (bench.delta <= 15 ? '' : 'up');

@@ -54,6 +54,9 @@ async def get_benchmarks(
         # collapse into one peer group. Incoterm is part of the key so EXW €20
         # and DAP €21 aren't treated as apples-to-apples until landed-cost
         # normalisation exists.
+        # NOTE: location is NOT in the key yet — EXW Rotterdam vs EXW Dubai are
+        # treated as peers today. This is a known conservative gap; see the
+        # deterministic_rules note on document-level location inheritance.
         key = canonical_key(r.brand, r.product_name, r.unit_volume_ml,
                             r.units_per_case, r.incoterm)
         p = peers.get(key)

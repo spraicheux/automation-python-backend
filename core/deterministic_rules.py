@@ -77,18 +77,105 @@ def detect_document_incoterm(text: str) -> Optional[str]:
     return None
 
 
-def apply_deterministic_defaults(products: list, source_text: str) -> tuple:
+# City / country tokens for document-level location detection.
+# Matches "EXW Rotterdam", "Ex Loendersloot", "DAP Riga", "EXW Spain",
+# "Ex NewCorp", "Ex Singapore" etc. — the strong signal is `(EXW|Ex|DAP|...)` +
+# a proper-noun place word within a few characters.
+_LOCATION_PATTERN = re.compile(
+    r"(?:EXW|Ex(?:work)?|DAP|DDP|FOB|CIF|CFR|CPT|FCA)"
+    r"\s+([A-Z][A-Za-z]+)",
+    re.IGNORECASE,
+)
+
+# Free-mail / generic domains that never identify a supplier from the email alone.
+_GENERIC_MAIL_DOMAINS = {
+    "gmail", "yahoo", "hotmail", "outlook", "icloud", "aol", "live",
+    "protonmail", "gmx", "mail", "orange", "wanadoo", "yandex", "qq", "163",
+}
+
+
+def detect_document_location(text: str) -> Optional[str]:
+    """
+    Detect a document-level location by pairing an incoterm token with the
+    proper-noun place that follows it in the header.
+    """
+    if not text:
+        return None
+    header = "\n".join(text.split("\n")[:15])
+    m = _LOCATION_PATTERN.search(header)
+    if not m:
+        return None
+    place = m.group(1).strip()
+    # Reject clearly non-place words that might follow the incoterm token.
+    if place.lower() in {"ready", "warehouse", "stock", "stocks", "now",
+                         "available", "confirmed", "the"}:
+        return None
+    return place
+
+
+def detect_supplier_from_metadata(text: str, source_filename: Optional[str] = None,
+                                  sender_email: Optional[str] = None) -> Optional[str]:
+    """
+    Extract a supplier hint from document metadata when the extractor didn't
+    pick one up. Priority:
+      1. 'Répondre à:' / 'Reply to:' address's mailbox host (e.g. fbctrades)
+      2. 'De:' / 'From:' explicit company name after the address
+      3. Sender email domain
+      4. Uppercase supplier code in the filename (e.g. 'HNS' in 'MIX SPIRITS ... HNS.xlsm')
+    Never fabricates — only returns something present in the metadata.
+    """
+    if text:
+        header = "\n".join(text.split("\n")[:20])
+        m = re.search(
+            r"(?:Répondre à|Reply[- ]?to)\s*:\s*(?:[A-Za-z ]+@)?([A-Za-z0-9.-]+@[A-Za-z0-9.-]+)",
+            header, re.IGNORECASE,
+        )
+        if m:
+            domain = m.group(1).split("@")[-1].split(".")[0]
+            if domain and len(domain) >= 3:
+                return domain.title().replace("-", " ")
+
+        m = re.search(r"^De\s*:\s*([A-Z][A-Za-z0-9&' .-]{2,60})\s+[<]?[A-Za-z0-9._%+-]+@",
+                      header, re.IGNORECASE | re.MULTILINE)
+        if m:
+            name = m.group(1).strip()
+            if name and not name.lower().startswith(("subject", "objet", "date")):
+                return name
+
+    if sender_email and "@" in sender_email:
+        domain = sender_email.split("@")[-1].split(".")[0].lower()
+        # Free-mail addresses (gmail / yahoo / hotmail…) don't identify a
+        # supplier company — leave supplier_name blank so the manual reviewer
+        # sets it, rather than lying with "Gmail".
+        if len(domain) >= 3 and domain not in _GENERIC_MAIL_DOMAINS:
+            return domain.title().replace("-", " ")
+
+    if source_filename:
+        # e.g. "MIX SPIRITS DISCOUNT SALE HNS.xlsm" → uppercase 3-letter code at end
+        stem = re.sub(r"\.(xlsx|xlsm|xls|pdf|txt|csv)$", "", source_filename, flags=re.IGNORECASE)
+        m = re.search(r"\b([A-Z]{3,6})\s*$", stem)
+        if m:
+            return m.group(1)
+
+    return None
+
+
+def apply_deterministic_defaults(products: list, source_text: str,
+                                 source_filename: Optional[str] = None,
+                                 sender_email: Optional[str] = None) -> tuple:
     """
     Apply document-level defaults to LLM-extracted products.
     Returns (corrected_products, list_of_corrections).
 
-    A correction fires when:
-      - Document header explicitly states a currency, AND
-      - A row has price_per_unit or price_per_case set but currency is null / empty / different
-    Same shape for incoterm.
+    All document-level defaults (currency, incoterm, location, supplier) are
+    filled only into rows that don't already have that field set. Row-level
+    values coming from the LLM are always preserved so mixed-currency /
+    mixed-incoterm files (like FBC Premium Spirits with per-line USD/EUR) work.
     """
     doc_currency = detect_document_currency(source_text)
     doc_incoterm = detect_document_incoterm(source_text)
+    doc_location = detect_document_location(source_text)
+    doc_supplier = detect_supplier_from_metadata(source_text, source_filename, sender_email)
 
     corrections = []
     for i, p in enumerate(products):
@@ -111,6 +198,18 @@ def apply_deterministic_defaults(products: list, source_text: str) -> tuple:
         if doc_incoterm and not (p.get("incoterm") or "").strip():
             p["incoterm"] = doc_incoterm
             corrections.append(f"Row {i+1}: incoterm=None → {doc_incoterm} (inherited from document header)")
+
+        # ── location ──────────────────────────────────────────────────
+        row_loc = (p.get("location") or "").strip()
+        if doc_location and (not row_loc or row_loc.lower() == "not found"):
+            p["location"] = doc_location
+            corrections.append(f"Row {i+1}: location=None → {doc_location} (inherited from document header)")
+
+        # ── supplier ──────────────────────────────────────────────────
+        row_sup = (p.get("supplier_name") or "").strip()
+        if doc_supplier and (not row_sup or row_sup.lower() == "not found"):
+            p["supplier_name"] = doc_supplier
+            corrections.append(f"Row {i+1}: supplier_name=None → {doc_supplier} (inherited from document metadata)")
 
     return products, corrections
 
