@@ -263,6 +263,7 @@
     .ean-badge { display: inline-block; margin-left: 10px; font-size: 10px; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 6px; font-family: 'DM Mono', monospace; font-weight: 600; }
     .ean-badge.ok { background: rgba(52,211,153,0.10); color: var(--green); }
     .ean-badge.conflict { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.4); }
+    .nominal-caveat { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #eab308; margin-left: 6px; cursor: help; }
     table.bp-offers tr:hover td { background: var(--row-hover); }
     .delta-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; }
     .delta-badge.best { background: rgba(52,211,153,0.15); color: var(--green); }
@@ -1760,11 +1761,14 @@
     // their best but with an "unverified" mark.
     const peers = g.peers || [];
     const pack = formatPack({ units_per_case: g.units_per_case, unit_volume_ml: g.unit_volume_ml });
-    const trustedBest = g.trusted_best_price_eur;
-    const trustedPeer = peers.find(p => p.peer_group_id === g.trusted_best_peer_id);
-    const trustedSupplier = trustedPeer?.best_supplier || '—';
-    const trustedTerms = trustedPeer
-      ? `${escapeHtml(trustedPeer.incoterm || '—')} · ${escapeHtml(trustedPeer.location || '—')}`
+    // "Lowest nominal price" — the cross-peer headline. NOT a trusted best:
+    // it doesn't correct for freight or terms, and it's suppressed entirely
+    // on EAN conflicts. Real trusted bests live inside each peer block below.
+    const nominalBest = g.lowest_nominal_price_eur;
+    const nominalPeer = peers.find(p => p.peer_group_id === g.lowest_nominal_peer_id);
+    const nominalSupplier = nominalPeer?.best_supplier || '—';
+    const nominalTerms = nominalPeer
+      ? `${escapeHtml(nominalPeer.incoterm || '—')} · ${escapeHtml(nominalPeer.location || '—')}`
       : '';
 
     // EAN reconciliation badges — client's rule: contradiction is Needs Review.
@@ -1833,16 +1837,33 @@
       </div>`;
     }).join('');
 
-    const headlineBanner = trustedBest != null
-      ? `<div class="bp-best-banner">
-           <div class="bp-best-label">Trusted best price</div>
-           <div class="bp-best-price">€${Number(trustedBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
-           <div class="bp-best-sup">${escapeHtml(trustedSupplier)} · ${trustedTerms}</div>
-         </div>`
-      : `<div class="bp-best-banner">
-           <div class="bp-best-label" style="color: var(--text-dim);">No trusted best yet</div>
-           <div class="bp-best-price" style="color: var(--text-dim); font-size: 14px; font-weight: 500;">All peer groups have unknown terms.</div>
-         </div>`;
+    // Headline banner rules:
+    //   - EAN conflict → NO cross-peer headline at all. The card shows a
+    //     Needs-Review banner instead; trusted per-peer bests still render
+    //     inside their blocks.
+    //   - Some qualified peers exist → show LOWEST NOMINAL PRICE with an
+    //     explicit "not landed-cost normalised" caveat.
+    //   - No qualified peers → withhold the headline.
+    let headlineBanner;
+    if (g.ean_conflict) {
+      const eanList = (g.known_eans || []).join(' · ');
+      headlineBanner = `<div class="bp-best-banner">
+        <div class="bp-best-label" style="color: var(--red);">Needs review</div>
+        <div class="bp-best-price" style="color: var(--red); font-size: 15px; font-weight: 600;">EAN conflict</div>
+        <div class="bp-best-sup" title="${escapeAttr(eanList)}">Cross-peer headline suppressed until suppliers reconcile EANs. Per-peer trusted bests still shown below.</div>
+      </div>`;
+    } else if (nominalBest != null) {
+      headlineBanner = `<div class="bp-best-banner">
+        <div class="bp-best-label" title="Nominal €/bottle across qualified peer groups. Not adjusted for freight or terms — landed-cost normalisation is a separate step.">Lowest nominal price</div>
+        <div class="bp-best-price">€${Number(nominalBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
+        <div class="bp-best-sup">${escapeHtml(nominalSupplier)} · ${nominalTerms} <span class="nominal-caveat" title="Not landed-cost normalised — EXW vs DAP are not directly comparable">·  nominal only</span></div>
+      </div>`;
+    } else {
+      headlineBanner = `<div class="bp-best-banner">
+        <div class="bp-best-label" style="color: var(--text-dim);">No qualified peer yet</div>
+        <div class="bp-best-price" style="color: var(--text-dim); font-size: 14px; font-weight: 500;">All peer groups have unknown terms.</div>
+      </div>`;
+    }
 
     return `<div class="bp-group">
       <div class="bp-group-head">

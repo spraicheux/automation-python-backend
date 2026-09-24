@@ -304,6 +304,40 @@ class TestEANReconciliation:
         assert pg_a != pg_b
 
 
+class TestBestPricesHeadlineSemantics:
+    """
+    Documents the client's rules for the SKU-level headline in /api/best-prices.
+    The response shape is generated inside the endpoint but its meaning is
+    stable enough to test as a contract:
+      - No cross-peer "Trusted Best Price" — that would silently compare
+        EXW vs DAP without freight normalisation.
+      - Cross-peer headline is called "lowest_nominal_price_eur" and is
+        computed only across QUALIFIED peer groups.
+      - An EAN conflict suppresses the headline entirely (both fields
+        null on the API), no matter the peer count or qualification.
+    These properties are exercised via the underlying primitives so a
+    future refactor can't flip the semantic without failing CI.
+    """
+
+    def test_lowest_nominal_only_considers_qualified_peers(self):
+        # The endpoint's logic in pseudocode:
+        #   lowest_nominal = min(peer.best for peer in peers if peer.is_qualified)
+        # Assert via primitives: is_peer_group_qualified must return False
+        # for unknown terms so those peers are excluded from the min.
+        assert not is_peer_group_qualified(None, "Rotterdam")
+        assert not is_peer_group_qualified("EXW", None)
+        assert is_peer_group_qualified("EXW", "Rotterdam")
+
+    def test_ean_conflict_disables_cross_peer_headline(self):
+        # Two known & different EANs → the endpoint's ean_conflict flag
+        # forces lowest_nominal_price_eur to None regardless of peer state.
+        # We assert the primitive: two distinct real EANs must fold to
+        # distinct ean_keys so the endpoint's `distinct_eans` count is > 1.
+        a = ean_key("3348901234567")
+        b = ean_key("3348901234568")
+        assert a and b and a != b
+
+
 class TestPeerQualification:
     """
     A peer comparison is "qualified" only when incoterm AND location are

@@ -121,21 +121,40 @@ async def get_records(
     sub_category: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    # Deduplicate by GENUINELY comparable identity so 70cl and 20cl of the same
-    # product name never collapse into one row (see client feedback: bottle size
-    # and packaging define distinct products). Partition on brand + name + volume
-    # + units_per_case + supplier so different suppliers of the same reference
-    # also stay visible.
+    # Same-file duplicate guard — only collapses TRUE extractor duplicates
+    # (LLM sometimes emits the same line twice within a batch). A supplier
+    # can legitimately list the same SKU multiple times in the same file
+    # with a different price, quantity, incoterm, location, EAN, lot
+    # reference or expiry — those are separate commercial lines and MUST
+    # remain distinct offers. The fingerprint below includes every field
+    # that could vary between two legitimate lines of the same SKU; if
+    # every one of them matches, the row is a real duplicate.
     subquery = db.query(
         OfferItemDB.uid,
         func.row_number().over(
             partition_by=(
+                # Product identity
                 func.lower(func.coalesce(OfferItemDB.brand, '')),
                 func.lower(func.coalesce(OfferItemDB.product_name, '')),
                 func.coalesce(OfferItemDB.unit_volume_ml, 0),
                 func.coalesce(OfferItemDB.units_per_case, 0),
+                # Supplier + source file
                 func.coalesce(OfferItemDB.supplier_name, ''),
                 OfferItemDB.source_file_id,
+                # Commercial fields that can legitimately differ across
+                # lots of the same SKU within one file:
+                func.upper(func.coalesce(OfferItemDB.incoterm, '')),
+                func.lower(func.coalesce(OfferItemDB.location, '')),
+                func.coalesce(OfferItemDB.price_per_unit, 0),
+                func.coalesce(OfferItemDB.price_per_case, 0),
+                func.coalesce(OfferItemDB.currency, ''),
+                func.coalesce(OfferItemDB.quantity_case, 0),
+                func.coalesce(OfferItemDB.ean_code, ''),
+                func.coalesce(OfferItemDB.product_reference, ''),
+                func.coalesce(OfferItemDB.valid_until, ''),
+                func.coalesce(OfferItemDB.best_before_date, ''),
+                func.coalesce(OfferItemDB.vintage, ''),
+                func.coalesce(OfferItemDB.custom_status, ''),
             ),
             order_by=[
                 nulls_last(OfferItemDB.price_per_unit_eur.asc()),
@@ -322,8 +341,14 @@ async def get_best_prices(
             peer_buckets[pg].append(r)
 
         peers = []
-        trusted_best_price = None
-        trusted_best_peer = None
+        # SKU-level "lowest nominal price" is what the client renamed the
+        # cross-peer headline. It is deliberately NOT called "Trusted Best
+        # Price": €20 EXW Rotterdam and €21 DAP Paris cannot be traded
+        # against each other without freight/landed-cost normalisation,
+        # which we don't have yet. Each peer group has its own trusted
+        # best; the SKU-level number is nominal only and clearly labelled.
+        lowest_nominal_price = None
+        lowest_nominal_peer = None
         for pg_key, pg_rows in peer_buckets.items():
             pg_sorted = sorted(pg_rows, key=lambda r: r.price_per_unit_eur or float('inf'))
             head = pg_sorted[0]
@@ -342,13 +367,10 @@ async def get_best_prices(
                 "offers": [r.to_dict() for r in pg_sorted],
             }
             peers.append(entry)
-            # A trusted Best Price signal only comes from a qualified peer.
-            # An unqualified peer's best is shown but never elevated to
-            # the SKU-level trusted headline.
             if qualified and head.price_per_unit_eur is not None:
-                if trusted_best_price is None or head.price_per_unit_eur < trusted_best_price:
-                    trusted_best_price = head.price_per_unit_eur
-                    trusted_best_peer = pg_key
+                if lowest_nominal_price is None or head.price_per_unit_eur < lowest_nominal_price:
+                    lowest_nominal_price = head.price_per_unit_eur
+                    lowest_nominal_peer = pg_key
 
         # Sort peers: qualified first, then by best price ascending.
         peers.sort(key=lambda p: (not p["is_qualified"],
@@ -356,6 +378,15 @@ async def get_best_prices(
 
         head_row = rows_in[0]
         supplier_count = len({(r.supplier_name or r.sender_email or '') for r in rows_in})
+
+        # EAN conflict rule: when two suppliers disagree on the EAN for
+        # the same-attribute SKU, we DO NOT surface a SKU-level headline
+        # at all. Per-peer trusted bests continue to render inside the
+        # card, but the cross-peer comparison is disabled until the
+        # conflict is resolved (client's rule).
+        if ean_conflict:
+            lowest_nominal_price = None
+            lowest_nominal_peer = None
 
         grouped_list.append({
             "sku_identity": sku_key,
@@ -369,12 +400,12 @@ async def get_best_prices(
             "ean_conflict": ean_conflict,
             "supplier_count": supplier_count,
             "peer_count": len(peers),
-            # Headline "Best Price" is the lowest qualified peer's best.
-            # None when no qualified peer exists — the buyer sees the
-            # unqualified peers' prices in the peer list, but the
-            # SKU-level trusted claim is intentionally withheld.
-            "trusted_best_price_eur": trusted_best_price,
-            "trusted_best_peer_id": trusted_best_peer,
+            # Nominal, cross-peer headline. Not a trusted trading signal —
+            # it does not correct for freight or terms, and it stays null
+            # when peer groups have unknown terms OR the SKU has an EAN
+            # conflict. Real trusted bests live inside each peer block.
+            "lowest_nominal_price_eur": lowest_nominal_price,
+            "lowest_nominal_peer_id": lowest_nominal_peer,
             "peers": peers,
         })
 
