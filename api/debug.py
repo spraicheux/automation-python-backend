@@ -34,11 +34,29 @@ async def debug_inline_extract(file: UploadFile = File(...)):
             tmp.write(file_bytes)
             tmp_path = tmp.name
         try:
+            # Also grab raw pypdf text for diagnosis
+            pdf_text_preview = None
+            if file.content_type == "application/pdf":
+                try:
+                    import PyPDF2
+                    with open(tmp_path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        pages_text = [p.extract_text() or "" for p in reader.pages]
+                        joined = "\n".join(pages_text)
+                        pdf_text_preview = {
+                            "n_pages": len(pages_text),
+                            "total_chars": len(joined),
+                            "first_500": joined[:500],
+                            "last_500": joined[-500:] if len(joined) > 500 else "",
+                        }
+                except Exception as e:
+                    pdf_text_preview = {"error": str(e)}
             extracted = await extract_from_file(tmp_path, file.content_type)
             summary = {
                 "filename": file.filename,
                 "content_type": file.content_type,
                 "bytes": len(file_bytes),
+                "pdf_text_preview": pdf_text_preview,
                 "extract_ok": True,
                 "type": type(extracted).__name__,
                 "keys": list(extracted.keys()) if isinstance(extracted, dict) else None,
