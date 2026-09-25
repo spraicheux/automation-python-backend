@@ -74,10 +74,28 @@ def init_db():
         # existing table, so new columns need explicit statements. IF NOT
         # EXISTS keeps this idempotent so restarts are safe.
         from sqlalchemy import text
+        added_columns = [
+            # Multi-category (Phase 3 M1)
+            ("quantity_unit",       "VARCHAR(32)"),
+            ("range_name",          "VARCHAR(255)"),
+            ("category_slug",       "VARCHAR(32)"),
+            ("perfume_format",      "VARCHAR(32)"),
+            ("retail_state",        "VARCHAR(32)"),
+            ("gender",              "VARCHAR(32)"),
+            ("product_type",        "VARCHAR(64)"),
+            ("shade",               "VARCHAR(128)"),
+            ("size_weight_g",       "DOUBLE PRECISION"),
+        ]
         with engine.begin() as conn:
+            for col, coltype in added_columns:
+                conn.execute(text(
+                    f"ALTER TABLE offer_items "
+                    f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            # Index on category_slug for dashboard filter speed.
             conn.execute(text(
-                "ALTER TABLE offer_items "
-                "ADD COLUMN IF NOT EXISTS quantity_unit VARCHAR(32)"
+                "CREATE INDEX IF NOT EXISTS ix_offer_items_category_slug "
+                "ON offer_items (category_slug)"
             ))
         logger.info("✓ Column additions verified")
     except Exception as e:

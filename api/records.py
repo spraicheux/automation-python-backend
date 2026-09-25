@@ -119,6 +119,7 @@ async def get_records(
     search: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     sub_category: Optional[str] = Query(None),
+    category_slug: Optional[str] = Query(None, description="wines_spirits | perfumes | cosmetics"),
     db: Session = Depends(get_db),
 ):
     # Same-file duplicate guard — only collapses TRUE extractor duplicates
@@ -186,6 +187,9 @@ async def get_records(
     if sub_category:
         subquery = subquery.filter(OfferItemDB.sub_category.ilike(sub_category))
 
+    if category_slug:
+        subquery = subquery.filter(OfferItemDB.category_slug == category_slug.lower().strip())
+
     subquery = subquery.subquery()
 
     query = db.query(OfferItemDB).join(
@@ -214,6 +218,7 @@ async def get_best_prices(
     search: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     sub_category: Optional[str] = Query(None),
+    category_slug: Optional[str] = Query(None, description="wines_spirits | perfumes | cosmetics"),
     db: Session = Depends(get_db),
 ):
     """
@@ -284,6 +289,9 @@ async def get_best_prices(
 
     if sub_category:
         query = query.filter(OfferItemDB.sub_category.ilike(sub_category))
+
+    if category_slug:
+        query = query.filter(OfferItemDB.category_slug == category_slug.lower().strip())
 
     query = query.order_by(
         func.lower(func.coalesce(OfferItemDB.product_name, '')),

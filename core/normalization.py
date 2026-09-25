@@ -177,11 +177,18 @@ def sku_identity(
     vintage: str | None = None,
     age_statement: str | None = None,
     edition: str | None = None,
-    # Reserved for perfumes/cosmetics — same signature, per-category discriminators
+    # Multi-category (Phase 3 M1) — category comes first so a perfume
+    # can never accidentally share an SKU with a cosmetic that has the
+    # same brand + product name.
+    category_slug: str | None = None,
+    # Perfume / cosmetics discriminators
     perfume_format: str | None = None,  # EDT | EDP | Parfum | Cologne
     retail_state: str | None = None,    # retail | tester | sample
     gender: str | None = None,
     shade: str | None = None,
+    product_type: str | None = None,    # cosmetics: lipstick | foundation | …
+    size_weight_g: float | int | None = None,  # cosmetics (solids)
+    range_name: str | None = None,      # e.g. Dior "Sauvage"
 ) -> str:
     """
     LEVEL B — SKU / physical-product identity from ATTRIBUTES ONLY.
@@ -200,7 +207,9 @@ def sku_identity(
     attributes" rule.
     """
     return "|".join([
+        (category_slug or "").lower().strip(),  # first: split categories cleanly
         product_family_id(brand, product_name),
+        _norm_text(range_name),
         _norm_num(unit_volume_ml, 0),
         _norm_num(units_per_case, 0),
         _norm_num(alcohol_percent, 1),
@@ -211,6 +220,8 @@ def sku_identity(
         _norm_text(retail_state),
         _norm_text(gender),
         _norm_text(shade),
+        _norm_text(product_type),
+        _norm_num(size_weight_g, 1),
     ])
 
 
@@ -239,10 +250,14 @@ def peer_group_id(
     age_statement: str | None = None,
     edition: str | None = None,
     ean_code: str | None = None,
+    category_slug: str | None = None,
     perfume_format: str | None = None,
     retail_state: str | None = None,
     gender: str | None = None,
     shade: str | None = None,
+    product_type: str | None = None,
+    size_weight_g: float | int | None = None,
+    range_name: str | None = None,
 ) -> str:
     """
     LEVEL C — COMMERCIAL peer-group identity. Answers: "are these two
@@ -284,10 +299,14 @@ def peer_group_id(
             vintage=vintage,
             age_statement=age_statement,
             edition=edition,
+            category_slug=category_slug,
             perfume_format=perfume_format,
             retail_state=retail_state,
             gender=gender,
             shade=shade,
+            product_type=product_type,
+            size_weight_g=size_weight_g,
+            range_name=range_name,
         ),
         ean_key(ean_code),
         _norm_incoterm(incoterm),

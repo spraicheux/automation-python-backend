@@ -20,8 +20,22 @@ class OfferItemDB(Base):
     product_name        = Column(String(512), nullable=True)
     product_key         = Column(String(255), nullable=True)
     brand               = Column(String(255), nullable=True)
-    category            = Column(String(255), nullable=True)
+    range_name          = Column(String(255), nullable=True)  # e.g. Dior "Sauvage"
+    category            = Column(String(255), nullable=True)  # human label
     sub_category        = Column(String(255), nullable=True)
+    # Machine-normalised category slug: wines_spirits | perfumes | cosmetics.
+    # Category classifier writes this; identity keys and dashboard filter
+    # both read from it so a hand-typed "Wine & Spirits" ≡ "wines_spirits".
+    category_slug       = Column(String(32), nullable=True, index=True)
+    # Perfume-specific
+    perfume_format      = Column(String(32), nullable=True)   # EDT|EDP|Parfum|Cologne|EDC
+    retail_state        = Column(String(32), nullable=True)   # retail|tester|sample|miniature
+    gender              = Column(String(32), nullable=True)   # men|women|unisex
+    # Cosmetics-specific
+    product_type        = Column(String(64), nullable=True)   # lipstick|foundation|mascara|…
+    shade               = Column(String(128), nullable=True)  # colour / variant name
+    size_weight_g       = Column(Float, nullable=True)        # grams for solid cosmetics
+    # Supplier reference (already existed as product_reference — kept)
     packaging           = Column(String(255), nullable=True)
     packaging_raw       = Column(String(255), nullable=True)
     bottle_or_can_type  = Column(String(255), nullable=True)
@@ -125,13 +139,16 @@ class OfferItemDB(Base):
                 units_per_case=self.units_per_case,
                 alcohol_percent=self.alcohol_percent,
                 vintage=self.vintage,
+                category_slug=self.category_slug,
+                perfume_format=self.perfume_format,
+                retail_state=self.retail_state,
+                gender=self.gender,
+                shade=self.shade,
+                product_type=self.product_type,
+                size_weight_g=self.size_weight_g,
+                range_name=self.range_name,
             ),
-            # Bare digits when a real EAN was extracted; empty otherwise.
-            # A pair of rows counts as "same SKU" when sku_identity matches
-            # AND their EANs are compatible (both empty, one empty, or same).
             "sku_ean": ean_key(self.ean_code),
-            # C. PEER GROUP — SKU + EAN + incoterm + location. Trusted
-            #    trading signal only.
             "peer_group_id": peer_group_id(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,
@@ -141,6 +158,14 @@ class OfferItemDB(Base):
                 alcohol_percent=self.alcohol_percent,
                 vintage=self.vintage,
                 ean_code=self.ean_code,
+                category_slug=self.category_slug,
+                perfume_format=self.perfume_format,
+                retail_state=self.retail_state,
+                gender=self.gender,
+                shade=self.shade,
+                product_type=self.product_type,
+                size_weight_g=self.size_weight_g,
+                range_name=self.range_name,
             ),
             "peer_qualified": is_peer_group_qualified(self.incoterm, self.location),
             "canonical_product_id": product_family_id(
@@ -151,8 +176,16 @@ class OfferItemDB(Base):
             "product_name": self.product_name,
             "product_key": self.product_key,
             "brand": self.brand,
+            "range_name": self.range_name,
             "category": self.category,
+            "category_slug": self.category_slug,
             "sub_category": self.sub_category,
+            "perfume_format": self.perfume_format,
+            "retail_state": self.retail_state,
+            "gender": self.gender,
+            "product_type": self.product_type,
+            "shade": self.shade,
+            "size_weight_g": self.size_weight_g,
             "packaging": self.packaging,
             "packaging_raw": self.packaging_raw,
             "bottle_or_can_type": self.bottle_or_can_type,

@@ -163,6 +163,8 @@ def detect_supplier_from_metadata(text: str, source_filename: Optional[str] = No
 def apply_deterministic_defaults(products: list, source_text: str,
                                  source_filename: Optional[str] = None,
                                  sender_email: Optional[str] = None) -> tuple:
+    """Apply document-level defaults + normalise the LLM's category output."""
+    from core.category_classifier import detect_category, _normalize_category  # noqa: E501
     """
     Apply document-level defaults to LLM-extracted products.
     Returns (corrected_products, list_of_corrections).
@@ -176,6 +178,11 @@ def apply_deterministic_defaults(products: list, source_text: str,
     doc_incoterm = detect_document_incoterm(source_text)
     doc_location = detect_document_location(source_text)
     doc_supplier = detect_supplier_from_metadata(source_text, source_filename, sender_email)
+    # Category is derived from strong deterministic signals (filename +
+    # header keywords). If the LLM emits one anyway, we still normalise
+    # it — a hand-typed "Wine & Spirits" folds to wines_spirits and any
+    # per-row LLM slug wins over the document default when both exist.
+    doc_category = detect_category(text=source_text, source_filename=source_filename)
 
     corrections = []
     for i, p in enumerate(products):
@@ -210,6 +217,20 @@ def apply_deterministic_defaults(products: list, source_text: str,
         if doc_supplier and (not row_sup or row_sup.lower() == "not found"):
             p["supplier_name"] = doc_supplier
             corrections.append(f"Row {i+1}: supplier_name=None → {doc_supplier} (inherited from document metadata)")
+
+        # ── category slug ────────────────────────────────────────────
+        # Prefer any per-row slug the LLM already emitted (normalised);
+        # otherwise fall back to the deterministic document-level guess.
+        row_cat = _normalize_category(p.get("category_slug") or p.get("category"))
+        if row_cat:
+            if p.get("category_slug") != row_cat:
+                p["category_slug"] = row_cat
+        elif doc_category:
+            p["category_slug"] = doc_category
+            corrections.append(
+                f"Row {i+1}: category_slug=None → {doc_category} "
+                f"(inherited from document heuristic)"
+            )
 
         # ── €/case sanity: catch "Total Price" mis-mapping ──────────
         # LLM sometimes puts a source "Total Price" column (qty × unit price)

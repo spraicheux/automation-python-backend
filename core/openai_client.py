@@ -50,6 +50,36 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      today's date. Never use "Not Found" as a stand-in when the date IS in
      the header — read it.
 
+0.23 CATEGORY IDENTIFICATION + CATEGORY-SPECIFIC FIELDS
+     For every product, set `category_slug` to exactly one of:
+       "wines_spirits" | "perfumes" | "cosmetics"
+     If a document mixes categories (rare), tag each product with the
+     slug that fits it individually. If genuinely ambiguous, leave
+     category_slug null and the backend classifier will fill from the
+     document header.
+
+     Then extract the extra fields THAT CATEGORY needs:
+
+     Wines & Spirits: alcohol_percent, vintage, age_statement, edition.
+       (units_per_case, unit_volume_ml, incoterm, location as before.)
+
+     Perfumes: perfume_format = one of "EDT" | "EDP" | "Parfum" | "Cologne"
+       | "EDC" | "EDF" (Eau Fraiche); gender = "men" | "women" | "unisex";
+       retail_state = "retail" | "tester" | "sample" | "miniature".
+       unit_volume_ml holds ml (Sauvage 100ml → 100).
+       If the source names a range (e.g. Dior "Sauvage"), put it in
+       range_name so search/roll-up works.
+
+     Cosmetics: product_type (lipstick, foundation, mascara, cream,
+       serum, shampoo, nail polish, etc.); shade (colour or variant
+       string as written in the source — "Rouge 91", "Fair 210"…);
+       size_weight_g for solid products measured in grams; keep
+       unit_volume_ml for liquid products (in ml).
+
+     These fields are part of the SKU key. Two Dior Sauvage 100ml rows
+     that differ only on EDT vs EDP MUST NOT collapse into one SKU;
+     same for a Rouge Coco Bloom in shades 91 vs 116.
+
 0.24 THREE DISTINCT CONCEPTS — DO NOT MIX
      Bottle Size (unit_volume_ml)     = the physical bottle (700ml, 1L…)
      Case Pack   (units_per_case)     = how many bottles per case (6, 12…)
@@ -130,8 +160,16 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - brand: Brand or trademark of the product.
 - product_name: Commercial product name.
 - product_reference: Supplier or internal reference/SKU.
-- category: Main category (Wine, Spirits, Beer, Soft Drinks, Food...).
-- sub_category: Sub-category (e.g. Red Wine, Whisky, Lager...).
+- category: Main category (Wine, Spirits, Perfumes, Cosmetics, Beer, Soft Drinks, Food...).
+- sub_category: Sub-category (e.g. Red Wine, Whisky, EDT, Foundation…).
+- category_slug: Machine slug — MUST be one of "wines_spirits", "perfumes", "cosmetics" (see Rule 0.23).
+- range_name: Product range/line (e.g. Dior "Sauvage", Chanel "Rouge Coco Bloom"). Optional; only when explicit.
+- perfume_format: For perfumes — "EDT", "EDP", "Parfum", "Cologne", "EDC", or "EDF".
+- retail_state: For perfumes — "retail", "tester", "sample", or "miniature".
+- gender: For perfumes — "men", "women", or "unisex".
+- product_type: For cosmetics — "lipstick", "foundation", "mascara", "cream", "serum", etc.
+- shade: For cosmetics — shade / colour / variant name as printed on the source.
+- size_weight_g: For solid cosmetics — weight in grams (a 15g lipstick → 15).
 - origin_country: Country of origin (ISO 2 code or full name).
 - vintage: Vintage year (for wine/champagne).
 - alcohol_percent: Alcohol percentage if applicable.

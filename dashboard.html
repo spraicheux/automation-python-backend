@@ -264,6 +264,19 @@
     .ean-badge.ok { background: rgba(52,211,153,0.10); color: var(--green); }
     .ean-badge.conflict { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.4); }
     .nominal-caveat { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #eab308; margin-left: 6px; cursor: help; }
+    /* Top-strip category picker — the primary filter across all views. */
+    .cat-strip { display: flex; gap: 8px; margin: 0 0 12px 0; flex-wrap: wrap; }
+    .cat-pill {
+      appearance: none; border: 1px solid var(--border); background: var(--surface);
+      color: var(--text-dim); font: inherit; font-size: 12px; font-weight: 600;
+      padding: 6px 14px; border-radius: 999px; cursor: pointer;
+      letter-spacing: 0.02em; transition: background .1s, color .1s, border-color .1s;
+    }
+    .cat-pill:hover { color: var(--text); border-color: var(--border-soft); }
+    .cat-pill.active { background: var(--accent, #3b82f6); color: white; border-color: transparent; }
+    /* Category-specific drawer fields — visually distinct so they read as "extra". */
+    .drawer-cat-block { padding: 10px 12px; background: var(--surface); border-radius: 8px; margin-top: 8px; }
+    .drawer-cat-block .h { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
     table.bp-offers tr:hover td { background: var(--row-hover); }
     .delta-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: 'DM Mono', monospace; font-weight: 600; }
     .delta-badge.best { background: rgba(52,211,153,0.15); color: var(--green); }
@@ -411,9 +424,15 @@
         <div class="search-hint" id="search-hint">Search across product name and brand.</div>
       </div>
 
+      <div class="cat-strip" role="tablist" aria-label="Category">
+        <button type="button" class="cat-pill active" data-slug="">All Categories</button>
+        <button type="button" class="cat-pill" data-slug="wines_spirits">Wines &amp; Spirits</button>
+        <button type="button" class="cat-pill" data-slug="perfumes">Perfumes</button>
+        <button type="button" class="cat-pill" data-slug="cosmetics">Cosmetics</button>
+      </div>
       <div class="filter-bar">
         <select id="filter-brand" class="filter-select"><option value="">All Brands</option></select>
-        <select id="filter-category" class="filter-select"><option value="">All Categories</option></select>
+        <select id="filter-category" class="filter-select" title="Free-form category label from source"><option value="">All Categories</option></select>
         <select id="filter-subcategory" class="filter-select"><option value="">All Sub-categories</option></select>
         <select id="filter-supplier" class="filter-select"><option value="">All Suppliers</option></select>
         <select id="filter-bottle" class="filter-select"><option value="">All Bottle Sizes</option></select>
@@ -633,7 +652,7 @@
   // Offers
   let recordsSkip = 0, recordsTotal = 0, loadingRecords = false;
   let globalSearchText = "", customStatusFilter = "", flagStateFilter = "", ageDaysFilter = "";
-  let filters = { brand:"", category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"", abv:"", availability:"" };
+  let filters = { brand:"", category:"", sub_category:"", supplier:"", bottle:"", packaging:"", incoterm:"", location:"", currency:"", abv:"", availability:"", category_slug:"" };
   let sortKey = "offer_date_desc";  // default: newest offer first (best for daily trading)
   let allRawItemsCache = [];
   const availableFilters = {
@@ -722,12 +741,25 @@
     ['filter-custom-status','filter-flag-state','filter-age','filter-brand','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','filter-abv','filter-availability','sort-select']
       .forEach(id => document.getElementById(id).addEventListener('change', triggerFilters));
 
+    // Top-strip category pills — the primary category filter across all
+    // views. Sends `category_slug` to the API so a rename of the free-form
+    // "Category" label doesn't ever split a category from itself.
+    document.querySelectorAll('.cat-pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        filters.category_slug = btn.dataset.slug || '';
+        loadRecords(true);
+      });
+    });
+
     document.getElementById('reset-filters-btn').addEventListener('click', () => {
       document.getElementById('global-search').value = '';
       ['filter-custom-status','filter-flag-state','filter-age','filter-brand','filter-category','filter-subcategory','filter-supplier','filter-bottle','filter-packaging','filter-incoterm','filter-location','filter-currency','filter-abv','filter-availability']
         .forEach(id => document.getElementById(id).value = '');
       globalSearchText = ''; customStatusFilter = ''; flagStateFilter = ''; ageDaysFilter = '';
       Object.keys(filters).forEach(k => filters[k] = '');
+      document.querySelectorAll('.cat-pill').forEach((b, i) => b.classList.toggle('active', i === 0));
       loadRecords(true);
     });
 
@@ -1070,6 +1102,7 @@
       if (globalSearchText) url += `&search=${encodeURIComponent(globalSearchText)}`;
       if (filters.category) url += `&category=${encodeURIComponent(filters.category)}`;
       if (filters.sub_category) url += `&sub_category=${encodeURIComponent(filters.sub_category)}`;
+      if (filters.category_slug) url += `&category_slug=${encodeURIComponent(filters.category_slug)}`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
       const data = await res.json();
       const items = data.records || [];
@@ -1560,6 +1593,34 @@
         </div>
         ${benchmarkBlock(i)}
       </div>
+
+      <!-- CATEGORY-SPECIFIC ATTRIBUTES -->
+      ${(i.category_slug === 'perfumes' || i.perfume_format || i.retail_state || i.gender) ? `
+      <div class="drawer-section">
+        <div class="drawer-cat-block">
+          <div class="h">Perfume attributes</div>
+          <div class="kv-grid three">
+            ${kv('Format', i.perfume_format || null, true, 'perfume_format')}
+            ${kv('Retail state', i.retail_state || null, true, 'retail_state')}
+            ${kv('Gender', i.gender || null, true, 'gender')}
+            ${kv('Range', i.range_name || null, false, 'range_name')}
+          </div>
+        </div>
+      </div>
+      ` : ''}
+      ${(i.category_slug === 'cosmetics' || i.product_type || i.shade || i.size_weight_g) ? `
+      <div class="drawer-section">
+        <div class="drawer-cat-block">
+          <div class="h">Cosmetics attributes</div>
+          <div class="kv-grid three">
+            ${kv('Product type', i.product_type || null, true, 'product_type')}
+            ${kv('Shade', i.shade || null, true, 'shade')}
+            ${kv('Weight', i.size_weight_g != null ? `${Number(i.size_weight_g)} g` : null, true, 'size_weight_g')}
+            ${kv('Range', i.range_name || null, false, 'range_name')}
+          </div>
+        </div>
+      </div>
+      ` : ''}
 
       <!-- COMMERCIAL -->
       <div class="drawer-section">

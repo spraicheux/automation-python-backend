@@ -119,6 +119,24 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         if apply:
             r.quantity_unit = "bottles"
 
+    # ── category slug backfill (Phase 3 M1) ───────────────────────
+    # Existing W&S rows have `category` set (e.g. "Spirits", "Wine")
+    # but no machine slug. Fold the free-form label into the canonical
+    # slug so /api/records?category_slug=wines_spirits catches them.
+    from core.category_classifier import _normalize_category as _cat_norm
+    slug_backfill = 0
+    slug_rows = (db.query(OfferItemDB)
+                   .filter((OfferItemDB.category_slug.is_(None)) |
+                           (OfferItemDB.category_slug == ""))
+                   .filter(OfferItemDB.category.isnot(None))
+                   .all())
+    for r in slug_rows:
+        slug = _cat_norm(r.category)
+        if slug:
+            slug_backfill += 1
+            if apply:
+                r.category_slug = slug
+
     # ── units_per_case tidy-up ────────────────────────────────────
     # Rows that already went through the "no case pack" cleanup still
     # carry units_per_case=1 as a legacy fallback. Clear those to null
@@ -169,4 +187,5 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         "supplier_samples": supplier_changes[:20],
         "quantity_unit_backfill": unit_backfill,
         "units_per_case_backfill": upc_backfill,
+        "category_slug_backfill": slug_backfill,
     }
