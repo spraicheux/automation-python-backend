@@ -18,6 +18,19 @@ async def debug_job(job_id: str):
     }
 
 
+@router.get("/debug/buffer-check")
+async def debug_buffer_check():
+    """One-shot proof the file_download fix is live on this worker."""
+    import inspect
+    from core import file_download
+    src = inspect.getsource(file_download.resolve_attachment_bytes)
+    # First non-comment executable line after the log statement.
+    return {
+        "has_buffer_first": "1️⃣ Buffer handling — MUST run before" in src,
+        "source_hash": hex(hash(src) & 0xFFFFFFFF),
+    }
+
+
 @router.get("/debug/jobs")
 async def debug_all_jobs():
     return {
