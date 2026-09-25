@@ -36,6 +36,7 @@ async def debug_inline_extract(file: UploadFile = File(...)):
         try:
             # Also grab raw pypdf text for diagnosis
             pdf_text_preview = None
+            raw_llm_response = None
             if file.content_type == "application/pdf":
                 try:
                     import PyPDF2
@@ -47,16 +48,40 @@ async def debug_inline_extract(file: UploadFile = File(...)):
                             "n_pages": len(pages_text),
                             "total_chars": len(joined),
                             "first_500": joined[:500],
-                            "last_500": joined[-500:] if len(joined) > 500 else "",
                         }
+                    # Also run a direct GPT-4o call on the raw text so we can
+                    # see what the LLM says without any extraction wrapper.
+                    from core.openai_client import client, SHARED_EXTRACTION_RULES
+                    prompt = (
+                        "Extract commercial product offers (any category — Wines & Spirits, "
+                        "Perfumes, or Cosmetics — identify each row's category_slug per Rule 0.23). "
+                        "Return a JSON object with a 'products' array.\n\n"
+                        f"{SHARED_EXTRACTION_RULES}\n\nTEXT:\n{joined[:6000]}"
+                    )
+                    resp = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": "Return valid JSON only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.0,
+                        max_tokens=4000,
+                    )
+                    raw_llm_response = {
+                        "chars": len(resp.choices[0].message.content),
+                        "preview": resp.choices[0].message.content[:800],
+                    }
                 except Exception as e:
-                    pdf_text_preview = {"error": str(e)}
+                    pdf_text_preview = pdf_text_preview or {}
+                    pdf_text_preview["llm_probe_error"] = str(e)[:300]
             extracted = await extract_from_file(tmp_path, file.content_type)
             summary = {
                 "filename": file.filename,
                 "content_type": file.content_type,
                 "bytes": len(file_bytes),
                 "pdf_text_preview": pdf_text_preview,
+                "raw_llm_response": raw_llm_response,
                 "extract_ok": True,
                 "type": type(extracted).__name__,
                 "keys": list(extracted.keys()) if isinstance(extracted, dict) else None,
