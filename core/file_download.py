@@ -18,20 +18,24 @@ D360_API_KEY = os.getenv("D360_API_KEY")
 
 async def resolve_attachment_bytes(attachment: Attachment) -> bytes:
     logger.info("========== MEDIA DOWNLOAD DEBUG START ==========")
+    logger.info(f"Attachment raw data keys: {list(attachment.data.keys()) if attachment.data else 'none'}")
 
-    if not D360_API_KEY:
-        logger.error("D360_API_KEY is NOT set")
-        raise RuntimeError("D360_API_KEY is not set")
-
-    logger.info(f"D360_API_KEY present: {bool(D360_API_KEY)}")
-    logger.info(f"Attachment raw data: {attachment.data}")
-
-    # 1️⃣ Buffer handling
+    # 1️⃣ Buffer handling — MUST run before the D360 gate below, otherwise
+    # a locally-uploaded PDF (multipart /api/ingest) silently fails whenever
+    # WhatsApp media isn't configured. Buffer attachments carry their own
+    # bytes and don't need to hit 360dialog.
     if attachment.data.get("type") == "Buffer":
         logger.info("Attachment type: Buffer")
         data = bytes(attachment.data.get("data", []))
         logger.info(f"Buffer size: {len(data)} bytes")
         return data
+
+    # 2️⃣ 360dialog-backed WhatsApp media download requires the API key.
+    if not D360_API_KEY:
+        logger.error("D360_API_KEY is NOT set — needed for WhatsApp media lookup")
+        raise RuntimeError("D360_API_KEY is not set")
+
+    logger.info(f"D360_API_KEY present: {bool(D360_API_KEY)}")
 
     # 2️⃣ Extract media ID
     media_id = (
