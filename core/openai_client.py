@@ -874,7 +874,8 @@ async def extract_offer(text: str) -> dict:
         logger.info(f"[extract_offer] Chunk {idx + 1} content preview (first 200 chars): {chunk[:200]!r}")
 
         prompt = f"""
-        You are extracting commercial alcohol offers from text.
+        You are extracting commercial product offers from text (Wines &
+        Spirits, Perfumes, or Cosmetics — identify category per Rule 0.23).
         Return COMPACT JSON ONLY (no indentation, no extra whitespace, no newlines inside the JSON), no explanation.
 
         Extract ALL products from the text. Return a JSON object with a 'products' array containing ALL products found.
@@ -1107,7 +1108,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.info(f"[extract_from_file] Batch {batch_num}: raw rows sent to AI: {json.dumps(data_rows)[:600]!r}")
 
                     batch_text = f"""
-                    You are extracting commercial alcohol product data from Excel rows.
+                    You are extracting commercial product data from Excel rows.
+                    The rows may describe Wines & Spirits, Perfumes, or Cosmetics —
+                    identify each row's category (Rule 0.23) and emit the
+                    category-specific fields.
                     Return JSON ONLY, no explanation.
 
                     EXCEL DATA BATCH ({batch_start + 1}-{batch_end} of {total_rows}):
@@ -1390,14 +1394,17 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.info(f"[extract_from_file] PDF Batch {batch_num} preview (first 300 chars): {combined_text[:300]!r}")
 
                     prompt = f"""
-You are extracting commercial alcohol offers from a PDF document (pages {start_page + 1} to {end_page} of {total_pages}).
+You are extracting commercial product offers from a PDF document (pages {start_page + 1} to {end_page} of {total_pages}).
+The document may cover Wines & Spirits, Perfumes, or Cosmetics — identify each
+product's category (see Rule 0.23) and extract accordingly. Do not reject a
+row just because it is not alcohol.
 Return JSON ONLY, no explanation.
 
 Extract ALL product lines from the text below.
 Return a JSON object with a 'products' array.
 
 CRITICAL: Extract ONLY actual product lines. Do NOT create rows for:
-- Section headers (e.g. "Whisky", "Rum", "Gin")
+- Section headers (e.g. "Whisky", "Rum", "Gin", "PERFUMES LIST", "Fragrance Stock")
 - Brand marketing lists (pages listing brand names the company works with)
 - Footer / signature blocks / unsubscribe links
 - Repeated items that are the same product
@@ -1405,7 +1412,8 @@ CRITICAL: Extract ONLY actual product lines. Do NOT create rows for:
 If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
 
 CRITICAL: Apply Rule 13 to correct all brand names to their official commercial spelling
-before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's".
+before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's",
+"Dolce Gabbana" → "Dolce & Gabbana", "Viktor Rolf" → "Viktor & Rolf".
 
 {SHARED_EXTRACTION_RULES}
 
@@ -1422,12 +1430,17 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                                     "role": "system",
                                     "content": (
                                         "You are a professional data extraction expert. "
-                                        "Extract commercial alcohol product offers from PDF text. "
+                                        "Extract commercial product offers from PDF text — the "
+                                        "document may be Wines & Spirits, Perfumes, or Cosmetics. "
+                                        "Identify each product's category (Rule 0.23) and emit the "
+                                        "category-specific fields (perfume_format / gender / "
+                                        "retail_state for perfumes; product_type / shade / "
+                                        "size_weight_g for cosmetics; alcohol_percent / vintage / "
+                                        "age_statement for W&S). "
                                         "Return ONLY valid JSON with a 'products' array. "
                                         "Do NOT include section headers, brand lists, or footer text as products. "
                                         "Only extract actual product offer lines. "
-                                        "ALWAYS correct brand names to their official spelling per Rule 13 "
-                                        "(e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
+                                        "ALWAYS correct brand names to their official spelling per Rule 13."
                                     )
                                 },
                                 {"role": "user", "content": prompt}
@@ -1512,7 +1525,7 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                             "role": "user",
                             "content": [
                                 {"type": "text",
-                                 "text": "Extract all commercial alcohol offers from this image. Return a JSON object with a 'products' array following the standard schema. ALWAYS correct brand names to their official spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."},
+                                 "text": "Extract all commercial product offers from this image — Wines & Spirits, Perfumes, or Cosmetics (identify category per Rule 0.23). Return a JSON object with a 'products' array following the standard schema. ALWAYS correct brand names to their official spelling."},
                                 {
                                     "type": "image_url",
                                     "image_url": {
