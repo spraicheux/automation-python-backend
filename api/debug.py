@@ -1,5 +1,5 @@
 import os
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File
 from core.redis_client import redis_manager
 
 router = APIRouter()
@@ -16,6 +16,49 @@ async def debug_job(job_id: str):
         "result": result,
         "exists": redis_manager.job_exists(job_id)
     }
+
+
+@router.post("/debug/inline-extract")
+async def debug_inline_extract(file: UploadFile = File(...)):
+    """
+    Run the extraction inline (no celery) and return what happened.
+    Bypasses redis / queueing so we can see if the actual pipeline works.
+    """
+    import tempfile, os, traceback
+    from core.openai_client import extract_from_file
+
+    file_bytes = await file.read()
+    try:
+        ext = file.filename.split('.')[-1].lower() if file.filename and '.' in file.filename else 'bin'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        try:
+            extracted = await extract_from_file(tmp_path, file.content_type)
+            summary = {
+                "filename": file.filename,
+                "content_type": file.content_type,
+                "bytes": len(file_bytes),
+                "extract_ok": True,
+                "type": type(extracted).__name__,
+                "keys": list(extracted.keys()) if isinstance(extracted, dict) else None,
+                "n_products": len(extracted.get("products") or []) if isinstance(extracted, dict) else None,
+                "first_product": (extracted.get("products") or [None])[0] if isinstance(extracted, dict) and extracted.get("products") else None,
+                "error_field": extracted.get("error") if isinstance(extracted, dict) else None,
+            }
+            return summary
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+    except Exception as e:
+        return {
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "bytes": len(file_bytes),
+            "extract_ok": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()[-1000:],
+        }
 
 
 @router.get("/debug/buffer-check")
