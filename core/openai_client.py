@@ -1360,7 +1360,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
         elif content_type == 'application/pdf':
             # ── PDF: process in page batches for accuracy ──────────────────
             logger.info(f"[extract_from_file] Detected file type: PDF — will process in page batches")
-            PAGES_PER_BATCH = 5  # pages per AI call (tunable)
+            PAGES_PER_BATCH = 1  # one page per AI call — dense supplier
+            # lists (perfumes, cosmetics) can pack 30-40 SKUs per page and
+            # the LLM was dropping rows at 5 pages/batch. Small batches
+            # keep every row in the model's active attention window.
             try:
                 import PyPDF2
                 with open(file_path, 'rb') as file:
