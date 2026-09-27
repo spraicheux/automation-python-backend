@@ -1634,7 +1634,20 @@ def clean_product_data(product: dict) -> dict:
         'gift_box': "Not Found",
         'refillable_status': "Not Found",
         'custom_status': "Not Found",
-        'moq_cases': None
+        'moq_cases': None,
+        # Phase 3 M1 — Multi-category fields. The LLM emits these on
+        # perfume / cosmetics rows (per Rule 0.23) and the DB / SKU key
+        # both consume them, but they were absent from this whitelist so
+        # clean_product_data was silently stripping them out.
+        'quantity_unit': None,
+        'range_name': "Not Found",
+        'category_slug': None,   # normalised slug: wines_spirits|perfumes|cosmetics
+        'perfume_format': None,  # EDT | EDP | Parfum | Cologne | EDC | EDF
+        'retail_state': None,    # retail | tester | sample | miniature
+        'gender': None,          # men | women | unisex
+        'product_type': None,    # cosmetics: lipstick | foundation | …
+        'shade': None,           # cosmetics: colour / variant string
+        'size_weight_g': None,   # cosmetics (solids)
     }
 
     cleaned_product = {}
@@ -1651,7 +1664,8 @@ def clean_product_data(product: dict) -> dict:
                 numeric_keys = [
                     'unit_volume_ml', 'units_per_case', 'cases_per_pallet',
                     'quantity_case', 'price_per_unit', 'price_per_unit_eur',
-                    'price_per_case', 'price_per_case_eur', 'alcohol_percent', 'moq_cases'
+                    'price_per_case', 'price_per_case_eur', 'alcohol_percent', 'moq_cases',
+                    'size_weight_g',  # Phase 3 M1 — cosmetics (solid weight in grams)
                 ]
 
                 if field in numeric_keys:
