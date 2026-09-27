@@ -615,8 +615,20 @@ async def process_offer(payload, job_id: str):
                         'product_name': merged_data.get('product_name') or "Not Found",
                         'product_key': merged_data.get('product_key') or "Not Found",
                         'brand': merged_data.get('brand') or "Not Found",
+                        'range_name': merged_data.get('range_name'),
                         'category': merged_data.get('category'),
                         'sub_category': merged_data.get('sub_category'),
+                        # Multi-category (Phase 3 M1) — MUST be here or PDF/Excel
+                        # batch products land in the DB with None on every one
+                        # of these fields even when the LLM emitted them and
+                        # apply_deterministic_defaults set category_slug.
+                        'category_slug': merged_data.get('category_slug'),
+                        'perfume_format': merged_data.get('perfume_format'),
+                        'retail_state': merged_data.get('retail_state'),
+                        'gender': merged_data.get('gender'),
+                        'product_type': merged_data.get('product_type'),
+                        'shade': merged_data.get('shade'),
+                        'size_weight_g': merged_data.get('size_weight_g'),
                         'packaging': merged_data.get('packaging') or "Bottle",
                         'packaging_raw': merged_data.get('packaging_raw') or "bottle",
                         'bottle_or_can_type': merged_data.get('bottle_or_can_type'),
