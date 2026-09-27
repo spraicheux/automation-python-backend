@@ -64,8 +64,24 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
        (units_per_case, unit_volume_ml, incoterm, location as before.)
 
      Perfumes: perfume_format = one of "EDT" | "EDP" | "Parfum" | "Cologne"
-       | "EDC" | "EDF" (Eau Fraiche); gender = "men" | "women" | "unisex";
+       | "EDC" | "EDF" (Eau Fraiche).
+       gender = "men" | "women" | "unisex" — ONLY set this when the source
+       explicitly indicates it. Explicit signals:
+         • the source column literally says "Gender: Men/Women/Unisex", or
+         • the product name / description contains one of:
+             men → "For Men", "Homme", "Pour Homme", "For Him", "Man"
+                    (as a standalone word), "Uomo"
+             women → "For Women", "Femme", "Pour Femme", "For Her", "Woman"
+                    (standalone), "Donna"
+             unisex → the source EXPLICITLY says "Unisex" (do NOT infer
+                    unisex just because you can't tell — leave null instead).
+       If none of the above signals is present, leave `gender` NULL. Do NOT
+       default to "unisex" as a fallback for ambiguous rows — a null value
+       is honest and the manual reviewer / classifier can fill it later.
        retail_state = "retail" | "tester" | "sample" | "miniature".
+         Default to "retail" unless the row explicitly says otherwise
+         (source words like "Tester", "TST", "Sample", "SPL", "Mini",
+         "30ml sample") — those become tester/sample/miniature.
        unit_volume_ml holds ml (Sauvage 100ml → 100).
        If the source names a range (e.g. Dior "Sauvage"), put it in
        range_name so search/roll-up works.
@@ -79,6 +95,23 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      These fields are part of the SKU key. Two Dior Sauvage 100ml rows
      that differ only on EDT vs EDP MUST NOT collapse into one SKU;
      same for a Rouge Coco Bloom in shades 91 vs 116.
+
+0.235 EAN / BARCODE / GTIN — 100 % CAPTURE WHEN THE COLUMN EXISTS
+      A "Barcode", "EAN", "GTIN", "UPC" or "Code" column on the source
+      row IS the ean_code field. If that column exists on the sheet /
+      PDF, EVERY product row's numeric value MUST be transcribed to
+      `ean_code` verbatim. This is a hard requirement — dropping an EAN
+      because the row is far down the table or looks similar to another
+      is a HARD FAILURE.
+      Valid EAN lengths: 8 (EAN-8), 12 (UPC), 13 (EAN-13), 14 (GTIN-14).
+      Transcribe as a plain digit string (no spaces, dashes, or dots).
+      If the source shows "3.348.901.234.567" or "3-348-901-234-567",
+      strip the separators → "3348901234567".
+      If the row has NO barcode column at all, leave `ean_code` null —
+      never fabricate.
+      Common failure mode to avoid: extracting the first 40 rows'
+      barcodes correctly and then silently omitting the rest for the
+      remaining 60. Every row with a barcode column MUST carry its EAN.
 
 0.24 THREE DISTINCT CONCEPTS — DO NOT MIX
      Bottle Size (unit_volume_ml)     = the physical bottle (700ml, 1L…)

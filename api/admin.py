@@ -26,6 +26,50 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.post("/admin/purge-by-filename", dependencies=[Depends(_require_admin)])
+def purge_by_filename(pattern: str, apply: bool = False, db: Session = Depends(get_db)):
+    """
+    Delete every offer_items row (and the associated source_file entries)
+    where `source_filename ILIKE pattern`. Intended for cleaning up
+    duplicate test ingests before a fresh run. Dry-run by default;
+    ?apply=true actually deletes.
+
+    Example — delete every ingest of the FBC perfumes PDF:
+      POST /api/admin/purge-by-filename?pattern=%25perfumes%25&apply=true
+    """
+    if not pattern or len(pattern) < 3:
+        raise HTTPException(status_code=400, detail="pattern too short — refuse to delete broadly")
+
+    from models.source_file import SourceFileDB
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.source_filename.ilike(pattern))
+              .all())
+    files = (db.query(SourceFileDB)
+               .filter(SourceFileDB.source_filename.ilike(pattern))
+               .all())
+
+    samples = [{"uid": r.uid, "brand": r.brand, "product": r.product_name,
+                "source": r.source_filename} for r in rows[:10]]
+    filenames = sorted({r.source_filename for r in rows if r.source_filename})
+
+    if apply:
+        for r in rows:
+            db.delete(r)
+        for f in files:
+            db.delete(f)
+        db.commit()
+
+    return {
+        "applied": apply,
+        "pattern": pattern,
+        "offers_deleted": len(rows) if apply else 0,
+        "offers_matching": len(rows),
+        "source_files_deleted": len(files) if apply else 0,
+        "distinct_source_filenames": filenames,
+        "sample": samples,
+    }
+
+
 @router.post("/admin/backfill-case-supplier", dependencies=[Depends(_require_admin)])
 def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
     """
