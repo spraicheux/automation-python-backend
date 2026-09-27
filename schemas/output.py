@@ -61,6 +61,16 @@ class OfferItem(BaseModel):
     ean_code: Optional[str] = None
     label_language: str = Field(default="EN")
     product_reference: Optional[str] = None
+    quantity_unit: Optional[str] = None
+    # Multi-category (Phase 3 M1)
+    range_name: Optional[str] = None
+    category_slug: Optional[str] = None
+    perfume_format: Optional[str] = None
+    retail_state: Optional[str] = None
+    gender: Optional[str] = None
+    product_type: Optional[str] = None
+    shade: Optional[str] = None
+    size_weight_g: Optional[float] = None
 
 class OfferResponse(BaseModel):
     data: List[OfferItem]
