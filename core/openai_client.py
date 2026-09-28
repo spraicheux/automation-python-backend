@@ -1184,7 +1184,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             messages=[
                                 {
                                     "role": "system",
-                                    "content": f"You are a professional data extraction expert. You extract commercial alcohol product data from Excel. Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. ALWAYS correct brand names to their official spelling per Rule 13 (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
+                                    "content": f"You are a professional data extraction expert. You extract commercial product data from Excel — the rows may be Wines & Spirits, Perfumes, or Cosmetics; classify each row's `category_slug` per Rule 0.23 rather than assuming alcohol. Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. ALWAYS correct brand names to their official spelling per Rule 13 (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
                                 },
                                 {"role": "user", "content": batch_text}
                             ],
