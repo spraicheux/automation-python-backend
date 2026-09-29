@@ -164,6 +164,23 @@ Deferred entirely: `_ZWOLLE_NICHE_MAY_2025_PRICE_LIST_KA.xlsx` (2054 rows, USD-p
 6. **Send reply to Samuel** covering Q1/Q2/Q3.
 7. **When Samuel gives greenlight to continue ingest**: re-queue the 4 failed files + purge W23's 12 partial rows first. Consider `gpt-4o-mini` model swap (1-line change) — cost drops 10x with negligible quality loss on structured XLSX rows.
 
+## Change log (append newest at the top)
+
+- **2026-09-29** — Client validation feedback resolved to code:
+  - `6ddf3ca` — Fix commits for Samuel Q1/Q2/Q3 (see "Client-facing state" above).
+  - `7df7945` — XLSX batch system prompt: dropped "alcohol-only" bias, now names W&S/Perfumes/Cosmetics (dropped during 2b66d20 rewrite).
+  - `1ba0066` — Created this SESSION_HANDOFF.md.
+  - `1877d8a` — Expanded server details + curl snippets + 6-row missing SKU list.
+  - Reconciled 95 vs 89: 23 mangled EANs + 2 wrong-length + 6 truly missing rows in DB. Backfill endpoint added.
+  - OpenAI credits topped up by Samuel a second time. Suspected external key consumer; message drafted asking him to check dashboard Logs page and rotate the key.
+
+- **2026-09-28** — Phase 3 M1 first multi-file ingest attempt.
+  - LOREAL_LUX.xlsx: 101/102 rows landed cleanly (only file that finished before credits ran out first time).
+  - `6272075` — Rule 0.235 (100% EAN capture) + Rule 0.23 gender null-when-absent + `POST /api/admin/purge-by-filename`.
+  - Discovered client's earlier "$20 should be enough" budget doesn't survive one clean pass through all 8 files + iteration cost + accidental deploy-mid-run kill.
+
+- **2026-09-26 to 2026-09-27** — Phase 3 M1 landed: DB migration for perfume/cosmetics columns, category classifier, three-level identity, category-aware prompts, dashboard filter + drawer, backfill for existing W&S rows.
+
 ## When you edit this doc
 
-Update `Last updated:` at the top, bump the appropriate section, keep the "Immediate next steps" list realistic (don't let it stale — the next session will follow it).
+Update `Last updated:` at the top, bump the appropriate section, add a new dated entry at the TOP of the Change log for every significant transition, and keep the "Immediate next steps" list realistic — the next session (whether it's the same Claude account or a fresh one) will follow it verbatim.
