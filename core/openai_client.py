@@ -1435,6 +1435,13 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.info(f"[extract_from_file] PDF Batch {batch_num}/{total_pdf_batches}: pages {start_page + 1}–{end_page}, text length {len(combined_text)} chars")
                     logger.info(f"[extract_from_file] PDF Batch {batch_num} preview (first 300 chars): {combined_text[:300]!r}")
 
+                    # Count barcode-like tokens in the page text as a
+                    # heuristic target so the LLM has a concrete number to
+                    # hit and doesn't silently drop half a dense page.
+                    import re as _re_pdf
+                    _bar_hits = _re_pdf.findall(r"\d{8,14}\s+[\d.]+", combined_text)
+                    _expected_hint = len(_bar_hits)
+
                     prompt = f"""
 You are extracting commercial product offers from a PDF document (pages {start_page + 1} to {end_page} of {total_pages}).
 The document may cover Wines & Spirits, Perfumes, or Cosmetics — identify each
@@ -1442,18 +1449,31 @@ product's category (see Rule 0.23) and extract accordingly. Do not reject a
 row just because it is not alcohol.
 Return JSON ONLY, no explanation.
 
-Extract ALL product lines from the text below.
-Return a JSON object with a 'products' array.
+PRODUCT DETECTION IS AN INCLUSIVE OPERATION.
+For every line that carries a product name AND either a barcode/EAN or a
+price, emit exactly one product. Never skip a product just because the
+page also contains an email header, a "PERFUMES LIST" title, a footer,
+or a repeated page-break header — those live alongside the products,
+they do not replace them. A page with 40 product lines returns 40
+products; a page with 15 returns 15.
 
-CRITICAL: Extract ONLY actual product lines. Do NOT create rows for:
-- Section headers (e.g. "Whisky", "Rum", "Gin", "PERFUMES LIST", "Fragrance Stock")
-- Brand marketing lists (pages listing brand names the company works with)
-- Footer / signature blocks / unsubscribe links
-- Repeated items that are the same product
+Barcode-like tokens detected on this batch: {_expected_hint}. Treat that
+as a minimum-expected product count — you should return at least this
+many products unless a line is clearly not a product (e.g. it is a
+column-header row like "Description Size Barcode Price").
+
+Return a JSON object shaped as {{"products": [ ... ]}}.
+
+Only exclude:
+- Column header rows (the literal "Description Size Barcode Price" line)
+- Rows that are page-break repeats of a product that already appeared
+  earlier in the SAME batch (do not skip a row just because it might
+  reappear on a later page — you can only see this batch)
+- Standalone footer text with no product
 
 If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
 
-CRITICAL: Apply Rule 13 to correct all brand names to their official commercial spelling
+Apply Rule 13 to correct all brand names to their official commercial spelling
 before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's",
 "Dolce Gabbana" → "Dolce & Gabbana", "Viktor Rolf" → "Viktor & Rolf".
 
