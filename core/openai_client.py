@@ -1921,6 +1921,18 @@ def _repair_ean(digits: str) -> tuple[str | None, str]:
         padded = "0" + digits
         if _ean_check_digit_ok(padded):
             return padded, "UPC-A padded to EAN-13"
+    # Case: source EAN was 11 digits (an invalid GS1 length — the leading
+    # zero got dropped somewhere along the way) AND the LLM appended a
+    # price digit onto that, giving 12 bad-check digits. Strip trailing,
+    # prepend zero, re-check as UPC-A. This catches truncated-source rows
+    # like Calvin Klein Eternity For Women 50ml (source EAN "88300601301",
+    # true UPC-A "088300601301"), which are common on older US barcodes.
+    if len(digits) == 12 and not _ean_check_digit_ok(digits):
+        stripped = digits[:-1]
+        if len(stripped) == 11:
+            padded = "0" + stripped
+            if _ean_check_digit_ok(padded):
+                return padded, "11-digit source padded to UPC-A after trailing digit stripped"
     return None, f"length={len(digits)} check_ok={_ean_check_digit_ok(digits)}"
 
 
