@@ -11,13 +11,37 @@ Trading dashboard for LOXO (Samuel Praicheux, spraicheux@gmail.com), extending a
 | Service | URL / identifier |
 |---|---|
 | Deployed FastAPI backend | `https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net` |
-| Azure subscription | `1e09bf01-01bf-46db-9195-ab9676aa9f56` (owner: spraicheux@gmail.com, `az` CLI already logged in) |
-| App Service resource | `whatsapp-automation-backend-app` in RG `whatsapp-automation-backend_group` (France Central, B1) |
-| Postgres | `whatsapp-database.postgres.database.azure.com` (Flexible Server B1ms, France Central) |
-| Redis | Basic C0, France Central — celery broker + MSAL cache |
-| GitHub repo | `spraicheux/automation-python-backend` (main branch, auto-deploys on push) |
-| Admin token | `valid-token` (header: `x-admin-token`) |
-| OpenAI key | in local `.env` as `OPENAI_API_KEY=sk-proj-l2d7…SiEA`; also in Azure App Service env under same name. Project-scoped — no admin scopes. |
+| Backend `/docs` (Swagger) | append `/docs` to the base URL above |
+| Azure subscription | `1e09bf01-01bf-46db-9195-ab9676aa9f56` (owner: spraicheux@gmail.com, `az` CLI already logged in as this user) |
+| App Service resource | `whatsapp-automation-backend-app` in RG `whatsapp-automation-backend_group` (France Central, B1 Linux, Python 3.11) |
+| App Service startup script | `azure-startup.sh` — launches uvicorn + `python -m celery -A core.celery_app worker` in one container. Restart on push. |
+| Postgres | `whatsapp-database.postgres.database.azure.com:5432` (Flexible Server B1ms, France Central, LRS backup). DSN in App Service env under `DATABASE_URL`. |
+| Redis | Basic C0, France Central. Used as celery broker + MSAL token cache. Connection in App Service env under `REDIS_URL`. |
+| GitHub repo | `github.com:spraicheux/automation-python-backend` (main branch, auto-deploys on push via Azure GitHub Actions integration, ETA ~3 min from push to live) |
+| Admin token | `valid-token` (send as HTTP header `x-admin-token`) |
+| OpenAI key | in local `.env` as `OPENAI_API_KEY=sk-proj-l2d7…SiEA` (164 chars, project-scoped, no `api.usage.read` / `api.management.read` scopes — inference-only). Same key mirrored in Azure App Service env. Rotate at https://platform.openai.com/settings/organization/api-keys and update App Service env on rotation. |
+| MS Graph / Excel | `MS_CLIENT_ID`, `MS_AUTHORITY`, `EXCEL_WORKBOOK_PATH`, `EXCEL_SITE_ID`, `EXCEL_DRIVE_ID` all in App Service env; MSAL cache is warm and stored in Redis. Used by the OneDrive Excel export path. |
+| D360 (WhatsApp) | `D360_API_KEY` in App Service env (mirrored in local `.env`). Only used when the ingest payload has WhatsApp attachments — the manual-upload path checks Buffer first and bypasses D360. |
+| Company VPS (unrelated to LOXO, but relevant to Ali) | `ssh -p 222 root@31.97.108.87` — general project host with nginx + certbot + DNS; not part of the LOXO stack, don't deploy LOXO code there. |
+
+### Useful curl snippets
+
+```bash
+BASE="https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net"
+# health
+curl -sS "$BASE/health"
+# job status (debug uses /debug prefix, so full path repeats "debug")
+curl -sS "$BASE/debug/debug/job/<job-id>"
+# purge one filename (dry-run)
+curl -sS -X POST "$BASE/api/admin/purge-by-filename?pattern=%25foo%25&apply=false" -H "x-admin-token: valid-token"
+# ingest a local file
+curl -sS -X POST "$BASE/api/ingest" \
+  -F "source_channel=manual_test" -F "source_filename=my.xlsx" \
+  -F "supplier_name=SupplierName" -F "sender_email=x@y.z" \
+  -F "files=@/path/to/my.xlsx;type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# EAN + retail_state backfill (deterministic, no OpenAI cost)
+curl -sS -X POST "$BASE/api/admin/backfill-ean-and-retail?category_slug=perfumes&apply=false" -H "x-admin-token: valid-token"
+```
 
 ## Architecture — three-level identity
 
@@ -71,9 +95,16 @@ Deferred entirely: `_ZWOLLE_NICHE_MAY_2025_PRICE_LIST_KA.xlsx` (2054 rows, USD-p
 ### Samuel's open questions after seeing the initial M1 message
 
 1. **95 vs 89 reconciliation** — asked which 6 source SKUs are missing and why.
-   - Root cause found: **23 rows in DB have LLM-mangled EANs** (price digit concatenated), **2 have wrong length** (trailing zero dropped), and **6 rows are truly missing** from the DB. He was right to be sceptical of "89 rows / 100% EAN coverage" without a source-vs-imported check.
+   - Root cause found: **23 rows in DB have LLM-mangled EANs** (price digit concatenated), **2 have wrong length** (trailing zero dropped), and **6 rows are truly missing** from the DB (all consistent with LLM row-drop on dense multi-line entries).
+   - The 6 truly missing SKUs (name-match diff, no DB row exists at all):
+     - Tabac Original EDC Spray 100ml — EAN 4011700425112 · €9.00
+     - Taylor Of London Lace EDP 100ml — EAN 25929180930 · €10.00
+     - Taylor Of London White Satin PDT 100ml — EAN 25929181234 · €10.00
+     - Shakira Dance Diamonds EDT 80ml — EAN 8411061876008 · €7.30
+     - Shakira Love Rock! EDT 80ml — EAN 8411061810590 · €6.75
+     - United Colors & Prestige Beauty Sun Moon Stars EDP 100ml — EAN 860004550341 · €28.50 (only the EDT + Midnight EDP siblings landed; standard EDP was dropped)
    - Fix landed in commit `6ddf3ca`: `_repair_ean()` in `clean_product_data`, plus `POST /api/admin/backfill-ean-and-retail` for existing rows.
-   - **Action pending:** run the backfill (deterministic, no credit cost), then produce a clean 6-row miss list, then send the reconciliation reply.
+   - **Action pending:** run the backfill (deterministic, no credit cost); when Samuel greenlights another top-up, re-ingest the FBC PDF fresh under the new pipeline so those 6 land too. Alternative: manual-entry them via `POST /api/offers`.
 
 2. **retail_state defaulting** — asked whether "all 89 rows = retail" was inferred from absence of "tester" or explicit in source.
    - Root cause: Rule 0.23 said "default to retail unless tester". That silently manufactures an SKU discriminator.
