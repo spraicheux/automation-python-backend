@@ -79,9 +79,15 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
        default to "unisex" as a fallback for ambiguous rows — a null value
        is honest and the manual reviewer / classifier can fill it later.
        retail_state = "retail" | "tester" | "sample" | "miniature".
-         Default to "retail" unless the row explicitly says otherwise
-         (source words like "Tester", "TST", "Sample", "SPL", "Mini",
-         "30ml sample") — those become tester/sample/miniature.
+         ONLY set this when the source explicitly indicates it — e.g. the
+         literal words "Retail", "Tester", "TST", "Sample", "SPL", "Mini",
+         "Miniature", "30ml sample", or a dedicated column that carries
+         one of these tokens. If the source has NO explicit retail-state
+         signal on the row, leave `retail_state` NULL. Do NOT default to
+         "retail" as a fallback for ambiguous rows — retail_state is an
+         SKU discriminator (retail ≠ tester at the SKU level), and
+         silently assigning "retail" would create false SKU splits and
+         false peer groups.
        unit_volume_ml holds ml (Sauvage 100ml → 100).
        If the source names a range (e.g. Dior "Sauvage"), put it in
        range_name so search/roll-up works.
@@ -1823,10 +1829,99 @@ def clean_product_data(product: dict) -> dict:
             logger.info(f"[clean_product_data] Synced min_order_quantity_case from moq_cases: {moq}")
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ─── EAN CHECK-DIGIT VALIDATION + AUTO-REPAIR ─────────────────────
+    # The LLM occasionally concatenates the first digit of the next
+    # column (price) onto the EAN when the source PDF has narrow
+    # whitespace between the barcode and the price. E.g. a source line
+    #   "Police To Be Hyperverse EDP 125ml 125ML 679602001601 16"
+    # was arriving as ean_code="6796020016011" (13 digits, but the true
+    # UPC-A is "679602001601", 12 digits, and the trailing "1" was
+    # actually the first digit of "16" — the price). It also sometimes
+    # drops a trailing digit. We can catch both cases deterministically
+    # using the EAN check-digit algorithm and repair, then flag if
+    # unfixable so the row isn't silently trusted.
+    raw_ean = cleaned_product.get('ean_code')
+    if raw_ean and raw_ean != "Not Found":
+        import re as _re_ean
+        digits = _re_ean.sub(r"\D+", "", str(raw_ean))
+        repaired, repair_reason = _repair_ean(digits)
+        if repaired is None:
+            # unfixable — keep the raw digits but flag for review
+            flags = cleaned_product.get('error_flags') or []
+            flag_text = f"ean_code failed length + check-digit validation ({repair_reason})"
+            if flag_text not in flags:
+                flags.append(flag_text)
+                cleaned_product['error_flags'] = flags
+            cleaned_product['needs_manual_review'] = True
+            logger.warning(f"[clean_product_data] EAN {raw_ean!r} unfixable: {repair_reason}")
+        else:
+            if repaired != digits:
+                logger.info(f"[clean_product_data] EAN repaired: {raw_ean!r} → {repaired!r} ({repair_reason})")
+                flags = cleaned_product.get('error_flags') or []
+                flag_text = f"ean_code repaired ({repair_reason})"
+                if flag_text not in flags:
+                    flags.append(flag_text)
+                    cleaned_product['error_flags'] = flags
+            cleaned_product['ean_code'] = repaired
+    # ──────────────────────────────────────────────────────────────────
+
     logger.info(f"[clean_product_data] ===== END =====")
-    logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}, supplier_email={cleaned_product.get('supplier_email')!r}, gift_box={cleaned_product.get('gift_box')!r}, moq_cases={cleaned_product.get('moq_cases')}")
+    logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}, supplier_email={cleaned_product.get('supplier_email')!r}, gift_box={cleaned_product.get('gift_box')!r}, moq_cases={cleaned_product.get('moq_cases')}, ean_code={cleaned_product.get('ean_code')!r}")
 
     return cleaned_product
+
+
+def _ean_check_digit_ok(digits: str) -> bool:
+    """
+    Validate the standard mod-10 (GS1) check digit for EAN-8 / UPC-A (12) /
+    EAN-13 / GTIN-14. Returns True when the trailing digit matches the
+    computed check.
+    """
+    if not digits or not digits.isdigit() or len(digits) not in (8, 12, 13, 14):
+        return False
+    body, check = digits[:-1], int(digits[-1])
+    # GS1: weight is 3 for positions counted from the right (excl. check
+    # digit) when their 1-indexed position is odd, else 1. Equivalently,
+    # reverse the body and weight 3,1,3,1,…
+    total = 0
+    for i, c in enumerate(reversed(body)):
+        total += int(c) * (3 if i % 2 == 0 else 1)
+    return (10 - total % 10) % 10 == check
+
+
+def _repair_ean(digits: str) -> tuple[str | None, str]:
+    """
+    Attempt to make `digits` a valid EAN/UPC/GTIN. Returns
+    (repaired_digits, reason) — repaired_digits is None when nothing
+    fits. Steps, in order:
+      1. As-is if length ∈ {8,12,13,14} AND check-digit passes.
+      2. Length 13 or 9 → strip trailing digit (LLM concatenated first
+         digit of next column). Re-check.
+      3. Length 11 → try prepending "0" (LLM dropped a leading zero).
+         Re-check as UPC-A.
+      4. Length 12 with bad check → try prepending "0" for EAN-13.
+      5. Give up.
+    """
+    if not digits:
+        return None, "empty"
+    if len(digits) in (8, 12, 13, 14) and _ean_check_digit_ok(digits):
+        return digits, "valid as-is"
+    # Case: trailing digit was appended (13→12 or 9→8)
+    if len(digits) in (13, 9):
+        trimmed = digits[:-1]
+        if len(trimmed) in (12, 8) and _ean_check_digit_ok(trimmed):
+            return trimmed, "trailing digit concatenated from next column"
+    # Case: leading digit was dropped (11 → 12 with leading zero)
+    if len(digits) == 11:
+        padded = "0" + digits
+        if _ean_check_digit_ok(padded):
+            return padded, "leading zero re-inserted"
+    # Case: length looks like UPC-A but check-digit fails → try EAN-13 padding
+    if len(digits) == 12 and not _ean_check_digit_ok(digits):
+        padded = "0" + digits
+        if _ean_check_digit_ok(padded):
+            return padded, "UPC-A padded to EAN-13"
+    return None, f"length={len(digits)} check_ok={_ean_check_digit_ok(digits)}"
 
 
 def parse_buffer_data(buffer_data: dict) -> bytes:

@@ -329,8 +329,56 @@ async def get_best_prices(
             units_per_case=row.units_per_case,
             alcohol_percent=row.alcohol_percent,
             vintage=row.vintage,
+            # Phase 3 M1: perfume/cosmetics discriminators are part of the
+            # attribute-only SKU key so EDT vs EDP, retail vs tester, 91 vs
+            # 116 shades don't collapse into one SKU when EAN is missing on
+            # either side. Same EAN across suppliers is reconciled in the
+            # union-find pass below regardless of these values.
+            category_slug=getattr(row, 'category_slug', None),
+            perfume_format=getattr(row, 'perfume_format', None),
+            retail_state=getattr(row, 'retail_state', None),
+            gender=getattr(row, 'gender', None),
+            shade=getattr(row, 'shade', None),
+            product_type=getattr(row, 'product_type', None),
+            size_weight_g=getattr(row, 'size_weight_g', None),
+            range_name=getattr(row, 'range_name', None),
         )
         sku_groups[sku].append(row)
+
+    # ── EAN-first reconciliation across attribute-differing sku_identity
+    # buckets (Phase 3 M1, client requirement §5).
+    # If supplier A's row has ean=X and gender="men", and supplier B's row
+    # has ean=X and gender=null, sku_identity puts them in *different*
+    # buckets (gender differs). That's the wrong outcome: same EAN → same
+    # physical SKU, and a supplier who left gender blank shouldn't be
+    # penalised into a separate cluster. This pass unions any sku_identity
+    # buckets that share a common non-empty EAN so the two rows resolve to
+    # the same SKU group. Rows with genuinely different EANs stay split
+    # and still surface the ean_conflict flag downstream.
+    parent = {k: k for k in sku_groups}
+    def _find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+    ean_to_sku_keys = defaultdict(set)
+    for sku_k, rows_in in sku_groups.items():
+        for r in rows_in:
+            ek = ean_key(r.ean_code)
+            if ek:
+                ean_to_sku_keys[ek].add(sku_k)
+    for ek, ks in ean_to_sku_keys.items():
+        ks = list(ks)
+        for i in range(1, len(ks)):
+            _union(ks[0], ks[i])
+    merged_groups = defaultdict(list)
+    for sku_k, rows_in in sku_groups.items():
+        merged_groups[_find(sku_k)].extend(rows_in)
+    sku_groups = merged_groups
 
     grouped_list = []
     for sku_key, rows_in in sku_groups.items():

@@ -26,6 +26,99 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.post("/admin/backfill-ean-and-retail", dependencies=[Depends(_require_admin)])
+def backfill_ean_and_retail(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Re-run EAN check-digit repair and null-out inferred retail_state on
+    already-ingested rows. Both are deterministic (no LLM calls), so this
+    is idempotent and doesn't spend OpenAI credits.
+
+    EAN repair uses core.openai_client._repair_ean — same algorithm the
+    ingest pipeline now runs post-extraction.
+
+    retail_state null-out: the ingest rule was "default to retail unless
+    explicitly tester/sample/miniature" which silently manufactured an
+    SKU discriminator. Client wants retail_state to be null when the
+    source didn't say. This backfill nulls any 'retail' value on rows in
+    the given category — 'tester' / 'sample' / 'miniature' are always
+    kept (those came from explicit source words per Rule 0.23).
+
+    Dry-run by default. Pass ?apply=true to write.
+    """
+    from core.openai_client import _repair_ean
+    import re as _re
+
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+
+    ean_stats = {"scanned": 0, "already_valid": 0, "repaired": 0, "flagged": 0}
+    ean_samples = []
+    retail_stats = {"scanned": 0, "nulled": 0, "kept_tester_sample": 0}
+
+    for r in rows:
+        if r.ean_code:
+            ean_stats["scanned"] += 1
+            digits = _re.sub(r"\D+", "", str(r.ean_code))
+            repaired, reason = _repair_ean(digits)
+            if repaired is None:
+                ean_stats["flagged"] += 1
+                if len(ean_samples) < 20:
+                    ean_samples.append({
+                        "uid": r.uid, "brand": r.brand,
+                        "product": r.product_name, "was": r.ean_code,
+                        "action": "flagged", "reason": reason,
+                    })
+                if apply:
+                    flags = r.error_flags or []
+                    tag = f"ean_code failed length + check-digit validation ({reason})"
+                    if tag not in flags:
+                        flags = flags + [tag]
+                        r.error_flags = flags
+                    r.needs_manual_review = True
+            elif repaired == digits:
+                ean_stats["already_valid"] += 1
+            else:
+                ean_stats["repaired"] += 1
+                if len(ean_samples) < 20:
+                    ean_samples.append({
+                        "uid": r.uid, "brand": r.brand,
+                        "product": r.product_name, "was": r.ean_code,
+                        "now": repaired, "action": "repaired", "reason": reason,
+                    })
+                if apply:
+                    r.ean_code = repaired
+                    flags = r.error_flags or []
+                    tag = f"ean_code repaired by backfill ({reason})"
+                    if tag not in flags:
+                        r.error_flags = flags + [tag]
+
+        if r.retail_state:
+            retail_stats["scanned"] += 1
+            if str(r.retail_state).strip().lower() == "retail":
+                retail_stats["nulled"] += 1
+                if apply:
+                    r.retail_state = None
+            else:
+                retail_stats["kept_tester_sample"] += 1
+
+    if apply:
+        db.commit()
+
+    return {
+        "applied": apply,
+        "category_slug": category_slug,
+        "rows_examined": len(rows),
+        "ean": ean_stats,
+        "retail_state": retail_stats,
+        "ean_samples": ean_samples,
+    }
+
+
 @router.post("/admin/purge-by-filename", dependencies=[Depends(_require_admin)])
 def purge_by_filename(pattern: str, apply: bool = False, db: Session = Depends(get_db)):
     """
