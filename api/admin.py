@@ -51,6 +51,22 @@ def backfill_ean_and_retail(
     """
     from core.openai_client import _repair_ean
     import re as _re
+    import json as _json
+
+    def _load_flags(raw):
+        # error_flags is stored as a JSON-string Text column (see
+        # models/offer_item.py:97). to_dict() deserialises with
+        # json.loads. Mirror that here — never assign a Python list to
+        # a Text column, always serialise back to string.
+        if not raw: return []
+        try:
+            v = _json.loads(raw) if isinstance(raw, str) else raw
+            return list(v) if isinstance(v, list) else []
+        except Exception:
+            return []
+
+    def _dump_flags(lst):
+        return _json.dumps(lst) if lst else None
 
     rows = (db.query(OfferItemDB)
               .filter(OfferItemDB.category_slug == category_slug)
@@ -74,11 +90,11 @@ def backfill_ean_and_retail(
                         "action": "flagged", "reason": reason,
                     })
                 if apply:
-                    flags = r.error_flags or []
+                    flags = _load_flags(r.error_flags)
                     tag = f"ean_code failed length + check-digit validation ({reason})"
                     if tag not in flags:
-                        flags = flags + [tag]
-                        r.error_flags = flags
+                        flags.append(tag)
+                        r.error_flags = _dump_flags(flags)
                     r.needs_manual_review = True
             elif repaired == digits:
                 ean_stats["already_valid"] += 1
@@ -92,10 +108,11 @@ def backfill_ean_and_retail(
                     })
                 if apply:
                     r.ean_code = repaired
-                    flags = r.error_flags or []
+                    flags = _load_flags(r.error_flags)
                     tag = f"ean_code repaired by backfill ({reason})"
                     if tag not in flags:
-                        r.error_flags = flags + [tag]
+                        flags.append(tag)
+                        r.error_flags = _dump_flags(flags)
 
         if r.retail_state:
             retail_stats["scanned"] += 1
