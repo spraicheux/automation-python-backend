@@ -1060,6 +1060,17 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
     logger.info(f"[extract_from_file] file_path: {file_path!r}")
     logger.info(f"[extract_from_file] content_type: {content_type!r}")
 
+    # ── Category routing (Phase 3 M1) ────────────────────────────────
+    # Pick the extraction rule block from filename + a small text
+    # sample. Perfumes and cosmetics get slim, focused prompts; W&S
+    # keeps the omnibus block. Detection here is cheap and does not
+    # itself call OpenAI — it's a keyword heuristic.
+    from core.extraction_prompts import (
+        detect_document_category, rules_for_category
+    )
+    _doc_category = "wines_spirits"  # default; overridden in category-aware branches
+    _EXTRACTION_RULES = SHARED_EXTRACTION_RULES  # default; overridden below
+
     try:
         text_content = ""
 
@@ -1125,6 +1136,17 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 total_batches = (total_rows + batch_size - 1) // batch_size
                 logger.info(f"[extract_from_file] Will process {total_rows} rows in {total_batches} batch(es) of up to {batch_size} rows each")
 
+                # Category detection on the XLSX side: filename plus a text
+                # sample built from column headers + first 5 data rows so the
+                # detector can catch "EDP/EDT/ml" perfume signatures or
+                # "mascara/serum" cosmetics signatures without an LLM call.
+                _xlsx_sample = " ".join(str(c) for c in df.columns) + " " + " ".join(
+                    " ".join(str(v) for v in row) for _, row in df.head(5).iterrows()
+                )
+                _doc_category = detect_document_category(file_path, _xlsx_sample)
+                _EXTRACTION_RULES = rules_for_category(_doc_category, SHARED_EXTRACTION_RULES)
+                logger.info(f"[extract_from_file] XLSX category detected: {_doc_category!r}; using {'slim' if _doc_category in ('perfumes','cosmetics') else 'omnibus'} rules ({len(_EXTRACTION_RULES)} chars)")
+
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
                     batch_df = df.iloc[batch_start:batch_end]
@@ -1163,7 +1185,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
 
                     {json.dumps(data_rows, indent=2)}
 
-                    {SHARED_EXTRACTION_RULES}
+                    {_EXTRACTION_RULES}
 
                     MAPPING FROM EXCEL DATA:
                     - Ensure you capture the full product name and brand.
@@ -1190,7 +1212,12 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                             messages=[
                                 {
                                     "role": "system",
-                                    "content": f"You are a professional data extraction expert. You extract commercial product data from Excel — the rows may be Wines & Spirits, Perfumes, or Cosmetics; classify each row's `category_slug` per Rule 0.23 rather than assuming alcohol. Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. ALWAYS correct brand names to their official spelling per Rule 13 (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
+                                    "content": (
+                                        f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
+                                        f"This Excel file is already classified as {_doc_category!r}; every row you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
+                                        f"Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. "
+                                        f"ALWAYS correct brand names to their official spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
+                                    )
                                 },
                                 {"role": "user", "content": batch_text}
                             ],
@@ -1421,6 +1448,12 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 total_pdf_batches = (total_pages + PAGES_PER_BATCH - 1) // PAGES_PER_BATCH
                 logger.info(f"[extract_from_file] PDF: {total_pages} page(s) → {total_pdf_batches} batch(es) of up to {PAGES_PER_BATCH} pages")
 
+                # Category detection: pick slim/omnibus rule block once per doc.
+                _first_page_text = pages_text[0][1] if pages_text else ""
+                _doc_category = detect_document_category(file_path, _first_page_text)
+                _EXTRACTION_RULES = rules_for_category(_doc_category, SHARED_EXTRACTION_RULES)
+                logger.info(f"[extract_from_file] PDF category detected: {_doc_category!r}; using {'slim' if _doc_category in ('perfumes','cosmetics') else 'omnibus'} rules ({len(_EXTRACTION_RULES)} chars)")
+
                 all_pdf_products = []
 
                 for batch_idx in range(total_pdf_batches):
@@ -1473,11 +1506,12 @@ Only exclude:
 
 If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
 
-Apply Rule 13 to correct all brand names to their official commercial spelling
-before outputting. E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's",
+Apply the brand-name normalization rule to correct all brand names to their
+official commercial spelling before outputting.
+E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's",
 "Dolce Gabbana" → "Dolce & Gabbana", "Viktor Rolf" → "Viktor & Rolf".
 
-{SHARED_EXTRACTION_RULES}
+{_EXTRACTION_RULES}
 
 PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
 {combined_text}
@@ -1491,18 +1525,11 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                                 {
                                     "role": "system",
                                     "content": (
-                                        "You are a professional data extraction expert. "
-                                        "Extract commercial product offers from PDF text — the "
-                                        "document may be Wines & Spirits, Perfumes, or Cosmetics. "
-                                        "Identify each product's category (Rule 0.23) and emit the "
-                                        "category-specific fields (perfume_format / gender / "
-                                        "retail_state for perfumes; product_type / shade / "
-                                        "size_weight_g for cosmetics; alcohol_percent / vintage / "
-                                        "age_statement for W&S). "
+                                        f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
+                                        f"This PDF is already classified as {_doc_category!r}; every product you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
                                         "Return ONLY valid JSON with a 'products' array. "
-                                        "Do NOT include section headers, brand lists, or footer text as products. "
-                                        "Only extract actual product offer lines. "
-                                        "ALWAYS correct brand names to their official spelling per Rule 13."
+                                        "Skip standalone column-header lines and standalone footer text, but never drop a real product just because the page also contains headers or footers. "
+                                        "ALWAYS correct brand names to their official commercial spelling."
                                     )
                                 },
                                 {"role": "user", "content": prompt}
