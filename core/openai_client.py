@@ -1499,8 +1499,46 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: response received — {len(content)} chars")
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: preview: {content[:400]!r}")
 
+                        # JSON bracket repair — mirrors the XLSX batch path.
+                        # When a page carries 35-50 dense product rows the
+                        # response can be truncated at max_tokens with an
+                        # unclosed object, and a bare json.loads() then
+                        # throws and the batch produces 0 products silently.
+                        # Trim to the last balanced close-brace, which
+                        # recovers a complete-enough object with the
+                        # products array intact in most truncation cases.
+                        if not content.strip().endswith('}'):
+                            logger.warning(f"[extract_from_file] PDF Batch {batch_num}: JSON looks incomplete — attempting bracket repair")
+                            json_start = content.find('{')
+                            if json_start != -1:
+                                open_braces = 0
+                                close_braces = 0
+                                repaired_end = None
+                                for i, char in enumerate(content[json_start:]):
+                                    if char == '{':
+                                        open_braces += 1
+                                    elif char == '}':
+                                        close_braces += 1
+                                        if close_braces == open_braces:
+                                            repaired_end = json_start + i + 1
+                                            break
+                                if repaired_end:
+                                    content = content[json_start:repaired_end]
+                                    logger.info(f"[extract_from_file] PDF Batch {batch_num}: JSON repaired at balanced close — new length: {len(content)} chars")
+                                else:
+                                    # Trailing "products" array wasn't closed
+                                    # cleanly. Trim to the last complete
+                                    # product object (last "},") and close
+                                    # the array + outer object manually so
+                                    # we salvage every fully-formed product
+                                    # in the response.
+                                    last_complete = content.rfind('},')
+                                    if last_complete > json_start:
+                                        content = content[json_start:last_complete + 1] + "]}"
+                                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: JSON salvaged to last complete product — new length: {len(content)} chars")
+
                         result = json.loads(content)
-                        batch_products = result.get('products', [])
+                        batch_products = result.get('products', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: AI returned {len(batch_products)} product(s)")
 
                         cleaned_batch = []
