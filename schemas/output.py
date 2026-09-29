@@ -18,17 +18,17 @@ class OfferItem(BaseModel):
     packaging: str = Field(default="Bottle")
     packaging_raw: str = Field(default="bottle")
     bottle_or_can_type: Optional[str] = None
-    unit_volume_ml: Optional[float] = Field(default=0)
-    units_per_case: Optional[float] = Field(default=0)
+    unit_volume_ml: Optional[float] = None
+    units_per_case: Optional[float] = None
     cases_per_pallet: Optional[float] = None
     quantity_case: Optional[float] = None
     gift_box: Optional[str] = None
     refillable_status: str = Field(default="NRF")
     currency: str = Field(default="EUR")
-    price_per_unit: Optional[float] = Field(default=0)
-    price_per_unit_eur: Optional[float] = Field(default=0)
-    price_per_case: Optional[float] = Field(default=0)
-    price_per_case_eur: Optional[float] = Field(default=0)
+    price_per_unit: Optional[float] = None
+    price_per_unit_eur: Optional[float] = None
+    price_per_case: Optional[float] = None
+    price_per_case_eur: Optional[float] = None
     fx_rate: Optional[float] = Field(default=1.0)
     fx_date: Optional[str] = None
     alcohol_percent: Optional[float] = None

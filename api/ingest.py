@@ -70,6 +70,50 @@ def _check_duplicate_filename(filename: str) -> None:
         logger.warning(f"Duplicate check failed: {e}")
 
 
+def _check_duplicate_content_hash(content_hash: str) -> None:
+    """
+    Reject re-uploads of the exact same file bytes, even when the caller
+    renamed the file. Content-hash lives on source_files (Phase 3 M1).
+    A genuinely new supplier offer file has different bytes → different
+    hash → passes; only bit-identical re-uploads are refused here.
+    """
+    if not content_hash:
+        return
+    try:
+        from core.database import get_session_factory
+        from models.source_file import SourceFileDB
+
+        db = get_session_factory()()
+        try:
+            existing = (
+                db.query(SourceFileDB.source_filename)
+                .filter(SourceFileDB.content_hash == content_hash)
+                .first()
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "duplicate_content",
+                        "message": (
+                            f"File contents already ingested "
+                            f"(previously as {existing[0]!r}). "
+                            "Re-upload of the exact same bytes is refused. "
+                            "If this is a genuinely new supplier offer, "
+                            "the file bytes must differ."
+                        ),
+                        "existing_filename": existing[0],
+                        "content_hash": content_hash,
+                    },
+                )
+        finally:
+            db.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Content-hash duplicate check failed: {e}")
+
+
 @router.post("/ingest")
 async def ingest(
     request: Request,
@@ -118,7 +162,10 @@ async def ingest(
             "source_filename": dedup_filename
         }
 
+    import hashlib
+
     attachments = []
+    content_hash = None  # sha256 of the first (usually only) attachment
 
     if files:
         for file in files:
@@ -128,10 +175,13 @@ async def ingest(
                 logger.info(f"Skipping empty file: {file.filename}")
                 continue
 
+            if content_hash is None:
+                content_hash = hashlib.sha256(file_bytes).hexdigest()
+
             attachments.append({
                 "fileName": file.filename,
                 "contentType": file.content_type,
-                "checksum": "",
+                "checksum": hashlib.sha256(file_bytes).hexdigest(),
                 "contentId": None,
                 "fileSize": len(file_bytes),
                 "data": {
@@ -150,6 +200,7 @@ async def ingest(
     )
 
     _check_duplicate_filename(dedup_filename)
+    _check_duplicate_content_hash(content_hash)
 
     payload_dict = {
         "source_channel": source_channel,
@@ -161,7 +212,8 @@ async def ingest(
         "sender_name": sender_name,
         "subject": subject,
         "text_body": text_body,
-        "attachments": attachments
+        "attachments": attachments,
+        "content_hash": content_hash,
     }
 
     redis_manager.set_job_status(job_id, "processing")

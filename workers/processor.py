@@ -64,6 +64,9 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                     source_channel=offer_dict.get("source_channel"),
                     source_message_id=offer_dict.get("source_message_id"),
                     product_count=0,
+                    # Phase 3 M1: propagate ingest-time metadata
+                    content_hash=offer_dict.get("_content_hash"),
+                    expected_row_count=offer_dict.get("_expected_row_count"),
                 )
                 db.add(source_file)
                 db.flush()  # get the id without committing yet
@@ -138,6 +141,16 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
             db.add(row)
 
             source_file.product_count += 1
+            # Phase 3 M1: keep imported_row_count in sync + flag import as
+            # incomplete when the LLM said N products should be there but
+            # we only persisted M < N (client requirement §1). Recomputed
+            # on every save so the last one lands the final truth.
+            source_file.imported_row_count = source_file.product_count
+            _expected = offer_dict.get("_expected_row_count")
+            if _expected and _expected > source_file.product_count:
+                source_file.import_incomplete = True
+            elif _expected and _expected == source_file.product_count:
+                source_file.import_incomplete = False
 
             db.commit()
             logger.info(f"DB: saved product '{offer_dict.get('product_name')}' for job {job_id}")
@@ -785,6 +798,10 @@ async def process_offer(payload, job_id: str):
                     )
 
                     offer_dict = offer.model_dump(mode='json')
+                    # Phase 3 M1: thread content-hash + source-row estimate
+                    # so save_offer_to_db can persist them on the SourceFileDB.
+                    offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
+                    offer_dict["_expected_row_count"] = len(all_products)
 
                     if not is_valid_offer(offer_dict):
                         logger.info(
@@ -794,6 +811,20 @@ async def process_offer(payload, job_id: str):
                             f"price_case={offer_dict.get('price_per_case')}"
                         )
                         continue
+
+                    # ── Loose-unit €/case cleanup ───────────────────────────
+                    # If no case pack was declared (units_per_case null / 0 / 1),
+                    # a €/case value of 0 is a display artifact, not a real
+                    # price. Null it out so the dashboard shows "—" instead
+                    # of "€0.00" (client requirement §3).
+                    upc = offer_dict.get("units_per_case")
+                    if not upc or upc in (0, 0.0, 1, 1.0):
+                        if offer_dict.get("price_per_case") in (0, 0.0):
+                            offer_dict["price_per_case"] = None
+                        if offer_dict.get("price_per_case_eur") in (0, 0.0):
+                            offer_dict["price_per_case_eur"] = None
+                        if upc in (0, 0.0):
+                            offer_dict["units_per_case"] = None
 
                     offers.append(offer_dict)
                     valid_count += 1
@@ -938,6 +969,19 @@ async def process_offer(payload, job_id: str):
                 )
 
                 offer_dict = offer.model_dump(mode='json')
+                # Phase 3 M1: thread content-hash + source-row estimate
+                offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
+                offer_dict["_expected_row_count"] = len(all_products)
+
+                # Loose-unit €/case cleanup — see multi-product path above.
+                upc = offer_dict.get("units_per_case")
+                if not upc or upc in (0, 0.0, 1, 1.0):
+                    if offer_dict.get("price_per_case") in (0, 0.0):
+                        offer_dict["price_per_case"] = None
+                    if offer_dict.get("price_per_case_eur") in (0, 0.0):
+                        offer_dict["price_per_case_eur"] = None
+                    if upc in (0, 0.0):
+                        offer_dict["units_per_case"] = None
 
                 if not is_valid_offer(offer_dict):
                     logger.info(

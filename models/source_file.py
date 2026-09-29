@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer
+from sqlalchemy import Column, String, DateTime, Integer, Boolean
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -18,6 +18,11 @@ class SourceFileDB(Base):
     source_channel = Column(String(128), nullable=True)
     source_message_id = Column(String(255), nullable=True)
     product_count = Column(Integer, default=0)
+    # Phase 3 M1: content-hash duplicate guard + source-vs-imported audit.
+    content_hash          = Column(String(64), nullable=True, index=True)  # sha256 hex
+    expected_row_count    = Column(Integer, nullable=True)  # source-row estimate (barcodes in PDF, df length in XLSX)
+    imported_row_count    = Column(Integer, nullable=True)  # how many actually persisted
+    import_incomplete     = Column(Boolean, nullable=True)  # true when expected > imported
     created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     offer_items = relationship("OfferItemDB", back_populates="source_file", lazy="dynamic")
@@ -34,5 +39,9 @@ class SourceFileDB(Base):
             "source_channel": self.source_channel,
             "source_message_id": self.source_message_id,
             "product_count": self.product_count,
+            "content_hash": self.content_hash,
+            "expected_row_count": self.expected_row_count,
+            "imported_row_count": self.imported_row_count,
+            "import_incomplete": self.import_incomplete,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

@@ -26,6 +26,46 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.post("/admin/backfill-loose-case-zero", dependencies=[Depends(_require_admin)])
+def backfill_loose_case_zero(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Null out zero-value price_per_case / price_per_case_eur / units_per_case
+    on loose-unit rows (units_per_case null / 0 / 1). Client requirement §3:
+    €/CASE column should render "—" not "€0.00" for rows that have no
+    real case pack.
+    """
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+    changed = 0
+    for r in rows:
+        upc = r.units_per_case
+        touched = False
+        if upc in (None, 0, 0.0, 1, 1.0):
+            if r.price_per_case in (0, 0.0):
+                if apply:
+                    r.price_per_case = None
+                touched = True
+            if r.price_per_case_eur in (0, 0.0):
+                if apply:
+                    r.price_per_case_eur = None
+                touched = True
+            if upc in (0, 0.0):
+                if apply:
+                    r.units_per_case = None
+                touched = True
+        if touched:
+            changed += 1
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "rows_examined": len(rows), "rows_changed": changed}
+
+
 @router.post("/admin/backfill-ean-and-retail", dependencies=[Depends(_require_admin)])
 def backfill_ean_and_retail(
     category_slug: str = "perfumes",

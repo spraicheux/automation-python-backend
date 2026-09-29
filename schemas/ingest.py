@@ -23,6 +23,8 @@ class IngestRequest(BaseModel):
     subject: Optional[str] = None
     text_body: Optional[str] = None
     attachments: Optional[Union[List[Attachment], Attachment]] = Field(default_factory=list)
+    # Phase 3 M1: content-hash for the primary file, computed at ingest.
+    content_hash: Optional[str] = None
 
     @validator('attachments')
     def validate_attachments(cls, v):

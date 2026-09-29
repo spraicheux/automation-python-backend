@@ -97,6 +97,23 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS ix_offer_items_category_slug "
                 "ON offer_items (category_slug)"
             ))
+            # Phase 3 M1: content-hash duplicate guard + source-vs-imported
+            # audit on the source_files table. Client requirement §2 / §1.
+            source_file_columns = [
+                ("content_hash",         "VARCHAR(64)"),
+                ("expected_row_count",   "INTEGER"),
+                ("imported_row_count",   "INTEGER"),
+                ("import_incomplete",    "BOOLEAN"),
+            ]
+            for col, coltype in source_file_columns:
+                conn.execute(text(
+                    f"ALTER TABLE source_files "
+                    f"ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_source_files_content_hash "
+                "ON source_files (content_hash)"
+            ))
         logger.info("✓ Column additions verified")
     except Exception as e:
         logger.error(f"✗ Failed to initialise database: {e}")

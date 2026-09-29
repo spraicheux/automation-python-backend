@@ -346,15 +346,30 @@ async def get_best_prices(
         sku_groups[sku].append(row)
 
     # ── EAN-first reconciliation across attribute-differing sku_identity
-    # buckets (Phase 3 M1, client requirement §5).
-    # If supplier A's row has ean=X and gender="men", and supplier B's row
-    # has ean=X and gender=null, sku_identity puts them in *different*
-    # buckets (gender differs). That's the wrong outcome: same EAN → same
-    # physical SKU, and a supplier who left gender blank shouldn't be
-    # penalised into a separate cluster. This pass unions any sku_identity
-    # buckets that share a common non-empty EAN so the two rows resolve to
-    # the same SKU group. Rows with genuinely different EANs stay split
-    # and still surface the ean_conflict flag downstream.
+    # buckets (Phase 3 M1, client requirement §5 + §4-attribute-conflict).
+    # Same EAN + one side blank on gender/retail_state → merge (§5 fallback).
+    # Same EAN + BOTH sides populated with different CRITICAL attribute
+    # values (unit_volume_ml, perfume_format, retail_state, product_type)
+    # → do NOT merge; those are material contradictions that shouldn't be
+    # collapsed into one SKU without human review. Genuinely-different-EANs
+    # rows stay split and surface the ean_conflict flag downstream.
+    _CRITICAL_ATTRS = ("unit_volume_ml", "perfume_format", "retail_state",
+                       "product_type", "shade", "size_weight_g")
+    def _attr_conflict(a_row, b_row):
+        for attr in _CRITICAL_ATTRS:
+            av = getattr(a_row, attr, None)
+            bv = getattr(b_row, attr, None)
+            # Only a mismatch when BOTH sides are populated and differ.
+            # Blank vs populated is not a conflict (client §5 fallback).
+            if av not in (None, "", 0, 0.0) and bv not in (None, "", 0, 0.0):
+                # numeric compare with a tiny epsilon for ml/g
+                if isinstance(av, (int, float)) and isinstance(bv, (int, float)):
+                    if abs(av - bv) > 0.5:
+                        return attr, av, bv
+                elif str(av).strip().lower() != str(bv).strip().lower():
+                    return attr, av, bv
+        return None
+
     parent = {k: k for k in sku_groups}
     def _find(k):
         while parent[k] != k:
@@ -371,13 +386,32 @@ async def get_best_prices(
             ek = ean_key(r.ean_code)
             if ek:
                 ean_to_sku_keys[ek].add(sku_k)
+    ean_attribute_conflicts = {}  # sku_key → list of (ean, attr, va, vb) rejected unions
     for ek, ks in ean_to_sku_keys.items():
         ks = list(ks)
+        base = ks[0]
+        base_rep = sku_groups[base][0]  # exemplar row
         for i in range(1, len(ks)):
-            _union(ks[0], ks[i])
+            other_rep = sku_groups[ks[i]][0]
+            conflict = _attr_conflict(base_rep, other_rep)
+            if conflict:
+                attr, va, vb = conflict
+                # Do not union — record the conflict for downstream flagging.
+                ean_attribute_conflicts.setdefault(base, []).append(
+                    {"ean": ek, "attribute": attr, "values": [va, vb]}
+                )
+                ean_attribute_conflicts.setdefault(ks[i], []).append(
+                    {"ean": ek, "attribute": attr, "values": [va, vb]}
+                )
+            else:
+                _union(base, ks[i])
     merged_groups = defaultdict(list)
+    merged_attribute_conflicts = defaultdict(list)
     for sku_k, rows_in in sku_groups.items():
-        merged_groups[_find(sku_k)].extend(rows_in)
+        root = _find(sku_k)
+        merged_groups[root].extend(rows_in)
+        if sku_k in ean_attribute_conflicts:
+            merged_attribute_conflicts[root].extend(ean_attribute_conflicts[sku_k])
     sku_groups = merged_groups
 
     grouped_list = []
@@ -452,6 +486,18 @@ async def get_best_prices(
             lowest_qualified_nominal_price = None
             lowest_qualified_nominal_peer = None
 
+        # Same-EAN attribute-conflict rule (client §4): when the same EAN
+        # appears with a materially different critical attribute (volume,
+        # perfume_format, retail_state, product_type, shade, size_weight_g),
+        # we did NOT union the sku_identity clusters upstream, but we still
+        # want the UI to render both under the same product name with a
+        # visible "Needs Review — same EAN, conflicting attributes" flag
+        # and no trusted Best Price until the conflict is resolved.
+        ean_attr_conflicts = merged_attribute_conflicts.get(sku_key, [])
+        if ean_attr_conflicts:
+            lowest_qualified_nominal_price = None
+            lowest_qualified_nominal_peer = None
+
         grouped_list.append({
             "sku_identity": sku_key,
             "brand": head_row.brand,
@@ -462,12 +508,13 @@ async def get_best_prices(
             "units_per_case": head_row.units_per_case,
             "known_eans": known_eans,
             "ean_conflict": ean_conflict,
+            "ean_attribute_conflicts": ean_attr_conflicts,
             "supplier_count": supplier_count,
             "peer_count": len(peers),
             # Nominal, cross-peer headline. Not a trusted trading signal —
             # it does not correct for freight or terms, and it stays null
-            # when peer groups have unknown terms OR the SKU has an EAN
-            # conflict. Real trusted bests live inside each peer block.
+            # when peer groups have unknown terms, the SKU has an EAN
+            # conflict, OR a same-EAN attribute conflict is unresolved.
             "lowest_qualified_nominal_price_eur": lowest_qualified_nominal_price,
             "lowest_qualified_nominal_peer_id": lowest_qualified_nominal_peer,
             "peers": peers,
