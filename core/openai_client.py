@@ -1476,40 +1476,20 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     _expected_hint = len(_bar_hits)
 
                     prompt = f"""
-You are extracting commercial product offers from a PDF document (pages {start_page + 1} to {end_page} of {total_pages}).
-The document may cover Wines & Spirits, Perfumes, or Cosmetics — identify each
-product's category (see Rule 0.23) and extract accordingly. Do not reject a
-row just because it is not alcohol.
-Return JSON ONLY, no explanation.
+Extract every product offer in the PDF text below (pages {start_page + 1}–{end_page} of {total_pages}).
+This document has been classified as {_doc_category!r} — apply the {_doc_category!r} rules and set category_slug={_doc_category!r} on each product.
 
-PRODUCT DETECTION IS AN INCLUSIVE OPERATION.
-For every line that carries a product name AND either a barcode/EAN or a
-price, emit exactly one product. Never skip a product just because the
-page also contains an email header, a "PERFUMES LIST" title, a footer,
-or a repeated page-break header — those live alongside the products,
-they do not replace them. A page with 40 product lines returns 40
-products; a page with 15 returns 15.
+Return JSON only: {{"products":[{{...}}, ...]}}
 
-Barcode-like tokens detected on this batch: {_expected_hint}. Treat that
-as a minimum-expected product count — you should return at least this
-many products unless a line is clearly not a product (e.g. it is a
-column-header row like "Description Size Barcode Price").
+For every line that contains a product name AND (a barcode OR a price), emit exactly one product entry. A page-preamble, email header, or footer sits alongside the products; it does not replace them. The text below appears to contain around {_expected_hint} product rows — return an entry for each one.
 
-Return a JSON object shaped as {{"products": [ ... ]}}.
+Skip only:
+- The single column-header line (e.g. "Description Size Barcode Price")
+- Standalone footer text without a product
 
-Only exclude:
-- Column header rows (the literal "Description Size Barcode Price" line)
-- Rows that are page-break repeats of a product that already appeared
-  earlier in the SAME batch (do not skip a row just because it might
-  reappear on a later page — you can only see this batch)
-- Standalone footer text with no product
+If a product row lists multiple incoterms, emit one entry per incoterm.
 
-If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
-
-Apply the brand-name normalization rule to correct all brand names to their
-official commercial spelling before outputting.
-E.g. "Ballantine" → "Ballantine's", "Jack Daniel" → "Jack Daniel's",
-"Dolce Gabbana" → "Dolce & Gabbana", "Viktor Rolf" → "Viktor & Rolf".
+Normalize brand names to their commercial spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's, Dolce Gabbana → Dolce & Gabbana, Viktor Rolf → Viktor & Rolf).
 
 {_EXTRACTION_RULES}
 

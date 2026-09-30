@@ -57,60 +57,60 @@ def detect_document_category(filename: str = "", sample_text: str = "") -> str:
 
 PERFUMES_RULES = r"""
 CATEGORY: PERFUMES
-──────────────────
-You are extracting perfume offers. Every row that carries a product
-name AND (a barcode OR a price) is a product. Emit exactly one row per
-product. Never drop a product because the page also contains an email
-header, a document title, or a footer.
+
+You are extracting perfume offers. Emit one product per row of source
+data. Include every product row you see — do not omit rows because
+the page also has a header, an email preamble, a document title, or
+a footer. If a row has a product name and (a price OR a barcode),
+emit a product for it.
 
 PER-PRODUCT FIELDS:
 
-  brand              — the perfume house (e.g. "Dior", "YSL", "Tom Ford",
-                       "Viktor & Rolf"). Strip supplier tags like
-                       "- PERFUMES ARABES -" from the brand column.
+  brand              — the perfume house (e.g. "Dior", "YSL",
+                       "Tom Ford", "Viktor & Rolf"). Strip supplier
+                       tags like "- PERFUMES ARABES -" from the value.
   product_name       — the perfume + line (e.g. "Sauvage", "Libre",
-                       "Flowerbomb Extreme"). Do NOT include size,
-                       concentration, or gender token in this field.
+                       "Flowerbomb Extreme"). Exclude size, format,
+                       and gender tokens from this field.
   range_name         — the umbrella range if any (e.g. Dior "Sauvage"
-                       covers Sauvage EDT / Sauvage EDP / Sauvage Elixir).
-                       Optional — leave null if none.
-  ean_code           — the barcode column value, verbatim, digits only.
-                       If the source row has a barcode, you MUST transcribe
-                       it — dropping the EAN silently is a HARD FAILURE.
-                       Strip separators ("3.348.901.234.567" → 12-digit
-                       string). Never fabricate.
+                       covers Sauvage EDT / EDP / Elixir). Optional.
+  ean_code           — the barcode / EAN / GTIN column value,
+                       transcribed digit-for-digit. Strip separators
+                       ("3.348.901.234.567" → "3348901234567"). If the
+                       source has no barcode column for the row, leave
+                       ean_code null — do not fabricate. If the source
+                       has a barcode, copy it as-is; when in doubt of
+                       one digit, copy your best reading rather than
+                       skip the whole product.
 
   perfume_format     — EDT | EDP | Parfum | Cologne | EDC | EDF.
-                       Read from the source: "EDP", "EDT", "Eau de Parfum",
-                       "EP" (= EDP), "ET" (= EDT). Leave null if absent.
-  unit_volume_ml     — bottle size in ml as a number. "100ml" → 100.
-                       "1.5ml", "7,5ml" → 1.5, 7.5. Leave null for sets.
-  gender             — men | women | unisex. Signals: "(M)/(H)/Homme/Pour
-                       Homme" = men; "(W)/(F)/Femme/Pour Femme/Donna" =
-                       women; "(U)/Unisex" explicitly = unisex. If NONE
-                       of those signals is present on the row, leave
-                       gender NULL. Do NOT default to unisex.
-  retail_state       — retail | tester | sample | miniature. ONLY set
-                       when the row explicitly says so ("Tester", "TST",
-                       "Sample", "SPL", "Mini", "Miniature"). Absence of
-                       "tester" is NOT retail — leave retail_state NULL
-                       so the peer group is not silently split.
+                       Read from the source: "EDP", "EDT", "Eau de
+                       Parfum", "EP" (= EDP), "ET" (= EDT). Null if
+                       absent.
+  unit_volume_ml     — bottle size in ml (100ml → 100; 1.5ml → 1.5;
+                       "7,5ml" → 7.5). Leave null for gift sets.
+  gender             — men | women | unisex. Populate ONLY when the
+                       source explicitly says so: "(M)/(H)/Homme/Pour
+                       Homme" = men, "(W)/(F)/Femme/Pour Femme/Donna"
+                       = women, "(U)/Unisex" (explicit) = unisex.
+                       Otherwise leave gender null.
+  retail_state       — retail | tester | sample | miniature. Populate
+                       ONLY when the source uses one of those words
+                       ("Tester", "TST", "Sample", "SPL", "Mini").
+                       Absence of "tester" is not "retail" — leave
+                       retail_state null when the source is silent.
   refillable_status  — "Refillable" if the source uses that word; else
-                       "NRF" (non-refillable). Optional.
+                       "NRF". Optional.
 
-COMMERCIAL FIELDS (populate from source row / header):
+COMMERCIAL FIELDS (populate from row + document header):
   price_per_unit, currency, incoterm, location, offer_date,
   supplier_name, supplier_reference, quantity_case, quantity_unit,
   moq_cases (if present).
 
-SET the category_slug field on every product to exactly "perfumes".
+SET category_slug = "perfumes" on every product.
 
-WHAT NOT TO DO:
-  • Do not skip a row because it looks similar to one earlier on the
-    page — different volume, different concentration, or different
-    gender make it a distinct SKU.
-  • Do not merge tester rows with retail rows.
-  • Do not invent gender/retail_state when the source is silent.
+Do not merge different volumes / concentrations / gender variants of
+the same product into one row — each is a distinct SKU.
 
 RETURN FORMAT: {"products":[{...}, ...]}
 """
