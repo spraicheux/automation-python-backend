@@ -172,13 +172,15 @@ def rules_for_category(category: str, shared_omnibus: str) -> str:
     """
     Return the rule block to embed into an extraction prompt.
 
-    W&S keeps the existing omnibus rules — that path is validated in
-    production and shouldn't change. Perfumes and cosmetics get the
-    slim, focused prompts above so the LLM's attention isn't consumed
-    by wine-vintage / age-statement / bottle-can rules that don't apply.
+    The slim PERFUMES_RULES / COSMETICS_RULES blocks were an attempt to
+    reduce prompt weight so the LLM would stop silently dropping large
+    swathes of dense multi-page perfume PDFs. In production the slim
+    prompt did not improve extraction completeness beyond the omnibus
+    baseline — both stalled at the same ceiling on the FBC file. Until
+    the true root cause is diagnosed offline (likely mid-prompt strict
+    "HARD FAILURE" wording carrying over even after removal), the
+    router falls back to the omnibus so behaviour stays at the
+    known-working state for every category. The slim blocks are kept
+    here for future reactivation once the root cause is fixed.
     """
-    if category == "perfumes":
-        return PERFUMES_RULES
-    if category == "cosmetics":
-        return COSMETICS_RULES
     return shared_omnibus

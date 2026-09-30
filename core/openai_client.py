@@ -102,22 +102,19 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      that differ only on EDT vs EDP MUST NOT collapse into one SKU;
      same for a Rouge Coco Bloom in shades 91 vs 116.
 
-0.235 EAN / BARCODE / GTIN — 100 % CAPTURE WHEN THE COLUMN EXISTS
+0.235 EAN / BARCODE / GTIN
       A "Barcode", "EAN", "GTIN", "UPC" or "Code" column on the source
-      row IS the ean_code field. If that column exists on the sheet /
-      PDF, EVERY product row's numeric value MUST be transcribed to
-      `ean_code` verbatim. This is a hard requirement — dropping an EAN
-      because the row is far down the table or looks similar to another
-      is a HARD FAILURE.
+      row maps to the ean_code field. When the source has such a column,
+      copy the digits into ean_code for every product row.
       Valid EAN lengths: 8 (EAN-8), 12 (UPC), 13 (EAN-13), 14 (GTIN-14).
       Transcribe as a plain digit string (no spaces, dashes, or dots).
       If the source shows "3.348.901.234.567" or "3-348-901-234-567",
       strip the separators → "3348901234567".
-      If the row has NO barcode column at all, leave `ean_code` null —
+      If the row has no barcode column at all, leave `ean_code` null —
       never fabricate.
-      Common failure mode to avoid: extracting the first 40 rows'
-      barcodes correctly and then silently omitting the rest for the
-      remaining 60. Every row with a barcode column MUST carry its EAN.
+      Emit a product row regardless of whether its EAN is easy or hard
+      to read; skipping a product because its EAN looks ambiguous is
+      worse than emitting the product with a best-effort EAN.
 
 0.24 THREE DISTINCT CONCEPTS — DO NOT MIX
      Bottle Size (unit_volume_ml)     = the physical bottle (700ml, 1L…)
