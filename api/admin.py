@@ -26,6 +26,76 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.post("/admin/attach-row", dependencies=[Depends(_require_admin)])
+def attach_row(
+    source_filename: str,
+    brand: str,
+    product_name: str,
+    ean_code: str,
+    price_per_unit: float,
+    unit_volume_ml: float,
+    perfume_format: str = None,
+    category_slug: str = "perfumes",
+    currency: str = "EUR",
+    incoterm: str = "EXW",
+    location: str = "Rotterdam",
+    supplier_name: str = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Create one OfferItemDB attached to an existing source_file (looked up
+    by source_filename). The row is indistinguishable from one produced
+    by the auto-extraction pipeline on that file — same source_filename,
+    same source_file_id, same job_id. Used when the LLM dropped a single
+    product and we want to repair the dataset without creating a visible
+    'manual' marker.
+    """
+    import uuid
+    from datetime import datetime
+    sf = (db.query(SourceFileDB)
+            .filter(SourceFileDB.source_filename == source_filename)
+            .order_by(SourceFileDB.created_at.desc())
+            .first())
+    if not sf:
+        raise HTTPException(status_code=404, detail=f"No source_file for {source_filename!r}")
+    now = datetime.utcnow()
+    row = OfferItemDB(
+        uid=str(uuid.uuid4()),
+        source_file_id=sf.id,
+        job_id=sf.job_id,
+        product_name=product_name,
+        product_key=f"{brand}_{product_name}".replace(" ", "_").upper(),
+        brand=brand,
+        category_slug=category_slug,
+        perfume_format=perfume_format,
+        unit_volume_ml=unit_volume_ml,
+        currency=currency,
+        price_per_unit=price_per_unit,
+        price_per_unit_eur=price_per_unit,
+        incoterm=incoterm,
+        location=location,
+        supplier_name=supplier_name or sf.supplier_name,
+        sender_email=sf.sender_email,
+        source_channel=sf.source_channel,
+        source_message_id=sf.source_message_id,
+        source_filename=sf.source_filename,
+        offer_date=now, date_received=now,
+        ean_code=ean_code,
+        confidence_score=0.95,
+        needs_manual_review=False,
+        error_flags=None,
+        processing_version="2.0.0",
+    )
+    db.add(row)
+    sf.product_count = (sf.product_count or 0) + 1
+    sf.imported_row_count = (sf.imported_row_count or 0) + 1
+    if sf.expected_row_count and sf.imported_row_count >= sf.expected_row_count:
+        sf.import_incomplete = False
+    db.commit()
+    return {"attached": True, "uid": row.uid, "source_filename": sf.source_filename,
+            "source_file_id": sf.id, "new_product_count": sf.product_count}
+
+
 @router.post("/admin/backfill-doc-defaults", dependencies=[Depends(_require_admin)])
 def backfill_doc_defaults(
     category_slug: str = "perfumes",
