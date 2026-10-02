@@ -86,12 +86,21 @@ def attach_row(
         error_flags=None,
         processing_version="2.0.0",
     )
-    db.add(row)
-    sf.product_count = (sf.product_count or 0) + 1
-    sf.imported_row_count = (sf.imported_row_count or 0) + 1
-    if sf.expected_row_count and sf.imported_row_count >= sf.expected_row_count:
-        sf.import_incomplete = False
-    db.commit()
+    try:
+        db.add(row)
+        sf.product_count = (sf.product_count or 0) + 1
+        sf.imported_row_count = (sf.imported_row_count or 0) + 1
+        if sf.expected_row_count and sf.imported_row_count >= sf.expected_row_count:
+            sf.import_incomplete = False
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        import traceback as _tb
+        raise HTTPException(status_code=500, detail={
+            "error": "attach_failed",
+            "exception": f"{type(e).__name__}: {e}",
+            "trace": _tb.format_exc()[-2000:],
+        })
     return {"attached": True, "uid": row.uid, "source_filename": sf.source_filename,
             "source_file_id": sf.id, "new_product_count": sf.product_count}
 
