@@ -1400,13 +1400,21 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     return fallback_result
 
                 if all_extracted_products:
+                    # Same reason as PDF path: pass back the raw document
+                    # text so apply_deterministic_defaults can parse the
+                    # XLSX header for currency/incoterm/location signals
+                    # (e.g. the "EXW NL" / currency column) instead of
+                    # relying on the email body alone.
+                    _xlsx_text = (" ".join(str(c) for c in df.columns) + "\n" +
+                                  "\n".join(" ".join(str(v) for v in row) for _, row in df.iterrows()))
                     result = {
                         'products': all_extracted_products,
                         'total_products': len(all_extracted_products),
                         'file_type': 'excel',
                         'processed_in_batches': True,
                         'batches_processed': (total_rows + batch_size - 1) // batch_size,
-                        'original_rows': total_rows
+                        'original_rows': total_rows,
+                        'source_text': _xlsx_text,
                     }
                     logger.info(f"[extract_from_file] ===== END EXCEL — returning {len(all_extracted_products)} products =====")
                     return result
@@ -1632,6 +1640,13 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
 
                 logger.info(f"[extract_from_file] PDF processing complete — total products: {len(all_pdf_products)}")
 
+                # Join the raw page text so the caller can run
+                # deterministic header rules (currency / incoterm / location
+                # / supplier) against the actual document content rather
+                # than only the surrounding email body — otherwise an
+                # attachment-only ingest never sees "EXW Rotterdam" and
+                # all rows the LLM didn't tag land with Not Found.
+                _joined_pdf_text = "\n".join(pt for _, pt in pages_text)
                 if all_pdf_products:
                     return {
                         'products': all_pdf_products,
@@ -1639,11 +1654,13 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         'file_type': 'pdf',
                         'processed_in_batches': True,
                         'batches_processed': total_pdf_batches,
-                        'original_pages': total_pages
+                        'original_pages': total_pages,
+                        'source_text': _joined_pdf_text,
                     }
                 else:
                     logger.warning(f"[extract_from_file] No products extracted from PDF — returning empty result")
-                    return {"products": [], "error": "No products extracted from PDF"}
+                    return {"products": [], "error": "No products extracted from PDF",
+                            "source_text": _joined_pdf_text}
 
             except ImportError:
                 logger.error(f"[extract_from_file] PyPDF2 is NOT installed — cannot process PDF")

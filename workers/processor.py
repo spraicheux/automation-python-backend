@@ -544,6 +544,17 @@ async def process_offer(payload, job_id: str):
                         if file_extracted:
                             logger.info(f"File extraction completed for {file_name}")
 
+                            # Capture the raw document text so the
+                            # deterministic-defaults pass later can parse
+                            # "EXW Rotterdam / EUR / FBC Trades" from the
+                            # actual PDF / XLSX content rather than the
+                            # (usually-empty) email body on an
+                            # attachment-only ingest.
+                            if file_extracted.get('source_text'):
+                                extracted_data.setdefault('_source_texts', []).append(
+                                    file_extracted['source_text']
+                                )
+
                             # Check if this is multiple products from Excel
                             if 'products' in file_extracted and isinstance(file_extracted['products'], list):
                                 logger.info(f"Found {len(file_extracted['products'])} products in Excel file")
@@ -594,6 +605,11 @@ async def process_offer(payload, job_id: str):
             header_text = (payload.text_body or "")
             if payload.attachments:
                 header_text = f"Subject: {payload.subject or ''}\nFrom: {payload.sender_email or ''}\n\n" + header_text
+            # Append the raw document text(s) so header detection sees
+            # "EXW Rotterdam (EUR)", "FBC Trades", etc. — not just the
+            # surrounding email metadata.
+            for _doc_text in (extracted_data.get('_source_texts') or []):
+                header_text = header_text + "\n\n" + _doc_text
             all_products, drule_corrections = apply_deterministic_defaults(
                 all_products, header_text,
                 source_filename=payload.source_filename,
