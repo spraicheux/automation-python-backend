@@ -201,8 +201,13 @@ def apply_deterministic_defaults(products: list, source_text: str,
                 corrections.append(f"Row {i+1}: currency=None → {doc_currency} (inherited from document header)")
 
         # ── incoterm ────────────────────────────────────────────────────
-        # Same principle: only fill blanks, never override.
-        if doc_incoterm and not (p.get("incoterm") or "").strip():
+        # Only fill blanks, never override. "Not Found" is a sentinel the
+        # LLM uses for absent values and must be treated as blank — otherwise
+        # the deterministic header inheritance (e.g. the FBC PDF's
+        # "Prices - EXW Rotterdam (EUR)") only propagates to the subset of
+        # rows the LLM happened to tag and leaves the rest with "Not Found".
+        row_inco = (p.get("incoterm") or "").strip()
+        if doc_incoterm and (not row_inco or row_inco.lower() == "not found"):
             p["incoterm"] = doc_incoterm
             corrections.append(f"Row {i+1}: incoterm=None → {doc_incoterm} (inherited from document header)")
 

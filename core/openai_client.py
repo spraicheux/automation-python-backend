@@ -1565,6 +1565,45 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         batch_products = result.get('products', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: AI returned {len(batch_products)} product(s)")
 
+                        # ── Zero-product retry (Phase 3 M1 — 95/95 fix) ──
+                        # Observed on the FBC PDF: the extractor on dense
+                        # last-page batches would occasionally return a
+                        # valid-JSON `{"products": []}` and silently drop
+                        # 15+ real product rows. Measured against a cheap
+                        # barcode-count on the page text we can detect this
+                        # and give the LLM one more attempt with a tighter
+                        # prompt that names the expected count — this costs
+                        # one extra batch call ONLY when we got zero on a
+                        # page that visibly carries products.
+                        if len(batch_products) == 0 and _expected_hint >= 3:
+                            logger.warning(
+                                f"[extract_from_file] PDF Batch {batch_num}: 0 products but page has "
+                                f"{_expected_hint} barcode-like lines — retrying once with explicit count"
+                            )
+                            retry_prompt = (
+                                f"The PDF page below contains approximately {_expected_hint} product rows. "
+                                f"Return exactly one JSON product entry for every row that has a barcode and a price. "
+                                f"Document is classified as {_doc_category!r}; set category_slug={_doc_category!r} on each product. "
+                                f"Return ONLY {{\"products\":[{{...}}, ...]}}.\n\n"
+                                f"PDF TEXT:\n{combined_text}"
+                            )
+                            try:
+                                retry_resp = await client.chat.completions.create(
+                                    model="gpt-4o",
+                                    messages=[
+                                        {"role": "system", "content": f"You extract {_doc_category.replace('_',' & ')} products. Emit one entry per source row."},
+                                        {"role": "user", "content": retry_prompt},
+                                    ],
+                                    response_format={"type": "json_object"},
+                                    temperature=0.0, max_tokens=16000,
+                                )
+                                retry_content = retry_resp.choices[0].message.content
+                                retry_result = json.loads(retry_content)
+                                batch_products = retry_result.get('products', []) if isinstance(retry_result, dict) else []
+                                logger.info(f"[extract_from_file] PDF Batch {batch_num} RETRY: AI returned {len(batch_products)} product(s)")
+                            except Exception as retry_err:
+                                logger.error(f"[extract_from_file] PDF Batch {batch_num} RETRY failed: {retry_err}")
+
                         cleaned_batch = []
                         for p_idx, product in enumerate(batch_products):
                             logger.info(f"[extract_from_file] PDF Batch {batch_num}, Product {p_idx + 1}: product_name={product.get('product_name')!r}, price_per_unit={product.get('price_per_unit')!r}, price_per_case={product.get('price_per_case')!r}, units_per_case={product.get('units_per_case')!r}, gift_box={product.get('gift_box')!r}")

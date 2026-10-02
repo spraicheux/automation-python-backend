@@ -26,6 +26,63 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.post("/admin/backfill-doc-defaults", dependencies=[Depends(_require_admin)])
+def backfill_doc_defaults(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Re-apply deterministic document-header defaults (incoterm / location /
+    supplier / currency) to already-ingested rows where the LLM output
+    "Not Found" and the earlier pass's blank-check didn't treat it as
+    empty. Deterministic — no OpenAI calls.
+    """
+    from core.deterministic_rules import (
+        detect_document_incoterm, detect_document_location,
+        detect_supplier_from_metadata,
+    )
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+    changes = {"incoterm": 0, "location": 0, "supplier": 0}
+    sample = []
+    # Group by source filename so we only derive the header defaults once per file.
+    by_file = {}
+    for r in rows:
+        by_file.setdefault(r.source_filename, []).append(r)
+    for fname, group in by_file.items():
+        if not fname:
+            continue
+        # Treat the first row's extracted values + filename as a cheap
+        # proxy for the document header. For FBC Trades specifically the
+        # filename alone resolves to EXW / Rotterdam / FBC Trades via the
+        # existing deterministic detectors.
+        hay = f"{fname} " + " ".join(
+            (f"{r.incoterm} {r.location} {r.supplier_name} {r.product_name}")
+            for r in group[:5]
+        )
+        doc_inco = detect_document_incoterm(hay) or "EXW" if "exw" in hay.lower() else detect_document_incoterm(hay)
+        doc_loc = detect_document_location(hay)
+        doc_sup = detect_supplier_from_metadata(hay, source_filename=fname, sender_email=(group[0].sender_email or ""))
+        for r in group:
+            if doc_inco and str(r.incoterm or "").strip().lower() in ("", "not found"):
+                if apply: r.incoterm = doc_inco
+                changes["incoterm"] += 1
+                if len(sample) < 10:
+                    sample.append({"uid": r.uid, "field": "incoterm", "from": r.incoterm, "to": doc_inco, "file": fname})
+            if doc_loc and str(r.location or "").strip().lower() in ("", "not found"):
+                if apply: r.location = doc_loc
+                changes["location"] += 1
+            if doc_sup and str(r.supplier_name or "").strip().lower() in ("", "not found"):
+                if apply: r.supplier_name = doc_sup
+                changes["supplier"] += 1
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "rows_examined": len(rows), "changes": changes, "sample": sample}
+
+
 @router.post("/admin/backfill-loose-case-zero", dependencies=[Depends(_require_admin)])
 def backfill_loose_case_zero(
     category_slug: str = "perfumes",
