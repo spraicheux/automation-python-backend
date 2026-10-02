@@ -50,59 +50,60 @@ def attach_row(
     product and we want to repair the dataset without creating a visible
     'manual' marker.
     """
-    import uuid
+    import uuid, traceback
     from datetime import datetime
-    sf = (db.query(SourceFileDB)
-            .filter(SourceFileDB.source_filename == source_filename)
-            .order_by(SourceFileDB.created_at.desc())
-            .first())
-    if not sf:
-        raise HTTPException(status_code=404, detail=f"No source_file for {source_filename!r}")
-    now = datetime.utcnow()
-    row = OfferItemDB(
-        uid=str(uuid.uuid4()),
-        source_file_id=sf.id,
-        job_id=sf.job_id,
-        product_name=product_name,
-        product_key=f"{brand}_{product_name}".replace(" ", "_").upper(),
-        brand=brand,
-        category_slug=category_slug,
-        perfume_format=perfume_format,
-        unit_volume_ml=unit_volume_ml,
-        currency=currency,
-        price_per_unit=price_per_unit,
-        price_per_unit_eur=price_per_unit,
-        incoterm=incoterm,
-        location=location,
-        supplier_name=supplier_name or sf.supplier_name,
-        sender_email=sf.sender_email,
-        source_channel=sf.source_channel,
-        source_message_id=sf.source_message_id,
-        source_filename=sf.source_filename,
-        offer_date=now, date_received=now,
-        ean_code=ean_code,
-        confidence_score=0.95,
-        needs_manual_review=False,
-        error_flags=None,
-        processing_version="2.0.0",
-    )
     try:
+        sf = (db.query(SourceFileDB)
+                .filter(SourceFileDB.source_filename == source_filename)
+                .order_by(SourceFileDB.created_at.desc())
+                .first())
+        if not sf:
+            raise HTTPException(status_code=404, detail=f"No source_file for {source_filename!r}")
+        now = datetime.utcnow()
+        row = OfferItemDB(
+            uid=str(uuid.uuid4()),
+            source_file_id=sf.id,
+            job_id=sf.job_id,
+            product_name=product_name,
+            product_key=f"{brand}_{product_name}".replace(" ", "_").upper(),
+            brand=brand,
+            category_slug=category_slug,
+            perfume_format=perfume_format,
+            unit_volume_ml=unit_volume_ml,
+            currency=currency,
+            price_per_unit=price_per_unit,
+            price_per_unit_eur=price_per_unit,
+            incoterm=incoterm,
+            location=location,
+            supplier_name=supplier_name or sf.supplier_name,
+            sender_email=sf.sender_email,
+            source_channel=sf.source_channel,
+            source_message_id=sf.source_message_id,
+            source_filename=sf.source_filename,
+            offer_date=now, date_received=now,
+            ean_code=ean_code,
+            confidence_score=0.95,
+            needs_manual_review=False,
+            processing_version="2.0.0",
+        )
         db.add(row)
         sf.product_count = (sf.product_count or 0) + 1
         sf.imported_row_count = (sf.imported_row_count or 0) + 1
         if sf.expected_row_count and sf.imported_row_count >= sf.expected_row_count:
             sf.import_incomplete = False
         db.commit()
+        return {"attached": True, "uid": row.uid, "source_filename": sf.source_filename,
+                "source_file_id": sf.id, "new_product_count": sf.product_count}
+    except HTTPException:
+        raise
     except Exception as e:
-        db.rollback()
-        import traceback as _tb
+        try: db.rollback()
+        except Exception: pass
         raise HTTPException(status_code=500, detail={
             "error": "attach_failed",
             "exception": f"{type(e).__name__}: {e}",
-            "trace": _tb.format_exc()[-2000:],
+            "trace": traceback.format_exc()[-2000:],
         })
-    return {"attached": True, "uid": row.uid, "source_filename": sf.source_filename,
-            "source_file_id": sf.id, "new_product_count": sf.product_count}
 
 
 @router.post("/admin/backfill-doc-defaults", dependencies=[Depends(_require_admin)])
