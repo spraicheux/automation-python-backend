@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.deterministic_rules import detect_supplier_from_metadata
 from models.offer_item import OfferItemDB
+from models.source_file import SourceFileDB
 
 
 router = APIRouter()
