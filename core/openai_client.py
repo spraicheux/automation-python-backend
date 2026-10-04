@@ -1684,29 +1684,31 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         f"{_source_row_estimate} barcodes — attempting recovery "
                         f"of {len(_missing)} missed EAN(s)"
                     )
+                    _missing_list = sorted(_missing)[:50]
                     recovery_prompt = (
-                        f"The following EAN / UPC / GTIN codes appear in this document "
-                        f"but were not extracted on the first pass:\n"
-                        + "\n".join(sorted(_missing)[:50])
-                        + f"\n\nReturn one product entry PER missing EAN, drawn only "
-                          f"from the DOCUMENT TEXT below. Set category_slug={_doc_category!r}. "
-                          f"Copy ean_code digit-for-digit from the source — never guess. "
-                          f"If a listed EAN appears nowhere in the text, skip it. "
-                          f"Return JSON: {{\"products\":[{{...}}, ...]}}.\n\n"
-                          f"DOCUMENT TEXT:\n{_joined_pdf_text}"
+                        f"The following EAN / UPC / GTIN codes are present in the document text below but were not emitted on the first extraction pass. Each code corresponds to exactly one product line in the text.\n\n"
+                        f"EANs TO RECOVER:\n"
+                        + "\n".join(f"  - {e}" for e in _missing_list)
+                        + f"\n\nTASK: For each EAN above, FIND the product row that contains it in the document text, then emit ONE product object with the usual fields (brand, product_name, perfume_format if applicable, unit_volume_ml, ean_code, price_per_unit, currency, incoterm, location). Set category_slug={_doc_category!r} on every product. Copy ean_code digit-for-digit from the source text.\n\n"
+                        f"IMPORTANT: You MUST return exactly {len(_missing_list)} products. Do not merge, skip, or de-duplicate — every listed EAN is a distinct product.\n\n"
+                        f"Return JSON: {{\"products\":[{{...}}, ...]}}.\n\n"
+                        f"DOCUMENT TEXT:\n{_joined_pdf_text}"
                     )
                     try:
+                        logger.info(f"[extract_from_file] PDF integrity recovery: asking LLM for {len(_missing_list)} missing EAN(s): {_missing_list}")
                         _rec_resp = await client.chat.completions.create(
                             model="gpt-4o",
                             messages=[
                                 {"role": "system",
-                                 "content": f"You extract {_doc_category.replace('_',' & ')} products. Emit one entry per EAN requested, drawn from the supplied text, no fabrications."},
+                                 "content": f"You extract {_doc_category.replace('_',' & ')} products from a supplier PDF. You emit EXACTLY one product per EAN the user requests, drawn from the document text they supply. Never return fewer products than EANs listed."},
                                 {"role": "user", "content": recovery_prompt},
                             ],
                             response_format={"type": "json_object"},
                             temperature=0.0, max_tokens=16000,
                         )
-                        _rec_result = json.loads(_rec_resp.choices[0].message.content)
+                        _rec_content = _rec_resp.choices[0].message.content
+                        logger.info(f"[extract_from_file] PDF integrity recovery raw response ({len(_rec_content)} chars): {_rec_content[:600]!r}")
+                        _rec_result = json.loads(_rec_content)
                         _rec_products = _rec_result.get('products', []) if isinstance(_rec_result, dict) else []
                         logger.info(f"[extract_from_file] PDF integrity recovery returned {len(_rec_products)} product(s)")
                         for _p in _rec_products:
