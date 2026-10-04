@@ -1659,9 +1659,13 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 # counts — not a per-row dataset repair.
                 import re as _re_src
                 _src_barcodes = set()
+                # Accept 8-14 digit sequences; many sources ship truncated
+                # UPC-A values (11 digits, leading zero dropped), which
+                # are still legitimate product rows — the EAN repair step
+                # pads them back on save.
                 for _m in _re_src.finditer(r"(?<!\d)(\d{8,14})(?!\d)\s+[\d.]+", _joined_pdf_text):
                     _b = _m.group(1)
-                    if len(_b) in (8, 12, 13, 14):
+                    if 8 <= len(_b) <= 14:
                         _src_barcodes.add(_b.lstrip("0"))
                 _extracted_eans = {str(p.get('ean_code', '')).lstrip('0')
                                    for p in all_pdf_products if p.get('ean_code')}
