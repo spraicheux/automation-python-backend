@@ -1442,9 +1442,15 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
             # the LLM was dropping rows at 5 pages/batch. Small batches
             # keep every row in the model's active attention window.
             try:
-                import PyPDF2
+                # Use modern pypdf (not PyPDF2 3.x) — PyPDF2 3.0.1
+                # concatenates all tokens on a line (e.g. "60ML62911001317
+                # 1627" with no space between size, barcode and price),
+                # which breaks the barcode-regex ground-truth counter
+                # downstream. pypdf 4+ preserves whitespace so the regex
+                # cleanly separates "60ML 6291100131716 27".
+                import pypdf
                 with open(file_path, 'rb') as file:
-                    pdf_reader = PyPDF2.PdfReader(file)
+                    pdf_reader = pypdf.PdfReader(file)
                     num_pages = len(pdf_reader.pages)
                     logger.info(f"[extract_from_file] PDF has {num_pages} page(s)")
 
