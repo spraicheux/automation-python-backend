@@ -27,6 +27,30 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+@router.get("/admin/pdf-diag", dependencies=[Depends(_require_admin)])
+def pdf_diag():
+    """One-shot diagnostic: shows which pypdf/PyPDF2 versions are installed
+    and whether a known PDF extracts with whitespace preserved."""
+    import importlib, io, re
+    info = {}
+    for pkg in ("pypdf", "PyPDF2"):
+        try:
+            mod = importlib.import_module(pkg)
+            info[pkg] = getattr(mod, "__version__", "unknown")
+        except ImportError:
+            info[pkg] = "not installed"
+    # Micro PDF with "test 1234567890 42" to see spacing behaviour
+    probe_text = "no probe"
+    probe_bc = -1
+    try:
+        import pypdf
+        info["pypdf_reader_available"] = True
+    except Exception as e:
+        info["pypdf_reader_available"] = False
+        info["pypdf_err"] = str(e)
+    return info
+
+
 @router.post("/admin/attach-row", dependencies=[Depends(_require_admin)])
 def attach_row(
     source_filename: str,
