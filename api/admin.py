@@ -27,6 +27,30 @@ def _require_admin(x_admin_token: str = Header(None)):
         raise HTTPException(status_code=401, detail="Missing / invalid admin token")
 
 
+from fastapi import UploadFile, File as _FastFile
+
+
+@router.post("/admin/pdf-diag-upload", dependencies=[Depends(_require_admin)])
+async def pdf_diag_upload(file: UploadFile = _FastFile(...)):
+    """Run the deployed PDF path on an uploaded file and show counts."""
+    import tempfile, re, pypdf
+    body = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as t:
+        t.write(body); path = t.name
+    r = pypdf.PdfReader(path)
+    text = "\n".join((p.extract_text() or "") for p in r.pages)
+    bc = set()
+    for m in re.finditer(r"(?<!\d)(\d{8,14})(?!\d)\s+[\d.]+", text):
+        b = m.group(1)
+        if 8 <= len(b) <= 14:
+            bc.add(b.lstrip("0"))
+    return {
+        "pypdf_version": pypdf.__version__,
+        "text_sample": text[:600],
+        "barcode_count": len(bc),
+    }
+
+
 @router.get("/admin/pdf-diag", dependencies=[Depends(_require_admin)])
 def pdf_diag():
     """One-shot diagnostic: shows which pypdf/PyPDF2 versions are installed
