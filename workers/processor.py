@@ -554,6 +554,15 @@ async def process_offer(payload, job_id: str):
                                 extracted_data.setdefault('_source_texts', []).append(
                                     file_extracted['source_text']
                                 )
+                            # Ground-truth source-row count (from the
+                            # extractor's barcode regex on the raw PDF /
+                            # row count on XLSX). Written to
+                            # source_files.expected_row_count so the
+                            # import_incomplete flag reflects
+                            # source-vs-imported, not LLM-vs-imported.
+                            if file_extracted.get('source_row_estimate') is not None:
+                                extracted_data['_source_row_estimate'] = \
+                                    file_extracted['source_row_estimate']
 
                             # Check if this is multiple products from Excel
                             if 'products' in file_extracted and isinstance(file_extracted['products'], list):
@@ -817,7 +826,7 @@ async def process_offer(payload, job_id: str):
                     # Phase 3 M1: thread content-hash + source-row estimate
                     # so save_offer_to_db can persist them on the SourceFileDB.
                     offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
-                    offer_dict["_expected_row_count"] = len(all_products)
+                    offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
 
                     if not is_valid_offer(offer_dict):
                         logger.info(
@@ -987,7 +996,7 @@ async def process_offer(payload, job_id: str):
                 offer_dict = offer.model_dump(mode='json')
                 # Phase 3 M1: thread content-hash + source-row estimate
                 offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
-                offer_dict["_expected_row_count"] = len(all_products)
+                offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
 
                 # Loose-unit €/case cleanup — see multi-product path above.
                 upc = offer_dict.get("units_per_case")

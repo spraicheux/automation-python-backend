@@ -102,19 +102,25 @@ RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
      that differ only on EDT vs EDP MUST NOT collapse into one SKU;
      same for a Rouge Coco Bloom in shades 91 vs 116.
 
-0.235 EAN / BARCODE / GTIN
+0.235 EAN / BARCODE / GTIN — EXACT TRANSCRIPTION ONLY
       A "Barcode", "EAN", "GTIN", "UPC" or "Code" column on the source
-      row maps to the ean_code field. When the source has such a column,
-      copy the digits into ean_code for every product row.
+      row maps to the ean_code field. Copy the digits VERBATIM from the
+      source — never guess, never synthesise, never substitute a visually
+      similar digit, never pad or truncate to reach a valid length.
       Valid EAN lengths: 8 (EAN-8), 12 (UPC), 13 (EAN-13), 14 (GTIN-14).
       Transcribe as a plain digit string (no spaces, dashes, or dots).
       If the source shows "3.348.901.234.567" or "3-348-901-234-567",
       strip the separators → "3348901234567".
       If the row has no barcode column at all, leave `ean_code` null —
       never fabricate.
-      Emit a product row regardless of whether its EAN is easy or hard
-      to read; skipping a product because its EAN looks ambiguous is
-      worse than emitting the product with a best-effort EAN.
+      If the source barcode is partially unreadable, visually ambiguous,
+      or clearly not a standard EAN/GTIN length (e.g. 11 digits because
+      a leading zero was dropped in the source), leave `ean_code` null
+      AND add "ean_unreadable" to error_flags so a reviewer can confirm
+      from the raw source. A product with a null EAN is strictly better
+      than a product with a guessed EAN.
+      Still emit the product row: a missing EAN is NOT a reason to drop
+      the whole product.
 
 0.24 THREE DISTINCT CONCEPTS — DO NOT MIX
      Bottle Size (unit_volume_ml)     = the physical bottle (700ml, 1L…)
@@ -1640,13 +1646,68 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
 
                 logger.info(f"[extract_from_file] PDF processing complete — total products: {len(all_pdf_products)}")
 
-                # Join the raw page text so the caller can run
-                # deterministic header rules (currency / incoterm / location
-                # / supplier) against the actual document content rather
-                # than only the surrounding email body — otherwise an
-                # attachment-only ingest never sees "EXW Rotterdam" and
-                # all rows the LLM didn't tag land with Not Found.
                 _joined_pdf_text = "\n".join(pt for _, pt in pages_text)
+
+                # ── Integrity recovery pass (Phase 3 M1) ─────────────────
+                # Compute the ground-truth barcode count from the raw PDF
+                # text — a standard EAN/GTIN is 8, 12, 13 or 14 digits
+                # followed by a price. If the batches collectively produced
+                # fewer products than there are source barcodes, run ONE
+                # recovery call that re-asks the LLM for just the missed
+                # EANs with the full document text. This is a generic
+                # retry — same path for any file whose first pass under-
+                # counts — not a per-row dataset repair.
+                import re as _re_src
+                _src_barcodes = set()
+                for _m in _re_src.finditer(r"(?<!\d)(\d{8,14})(?!\d)\s+[\d.]+", _joined_pdf_text):
+                    _b = _m.group(1)
+                    if len(_b) in (8, 12, 13, 14):
+                        _src_barcodes.add(_b.lstrip("0"))
+                _extracted_eans = {str(p.get('ean_code', '')).lstrip('0')
+                                   for p in all_pdf_products if p.get('ean_code')}
+                _missing = _src_barcodes - _extracted_eans
+                _source_row_estimate = len(_src_barcodes)
+                if _missing and len(all_pdf_products) < _source_row_estimate:
+                    logger.warning(
+                        f"[extract_from_file] PDF integrity gap: extracted "
+                        f"{len(all_pdf_products)} products but source carries "
+                        f"{_source_row_estimate} barcodes — attempting recovery "
+                        f"of {len(_missing)} missed EAN(s)"
+                    )
+                    recovery_prompt = (
+                        f"The following EAN / UPC / GTIN codes appear in this document "
+                        f"but were not extracted on the first pass:\n"
+                        + "\n".join(sorted(_missing)[:50])
+                        + f"\n\nReturn one product entry PER missing EAN, drawn only "
+                          f"from the DOCUMENT TEXT below. Set category_slug={_doc_category!r}. "
+                          f"Copy ean_code digit-for-digit from the source — never guess. "
+                          f"If a listed EAN appears nowhere in the text, skip it. "
+                          f"Return JSON: {{\"products\":[{{...}}, ...]}}.\n\n"
+                          f"DOCUMENT TEXT:\n{_joined_pdf_text}"
+                    )
+                    try:
+                        _rec_resp = await client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {"role": "system",
+                                 "content": f"You extract {_doc_category.replace('_',' & ')} products. Emit one entry per EAN requested, drawn from the supplied text, no fabrications."},
+                                {"role": "user", "content": recovery_prompt},
+                            ],
+                            response_format={"type": "json_object"},
+                            temperature=0.0, max_tokens=16000,
+                        )
+                        _rec_result = json.loads(_rec_resp.choices[0].message.content)
+                        _rec_products = _rec_result.get('products', []) if isinstance(_rec_result, dict) else []
+                        logger.info(f"[extract_from_file] PDF integrity recovery returned {len(_rec_products)} product(s)")
+                        for _p in _rec_products:
+                            for _k in list(_p.keys()):
+                                if _p[_k] is None:
+                                    _p[_k] = "Not Found"
+                            all_pdf_products.append(clean_product_data(_p))
+                        logger.info(f"[extract_from_file] After integrity recovery: {len(all_pdf_products)} total products")
+                    except Exception as _rec_err:
+                        logger.error(f"[extract_from_file] PDF integrity recovery failed: {_rec_err}")
+
                 if all_pdf_products:
                     return {
                         'products': all_pdf_products,
@@ -1656,11 +1717,17 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         'batches_processed': total_pdf_batches,
                         'original_pages': total_pages,
                         'source_text': _joined_pdf_text,
+                        # Ground-truth source row count from barcode regex,
+                        # NOT the LLM's self-count. The caller writes this
+                        # to source_files.expected_row_count so the
+                        # incomplete flag reflects source vs imported.
+                        'source_row_estimate': _source_row_estimate,
                     }
                 else:
                     logger.warning(f"[extract_from_file] No products extracted from PDF — returning empty result")
                     return {"products": [], "error": "No products extracted from PDF",
-                            "source_text": _joined_pdf_text}
+                            "source_text": _joined_pdf_text,
+                            "source_row_estimate": _source_row_estimate}
 
             except ImportError:
                 logger.error(f"[extract_from_file] PyPDF2 is NOT installed — cannot process PDF")
