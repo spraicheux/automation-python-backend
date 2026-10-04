@@ -1057,7 +1057,11 @@ async def process_offer(payload, job_id: str):
             "source_info": {
                 "supplier": payload.supplier_name,
                 "attachments": len(payload.attachments) if payload.attachments else 0,
-                "file_processed": len(all_products) > 0
+                "file_processed": len(all_products) > 0,
+                # Diagnostic: so we can see what the extractor's barcode
+                # ground-truth said without needing server logs.
+                "source_row_estimate": extracted_data.get("_source_row_estimate"),
+                "all_products_count": len(all_products),
             }
         }
 
