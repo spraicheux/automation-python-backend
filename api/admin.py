@@ -160,6 +160,31 @@ def strip_info_flags(
             "rows_examined": len(rows), "rows_touched": moved}
 
 
+@router.get("/admin/orphan-check", dependencies=[Depends(_require_admin)])
+def orphan_check(source_filename: str, db: Session = Depends(get_db)):
+    """
+    List all OfferItemDB rows for a given source_filename including
+    rows that /api/records filters out (null product_name, invalid, etc).
+    Lets us find the ghost 96th row behind an over-incremented counter.
+    """
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.source_filename == source_filename)
+              .all())
+    out = []
+    for r in rows:
+        out.append({
+            "uid": r.uid,
+            "product_name": r.product_name,
+            "brand": r.brand,
+            "ean_code": r.ean_code,
+            "price_per_unit": r.price_per_unit,
+            "category_slug": r.category_slug,
+            "needs_manual_review": r.needs_manual_review,
+            "has_price": bool(r.price_per_unit or r.price_per_case),
+        })
+    return {"source_filename": source_filename, "total": len(rows), "rows": out[:200]}
+
+
 @router.get("/admin/pdf-diag", dependencies=[Depends(_require_admin)])
 def pdf_diag():
     """One-shot diagnostic: shows which pypdf/PyPDF2 versions are installed
