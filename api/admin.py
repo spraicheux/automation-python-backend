@@ -160,6 +160,63 @@ def strip_info_flags(
             "rows_examined": len(rows), "rows_touched": moved}
 
 
+@router.post("/admin/dedupe-source-rows", dependencies=[Depends(_require_admin)])
+def dedupe_source_rows(
+    source_filename: str,
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Collapse physical duplicates for a given source file. Two rows are
+    considered duplicates when they share every SKU-identifying field
+    (brand + product_name + unit_volume_ml + perfume_format +
+    retail_state + gender + shade + ean_code + price_per_unit). The
+    first row by created_at is kept, the rest are deleted and
+    source_files.product_count / imported_row_count are rolled back.
+    """
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.source_filename == source_filename)
+              .order_by(OfferItemDB.created_at.asc())
+              .all())
+    seen = {}
+    dupes = []
+    for r in rows:
+        key = (
+            (r.brand or "").strip().lower(),
+            (r.product_name or "").strip().lower(),
+            float(r.unit_volume_ml or 0),
+            (r.perfume_format or "").strip().lower(),
+            (r.retail_state or "").strip().lower(),
+            (r.gender or "").strip().lower(),
+            (r.shade or "").strip().lower(),
+            (r.ean_code or "").strip().lstrip("0"),
+            float(r.price_per_unit or 0),
+        )
+        if key in seen:
+            dupes.append({"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
+                          "ean": r.ean_code, "keep_uid": seen[key]})
+            if apply:
+                db.delete(r)
+        else:
+            seen[key] = r.uid
+    # Roll back the source_file counter by the number of deletions
+    sfs = (db.query(SourceFileDB)
+             .filter(SourceFileDB.source_filename == source_filename)
+             .all())
+    if apply and dupes:
+        for sf in sfs:
+            if sf.product_count is not None:
+                sf.product_count = max(0, sf.product_count - len(dupes))
+            if sf.imported_row_count is not None:
+                sf.imported_row_count = max(0, sf.imported_row_count - len(dupes))
+            if sf.expected_row_count is not None and sf.imported_row_count is not None:
+                sf.import_incomplete = sf.imported_row_count < sf.expected_row_count
+        db.commit()
+    return {"applied": apply, "source_filename": source_filename,
+            "scanned": len(rows), "duplicates_found": len(dupes),
+            "sample": dupes[:10]}
+
+
 @router.get("/admin/orphan-check", dependencies=[Depends(_require_admin)])
 def orphan_check(source_filename: str, db: Session = Depends(get_db)):
     """
