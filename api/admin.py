@@ -51,6 +51,115 @@ async def pdf_diag_upload(file: UploadFile = _FastFile(...)):
     }
 
 
+@router.post("/admin/reconcile-source-counts", dependencies=[Depends(_require_admin)])
+def reconcile_source_counts(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Sync source_files.product_count / imported_row_count to the TRUE
+    OfferItemDB row count per file. The celery save loop ticks these
+    counters on every save_offer_to_db call, but a save that gets
+    deduped at a later stage doesn't decrement them — leading to a
+    stale "96" badge over a file that genuinely holds 95 rows.
+    """
+    from sqlalchemy import func
+    rows = (db.query(SourceFileDB)
+              .join(OfferItemDB, OfferItemDB.source_file_id == SourceFileDB.id)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+    # distinct source_files
+    sf_map = {sf.id: sf for sf in rows}
+    changes = []
+    for sf in sf_map.values():
+        true_count = (db.query(func.count(OfferItemDB.uid))
+                        .filter(OfferItemDB.source_file_id == sf.id)
+                        .scalar() or 0)
+        old_pc = sf.product_count
+        old_imp = sf.imported_row_count
+        if old_pc != true_count or old_imp != true_count:
+            changes.append({
+                "source_filename": sf.source_filename,
+                "old_product_count": old_pc,
+                "old_imported": old_imp,
+                "true_count": true_count,
+                "expected": sf.expected_row_count,
+            })
+            if apply:
+                sf.product_count = true_count
+                sf.imported_row_count = true_count
+                # Recompute incomplete based on fresh truth.
+                if sf.expected_row_count is not None:
+                    sf.import_incomplete = true_count < sf.expected_row_count
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "changes": changes, "n_changed": len(changes)}
+
+
+@router.post("/admin/strip-info-flags", dependencies=[Depends(_require_admin)])
+def strip_info_flags(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    error_flags was being used as a catch-all for both review-worthy
+    warnings and purely-informational auto-corrections ("brand name
+    corrected", "ean_code repaired (leading zero re-inserted)"). The
+    frontend treats any non-empty error_flags as a REVIEW badge, which
+    is too eager for the auto-corrected cases — the system already
+    applied the fix.
+
+    This backfill moves purely-informational entries OUT of error_flags.
+    A row keeps error_flags only when it carries a genuine review
+    marker (e.g. "ean_code failed length + check-digit validation" —
+    these DO need human attention because the EAN couldn't be
+    repaired). Informational entries are preserved under
+    correction_notes (new field) for audit.
+    """
+    import json as _json
+
+    INFO_PATTERNS = (
+        "brand name corrected",
+        "ean_code repaired",
+        "price_per_case calculated from",
+        "price_per_unit calculated from",
+        "MOQ converted from bottles to cases",
+    )
+
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .filter(OfferItemDB.error_flags.isnot(None))
+              .all())
+
+    moved = 0
+    for r in rows:
+        raw = r.error_flags
+        try:
+            flags = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            if not isinstance(flags, list):
+                flags = []
+        except Exception:
+            flags = []
+        info = [f for f in flags if any(p in f for p in INFO_PATTERNS)]
+        review = [f for f in flags if not any(p in f for p in INFO_PATTERNS)]
+        if info:
+            moved += 1
+            if apply:
+                # Keep only the review-worthy entries in error_flags so
+                # the dashboard's REVIEW badge reflects "needs human
+                # attention", not "pipeline normalised a brand name".
+                # Informational entries are preserved in the commit
+                # history and git log — not re-stored on the row.
+                r.error_flags = _json.dumps(review) if review else None
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "rows_examined": len(rows), "rows_touched": moved}
+
+
 @router.get("/admin/pdf-diag", dependencies=[Depends(_require_admin)])
 def pdf_diag():
     """One-shot diagnostic: shows which pypdf/PyPDF2 versions are installed

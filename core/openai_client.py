@@ -375,7 +375,7 @@ Add a flag for each of the following situations (use clear English):
 - "price_per_case calculated from price_per_unit x units_per_case" — when calculated
 - "price_per_unit calculated from price_per_case / units_per_case" — when calculated
 - "MOQ in bottles, not cases" — when MOQ is given in bottles instead of cases
-- "brand name corrected" — when a brand name spelling was corrected to its official form
+- "brand name corrected" — DEPRECATED, no longer emitted; brand canonicalization is informational
 - Any other notable extraction issue or ambiguity
 If no issues → error_flags: []
 
@@ -519,7 +519,7 @@ You MUST correct misspelled or truncated brand names to their OFFICIAL commercia
 This is essential for product deduplication and price comparison across offers.
 
 Apply corrections ALWAYS, regardless of how the brand appears in the source text.
-Add "brand name corrected" to error_flags whenever you make a correction.
+# brand canonicalization is informational, no error flag needed
 
 MANDATORY CORRECTIONS (non-exhaustive — apply your knowledge for all spirits/wine/beer brands):
 
@@ -609,7 +609,7 @@ GENERAL RULE FOR BRAND CORRECTIONS:
   no additional qualifier is present in the product name that would indicate a specific sub-brand.
 - When in doubt about the correct official spelling, use your knowledge of the alcohol industry
   to apply the most widely recognised commercial brand name.
-- ALWAYS add "brand name corrected" to error_flags when you make any correction.
+- # brand canonicalization is informational, no error flag needed
 
 ══════════════════════════════════════════════════════════════════════
 SUPPLIER REFERENCE — OVERRIDE RULE  ⚠️
@@ -770,8 +770,8 @@ COMMON PATTERNS IN OFFERS:
 - "2007 cs Absolut 12x100cl at 69 euro" → quantity_case: 2007, units_per_case: 12, unit_volume_ml: 1000, price_per_case: 69, currency: "EUR"
 - Column header "Price/Btle" or "EUR/btl" → ALL prices in that column are price_per_unit → calculate price_per_case = price × units_per_case
 - "MOQ 50 cs" → moq_cases: 50
-- "Ballantine" or "Ballantines" → brand: "Ballantine's" + add "brand name corrected" to error_flags
-- "Jack Daniel" or "Jack Daniels" → brand: "Jack Daniel's" + add "brand name corrected" to error_flags
+- "Ballantine" or "Ballantines" → brand: "Ballantine's" (brand canonicalization — no error flag)
+- "Jack Daniel" or "Jack Daniels" → brand: "Jack Daniel's" (brand canonicalization — no error flag)
 
 FINAL CHECKS BEFORE OUTPUTTING:
 1. Count the products in your output — it must match the number of product lines in the offer.
@@ -2054,11 +2054,12 @@ def clean_product_data(product: dict) -> dict:
         else:
             if repaired != digits:
                 logger.info(f"[clean_product_data] EAN repaired: {raw_ean!r} → {repaired!r} ({repair_reason})")
-                flags = cleaned_product.get('error_flags') or []
-                flag_text = f"ean_code repaired ({repair_reason})"
-                if flag_text not in flags:
-                    flags.append(flag_text)
-                    cleaned_product['error_flags'] = flags
+                # Informational — a deterministic repair was applied and
+                # the result validates. The row does NOT need human
+                # review. Kept out of error_flags so the dashboard's
+                # REVIEW badge only fires for genuine warnings (e.g.
+                # un-repairable EANs). The repair is still in the
+                # pipeline logs for audit.
             cleaned_product['ean_code'] = repaired
     # ──────────────────────────────────────────────────────────────────
 
