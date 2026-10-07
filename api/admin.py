@@ -178,27 +178,56 @@ def dedupe_source_rows(
               .filter(OfferItemDB.source_filename == source_filename)
               .order_by(OfferItemDB.created_at.asc())
               .all())
-    seen = {}
-    dupes = []
-    for r in rows:
-        key = (
+
+    def _completeness_score(r):
+        # More-complete row wins when a duplicate is detected: a row with
+        # gender/retail_state/shade populated beats a row where those are
+        # null. The LLM sometimes catches the signal on one of the
+        # duplicates and misses it on the other; we keep the richer one.
+        return sum(1 for v in (r.gender, r.retail_state, r.shade,
+                               r.perfume_format, r.product_type)
+                   if v and str(v).strip())
+
+    def _canon_key(r):
+        # EAN-first dedup: same EAN + same brand/name/volume/price are
+        # the SAME SKU regardless of whether one row has gender filled
+        # and the other has it blank. Attribute asymmetry does NOT
+        # create a duplicate SKU (client §5 fallback). Only ACTIVELY
+        # conflicting critical attributes would — those are handled by
+        # the Best Prices resolver's attribute-conflict guard, not by
+        # dedup here.
+        return (
             (r.brand or "").strip().lower(),
             (r.product_name or "").strip().lower(),
             float(r.unit_volume_ml or 0),
-            (r.perfume_format or "").strip().lower(),
-            (r.retail_state or "").strip().lower(),
-            (r.gender or "").strip().lower(),
-            (r.shade or "").strip().lower(),
             (r.ean_code or "").strip().lstrip("0"),
             float(r.price_per_unit or 0),
         )
+
+    seen = {}  # key -> OfferItemDB (the kept row)
+    dupes = []
+    for r in rows:
+        key = _canon_key(r)
         if key in seen:
-            dupes.append({"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
-                          "ean": r.ean_code, "keep_uid": seen[key]})
-            if apply:
-                db.delete(r)
+            kept = seen[key]
+            # Pick the more-complete row as the keeper.
+            if _completeness_score(r) > _completeness_score(kept):
+                # Swap: current row wins, previously-seen row becomes the dupe.
+                dupes.append({"uid": kept.uid, "brand": kept.brand,
+                              "product_name": kept.product_name,
+                              "ean": kept.ean_code, "keep_uid": r.uid,
+                              "reason": "replaced by more-complete row"})
+                if apply:
+                    db.delete(kept)
+                seen[key] = r
+            else:
+                dupes.append({"uid": r.uid, "brand": r.brand,
+                              "product_name": r.product_name,
+                              "ean": r.ean_code, "keep_uid": kept.uid})
+                if apply:
+                    db.delete(r)
         else:
-            seen[key] = r.uid
+            seen[key] = r
     # Roll back the source_file counter by the number of deletions
     sfs = (db.query(SourceFileDB)
              .filter(SourceFileDB.source_filename == source_filename)

@@ -587,33 +587,40 @@ async def process_offer(payload, job_id: str):
         # Deduplicate products extracted from multiple sources (text body + attachments,
         # or the same product listed twice). Key on normalised name + volume + price.
         if all_products:
-            seen_keys = set()
-            deduped = []
-            for p in all_products:
-                # Dedup key must include the SKU-discriminating attributes
-                # (perfume_format EDT/EDP/Parfum, retail_state tester/retail,
-                # gender, shade) and the EAN. Previously the key was
-                # (name, volume, prices), which collided on the Police
-                # "To Be Born To Shine" EDT vs EDP pair (same name, same
-                # 40ml, same €8.50 — only the format and EAN differ) and
-                # silently dropped one at the processor level.
-                key = (
+            # EAN-first dedup: two product dicts that share brand +
+            # product_name + unit_volume_ml + ean_code + price are the
+            # SAME SKU regardless of attribute completeness. If one copy
+            # has gender populated and the other doesn't, keep the
+            # richer one — never emit two rows for the same physical
+            # product just because the LLM caught the signal on only
+            # one of the extractions. Perfume_format, retail_state,
+            # shade and product_type are NOT part of the dedup key —
+            # they're genuine SKU discriminators but a null-vs-populated
+            # mismatch does not create a new SKU (client §5 fallback).
+            def _canon_key(p):
+                return (
+                    (p.get("brand") or "").strip().lower(),
                     (p.get("product_name") or "").strip().lower(),
                     p.get("unit_volume_ml") or 0,
-                    p.get("price_per_unit") or 0,
-                    p.get("price_per_case") or 0,
-                    (p.get("perfume_format") or "").strip().lower(),
-                    (p.get("retail_state") or "").strip().lower(),
-                    (p.get("gender") or "").strip().lower(),
-                    (p.get("shade") or "").strip().lower(),
-                    (p.get("product_type") or "").strip().lower(),
                     (p.get("ean_code") or "").strip().lstrip("0"),
+                    p.get("price_per_unit") or 0,
                 )
-                if key in seen_keys:
+            def _completeness(p):
+                return sum(1 for v in (p.get("gender"), p.get("retail_state"),
+                                       p.get("shade"), p.get("perfume_format"),
+                                       p.get("product_type"))
+                           if v and str(v).strip())
+            kept = {}
+            for p in all_products:
+                k = _canon_key(p)
+                prev = kept.get(k)
+                if prev is None or _completeness(p) > _completeness(prev):
+                    if prev is not None:
+                        logger.info(f"Dedup: replacing '{prev.get('product_name')}' with more-complete copy")
+                    kept[k] = p
+                else:
                     logger.info(f"Dedup: dropping duplicate product '{p.get('product_name')}'")
-                    continue
-                seen_keys.add(key)
-                deduped.append(p)
+            deduped = list(kept.values())
             if len(deduped) != len(all_products):
                 logger.info(f"Dedup: {len(all_products)} → {len(deduped)} products")
             all_products = deduped
