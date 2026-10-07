@@ -27,7 +27,9 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
-    task_time_limit=3600,
+    # Task cap must be ≥ the per-task time_limit on process_document_task
+    # (currently 5700 for M2). An hour was too tight for M2's larger files.
+    task_time_limit=5700,
     broker_connection_retry_on_startup=True,
     broker_use_ssl=ssl_conf,
     redis_backend_use_ssl=ssl_conf,
@@ -36,7 +38,9 @@ celery_app.conf.update(
     broker_heartbeat_checkrate=2,
 
     broker_transport_options={
-        "visibility_timeout": 3600,
+        # visibility_timeout must be ≥ the longest task time_limit so a long-
+        # running M2 ingest (STOCK LIST ≈ 70 min) is not re-queued mid-run.
+        "visibility_timeout": 6000,
         "socket_keepalive": True,
         "socket_keepalive_options": {
             # socket.TCP_KEEPIDLE: 60,

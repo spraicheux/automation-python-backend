@@ -36,7 +36,10 @@ def get_or_create_eventloop():
 # catches it, marks the job "failed", and stops retrying.
 # time_limit is the hard kill switch so a truly-stuck worker can't monopolise the
 # celery slot on the B1 single-vCPU box.
-@celery_app.task(bind=True, max_retries=2, soft_time_limit=600, time_limit=900)
+# M2 file sizes: W23 221 rows ≈ 12 min, Cosmetics 268–281 ≈ 16 min, W39 761 ≈ 50 min,
+# STOCK LIST 1043 ≈ 70 min. 90 min soft / 95 min hard covers all of them with buffer.
+# Zwolle (2054, held) would need ~2.5h — bump before running that file.
+@celery_app.task(bind=True, max_retries=2, soft_time_limit=5400, time_limit=5700)
 def process_document_task(self, job_id: str, payload_dict: dict):
     try:
         logger.info(f"Celery processing started for JobID: {job_id}")
@@ -52,16 +55,18 @@ def process_document_task(self, job_id: str, payload_dict: dict):
 
         loop = get_or_create_eventloop()
 
-        # Hard timeout on the whole extraction (9 min). asyncio.wait_for works
+        # Hard timeout on the whole extraction (90 min). asyncio.wait_for works
         # regardless of celery pool type, unlike soft_time_limit which is a
         # no-op under --pool=solo. On timeout the task marks the job "failed"
-        # and celery is free to pick up the next queued job.
+        # and celery is free to pick up the next queued job. Sized for M2:
+        # STOCK LIST 1043 rows ≈ 70 min, W39 761 ≈ 50 min. Zwolle 2054 (held)
+        # would need ~2.5h — bump this before running it.
         try:
             loop.run_until_complete(
-                asyncio.wait_for(process_offer(payload, job_id), timeout=540.0)
+                asyncio.wait_for(process_offer(payload, job_id), timeout=5400.0)
             )
         except asyncio.TimeoutError:
-            logger.error(f"Extraction timed out (>9min) for JobID: {job_id}. Marking failed, moving on.")
+            logger.error(f"Extraction timed out (>90min) for JobID: {job_id}. Marking failed, moving on.")
             redis_manager.set_job_status(job_id, "failed")
             return
 
