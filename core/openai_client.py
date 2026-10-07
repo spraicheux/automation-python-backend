@@ -1413,6 +1413,24 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     # relying on the email body alone.
                     _xlsx_text = (" ".join(str(c) for c in df.columns) + "\n" +
                                   "\n".join(" ".join(str(v) for v in row) for _, row in df.iterrows()))
+                    # Deterministic structured-sheet row count: this is
+                    # the AUTHORITATIVE source_row_estimate for XLSX per
+                    # the M2 completeness rule. The LLM is never the
+                    # authority on how many rows the sheet contains.
+                    try:
+                        from core.completeness import estimate_xlsx_source_rows
+                        _xlsx_estimate = estimate_xlsx_source_rows(df)
+                        _xlsx_source_row_estimate = _xlsx_estimate.get("count") or 0
+                        logger.info(
+                            f"[extract_from_file] XLSX deterministic row count: "
+                            f"{_xlsx_source_row_estimate} "
+                            f"(method={_xlsx_estimate.get('method')}, "
+                            f"confidence={_xlsx_estimate.get('confidence')}, "
+                            f"signals={_xlsx_estimate.get('signals')})"
+                        )
+                    except Exception as _ce:
+                        logger.warning(f"[extract_from_file] XLSX row-count estimator failed: {_ce}")
+                        _xlsx_source_row_estimate = len(all_extracted_products)
                     result = {
                         'products': all_extracted_products,
                         'total_products': len(all_extracted_products),
@@ -1421,8 +1439,9 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         'batches_processed': (total_rows + batch_size - 1) // batch_size,
                         'original_rows': total_rows,
                         'source_text': _xlsx_text,
+                        'source_row_estimate': _xlsx_source_row_estimate,
                     }
-                    logger.info(f"[extract_from_file] ===== END EXCEL — returning {len(all_extracted_products)} products =====")
+                    logger.info(f"[extract_from_file] ===== END EXCEL — returning {len(all_extracted_products)} products (expected {_xlsx_source_row_estimate}) =====")
                     return result
                 else:
                     logger.error(f"[extract_from_file] No products could be extracted from the Excel file")
@@ -1676,7 +1695,25 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 _extracted_eans = {str(p.get('ean_code', '')).lstrip('0')
                                    for p in all_pdf_products if p.get('ean_code')}
                 _missing = _src_barcodes - _extracted_eans
-                _source_row_estimate = len(_src_barcodes)
+                # Multi-signal source_row_estimate (M2 completeness rule):
+                # the barcode count is one signal of several — product-
+                # line count (name + price) is used in parallel. Picking
+                # the stronger signal avoids under-counting PDFs that
+                # mix barcode-carrying and barcode-less product rows.
+                try:
+                    from core.completeness import estimate_pdf_source_rows
+                    _pdf_estimate = estimate_pdf_source_rows([t for _, t in pages_text])
+                    _source_row_estimate = _pdf_estimate.get("count") or len(_src_barcodes)
+                    logger.info(
+                        f"[extract_from_file] PDF multi-signal row count: "
+                        f"{_source_row_estimate} "
+                        f"(method={_pdf_estimate.get('method')}, "
+                        f"confidence={_pdf_estimate.get('confidence')}, "
+                        f"signals={_pdf_estimate.get('signals')})"
+                    )
+                except Exception as _pe:
+                    logger.warning(f"[extract_from_file] PDF row-count estimator failed, falling back to barcode set: {_pe}")
+                    _source_row_estimate = len(_src_barcodes)
                 if _missing and len(all_pdf_products) < _source_row_estimate:
                     logger.warning(
                         f"[extract_from_file] PDF integrity gap: extracted "
@@ -2025,6 +2062,37 @@ def clean_product_data(product: dict) -> dict:
             cleaned_product['min_order_quantity_case'] = moq
             logger.info(f"[clean_product_data] Synced min_order_quantity_case from moq_cases: {moq}")
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ─── BRAND-FROM-NAME FALLBACK (M2) ───────────────────────────────
+    # When the source sheet has no brand column (common on cosmetics
+    # files like Cosmetics_Offer_18.06.xlsx), the LLM leaves `brand`
+    # null and packs the brand into the start of `product_name`:
+    #   product_name: "Beauty of Joseon Calming Serum"
+    # Promote the longest known brand prefix out of product_name into
+    # brand. Multi-word brands and aliases supported (gazetteer in
+    # core/brand_gazetteer.py). Only runs when brand is missing — never
+    # overrides an LLM-populated brand. The repair is informational
+    # (logged), not surfaced as a REVIEW flag.
+    _row_brand = cleaned_product.get('brand')
+    if (not _row_brand) or _row_brand in ("Not Found", "", None):
+        _row_name = cleaned_product.get('product_name')
+        if _row_name and _row_name not in ("Not Found", "", None):
+            try:
+                from core.brand_gazetteer import extract_brand_prefix
+                _hit = extract_brand_prefix(_row_name)
+                if _hit:
+                    _resolved_brand, _stripped_name = _hit
+                    cleaned_product['brand'] = _resolved_brand
+                    if _stripped_name:
+                        cleaned_product['product_name'] = _stripped_name
+                    logger.info(
+                        f"[clean_product_data] brand-from-name: "
+                        f"'{_row_name}' → brand='{_resolved_brand}' "
+                        f"product_name='{_stripped_name}'"
+                    )
+            except Exception as _be:
+                logger.warning(f"[clean_product_data] brand-from-name fallback failed: {_be}")
+    # ──────────────────────────────────────────────────────────────────
 
     # ─── EAN CHECK-DIGIT VALIDATION + AUTO-REPAIR ─────────────────────
     # The LLM occasionally concatenates the first digit of the next
