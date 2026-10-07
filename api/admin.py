@@ -160,6 +160,77 @@ def strip_info_flags(
             "rows_examined": len(rows), "rows_touched": moved}
 
 
+@router.post("/admin/sync-review-flags", dependencies=[Depends(_require_admin)])
+def sync_review_flags(
+    category_slug: str = "perfumes",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Recompute needs_manual_review from the row's error_flags content.
+
+    Phase 3 M2 fix: an earlier version of workers/processor.py hardcoded
+    needs_manual_review=False when constructing the OfferItem schema object,
+    overriding the True that clean_product_data had set on genuinely-
+    ambiguous rows (unfixable EAN, attribute conflicts, etc.). The code
+    is now fixed to carry the flag forward, but legacy rows persisted
+    before the fix still carry needs_manual_review=False with a non-
+    informational error_flag — this backfill brings them into agreement.
+
+    Rules:
+      - Any INFORMATIONAL flag (price_per_case calculated from, brand
+        canonicalization, ean_code repaired, MOQ converted) does NOT set
+        review=true. Those are already-applied auto-corrections.
+      - Any OTHER non-empty error_flag entry DOES set review=true.
+      - needs_manual_review=true rows that have no residual error_flags
+        are left alone — the flag may have been set manually.
+    """
+    import json as _json
+
+    INFO_PATTERNS = (
+        "brand name corrected",
+        "ean_code repaired",
+        "price_per_case calculated from",
+        "price_per_unit calculated from",
+        "MOQ converted from bottles to cases",
+    )
+
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+    touched = 0
+    sample = []
+    for r in rows:
+        raw = r.error_flags
+        try:
+            flags = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            if not isinstance(flags, list):
+                flags = []
+        except Exception:
+            flags = []
+        has_review_worthy = any(
+            not any(p in str(f) for p in INFO_PATTERNS) for f in flags
+        )
+        desired = bool(has_review_worthy)
+        current = bool(r.needs_manual_review)
+        if desired and not current:
+            if apply:
+                r.needs_manual_review = True
+            touched += 1
+            if len(sample) < 10:
+                sample.append({
+                    "uid": r.uid, "brand": r.brand,
+                    "product_name": r.product_name,
+                    "ean": r.ean_code,
+                    "flags": flags,
+                })
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "rows_examined": len(rows), "rows_touched": touched,
+            "sample": sample}
+
+
 @router.post("/admin/dedupe-source-rows", dependencies=[Depends(_require_admin)])
 def dedupe_source_rows(
     source_filename: str,

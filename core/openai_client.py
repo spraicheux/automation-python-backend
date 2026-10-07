@@ -2023,12 +2023,12 @@ def clean_product_data(product: dict) -> dict:
                     f"{ppu} × {units} = {calculated_ppc}"
                 )
                 cleaned_product['price_per_case'] = calculated_ppc
-                # Add flag if not already present
-                flags = cleaned_product.get('error_flags') or []
-                flag_text = "price_per_case calculated from price_per_unit x units_per_case"
-                if flag_text not in flags:
-                    flags.append(flag_text)
-                    cleaned_product['error_flags'] = flags
+                # Informational — a deterministic calculation was applied.
+                # The row does NOT need human review. Kept out of error_flags
+                # so the dashboard's REVIEW badge only fires on genuine
+                # ambiguities (same silent-correction pattern as brand
+                # canonicalization and EAN repair from M1). Still visible
+                # in pipeline logs for audit.
 
         if ppc and isinstance(ppc, (int, float)) and ppc > 0:
             if not ppu or not isinstance(ppu, (int, float)) or ppu <= 0:
@@ -2039,11 +2039,7 @@ def clean_product_data(product: dict) -> dict:
                     f"{ppc} / {units} = {calculated_ppu}"
                 )
                 cleaned_product['price_per_unit'] = calculated_ppu
-                flags = cleaned_product.get('error_flags') or []
-                flag_text = "price_per_unit calculated from price_per_case / units_per_case"
-                if flag_text not in flags:
-                    flags.append(flag_text)
-                    cleaned_product['error_flags'] = flags
+                # Informational — see note above.
 
     ppu = cleaned_product.get('price_per_unit')
     ppc = cleaned_product.get('price_per_case')

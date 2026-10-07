@@ -726,6 +726,12 @@ async def process_offer(payload, job_id: str):
                         'supplier_name': merged_data.get('supplier_name'),
                         'supplier_email': merged_data.get('supplier_email'),  # AI extracted email
                         'error_flags': merged_data.get('error_flags', []),
+                        # Phase 3 M2 — carry needs_manual_review from clean_product_data.
+                        # clean_product_data sets this to True when an EAN fails
+                        # check-digit validation (unfixable), or any other
+                        # genuinely-ambiguous condition. Without it here the
+                        # OfferItem construction below silently resets review=False.
+                        'needs_manual_review': bool(merged_data.get('needs_manual_review', False)),
                     }
 
                     # Convert numeric fields (except those already handled by _safe_float)
@@ -833,7 +839,11 @@ async def process_offer(payload, job_id: str):
                                               payload.attachments] if payload.attachments else [],
                         attachment_count=len(payload.attachments) if payload.attachments else 0,
                         confidence_score=0.95,
-                        needs_manual_review=False,
+                        # Pulled from safe_data (threaded from clean_product_data).
+                        # Rows that failed unfixable-EAN or any other genuine
+                        # review condition arrive here with review=True; must
+                        # not be hardcoded False.
+                        needs_manual_review=safe_data.get('needs_manual_review', False),
                         error_flags=safe_data['error_flags'] if isinstance(safe_data.get('error_flags'), list) else [],
                         custom_status=safe_data['custom_status'],
                         processing_version="2.0.0",
@@ -933,6 +943,10 @@ async def process_offer(payload, job_id: str):
                     'supplier_name': extracted_data.get('supplier_name'),
                     'supplier_email': extracted_data.get('supplier_email'),  # AI extracted email
                     'error_flags': extracted_data.get('error_flags', []),
+                    # Phase 3 M2 — carry needs_manual_review from clean_product_data.
+                    # Same reason as the batch-path safe_data above: without it
+                    # the OfferItem construction silently resets review=False.
+                    'needs_manual_review': bool(extracted_data.get('needs_manual_review', False)),
                 }
 
                 # Convert numeric fields
@@ -1004,7 +1018,8 @@ async def process_offer(payload, job_id: str):
                     attachment_filenames=[att.fileName for att in payload.attachments] if payload.attachments else [],
                     attachment_count=len(payload.attachments) if payload.attachments else 0,
                     confidence_score=0.95,
-                    needs_manual_review=False,
+                    # Pulled from safe_data (threaded from clean_product_data).
+                    needs_manual_review=safe_data.get('needs_manual_review', False),
                     error_flags=safe_data['error_flags'] if isinstance(safe_data.get('error_flags'), list) else [],
                     custom_status=safe_data['custom_status'],
                     processing_version="2.0.0",
