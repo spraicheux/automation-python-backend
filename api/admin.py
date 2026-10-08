@@ -376,7 +376,8 @@ def dedupe_source_rows(
 
 
 @router.get("/admin/orphan-check", dependencies=[Depends(_require_admin)])
-def orphan_check(source_filename: str, db: Session = Depends(get_db)):
+def orphan_check(source_filename: str, skip: int = 0, limit: int = 200,
+                 db: Session = Depends(get_db)):
     """
     List all OfferItemDB rows for a given source_filename including
     rows that /api/records filters out (null product_name, invalid, etc).
@@ -385,6 +386,7 @@ def orphan_check(source_filename: str, db: Session = Depends(get_db)):
     rows = (db.query(OfferItemDB)
               .filter(OfferItemDB.source_filename == source_filename)
               .all())
+    total = len(rows)
     out = []
     for r in rows:
         out.append({
@@ -402,9 +404,26 @@ def orphan_check(source_filename: str, db: Session = Depends(get_db)):
             "location": r.location,
             "category_slug": r.category_slug,
             "needs_manual_review": r.needs_manual_review,
+            "error_flags": r.error_flags,
             "has_price": bool(r.price_per_unit or r.price_per_case),
         })
-    return {"source_filename": source_filename, "total": len(rows), "rows": out[:200]}
+    # Aggregate counts over the FULL file (not just the paginated slice)
+    agg = {
+        "needs_review": sum(1 for r in out if r["needs_manual_review"]),
+        "with_error_flags": sum(1 for r in out if r["error_flags"]),
+        "blank_brand": sum(1 for r in out if not r["brand"] or r["brand"] in ("Not Found", "")),
+        "with_ean": sum(1 for r in out if r["ean_code"] and r["ean_code"] not in ("Not Found", "")),
+        "with_price": sum(1 for r in out if r["price_per_unit"]),
+        "with_incoterm": sum(1 for r in out if r["incoterm"] and r["incoterm"] not in ("Not Found", "")),
+        "with_location": sum(1 for r in out if r["location"] and r["location"] not in ("Not Found", "")),
+        "category_slug_counts": {},
+    }
+    for r in out:
+        s = r.get("category_slug")
+        agg["category_slug_counts"][s] = agg["category_slug_counts"].get(s, 0) + 1
+    return {"source_filename": source_filename, "total": total,
+            "agg": agg,
+            "rows": out[skip:skip + limit]}
 
 
 @router.get("/admin/pdf-diag", dependencies=[Depends(_require_admin)])
