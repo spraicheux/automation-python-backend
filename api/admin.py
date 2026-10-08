@@ -160,6 +160,43 @@ def strip_info_flags(
             "rows_examined": len(rows), "rows_touched": moved}
 
 
+@router.post("/admin/fix-category-for-file", dependencies=[Depends(_require_admin)])
+def fix_category_for_file(
+    source_filename: str,
+    target_category: str,
+    from_category: str = "wines_spirits",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    One-shot: reset category_slug on rows in a given source_filename
+    from `from_category` to `target_category`. Used to clean up
+    extraction mis-classifications on a file whose true category is
+    known (e.g. Cosmetics_Offer_*.xlsx rows that the LLM tagged
+    wines_spirits).
+    """
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.source_filename == source_filename)
+              .filter(OfferItemDB.category_slug == from_category)
+              .all())
+    sample = []
+    for r in rows[:10]:
+        sample.append({"uid": r.uid, "brand": r.brand,
+                       "product_name": r.product_name,
+                       "ean": r.ean_code,
+                       "from": r.category_slug})
+    if apply:
+        for r in rows:
+            r.category_slug = target_category
+        db.commit()
+    return {"applied": apply,
+            "source_filename": source_filename,
+            "from_category": from_category,
+            "target_category": target_category,
+            "rows_matched": len(rows),
+            "sample": sample}
+
+
 @router.post("/admin/sync-review-flags", dependencies=[Depends(_require_admin)])
 def sync_review_flags(
     category_slug: str = "perfumes",
