@@ -1171,11 +1171,40 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.info(f"[extract_from_file] Batch {batch_num}: built {len(data_rows)} row dict(s) for AI")
                     logger.info(f"[extract_from_file] Batch {batch_num}: raw rows sent to AI: {json.dumps(data_rows)[:600]!r}")
 
+                    # Category directive — force the document-level
+                    # category onto every row. The detector already chose
+                    # it from the filename + first-N-rows signal; letting
+                    # the LLM re-pick per row produced mixed cosmetics
+                    # files that landed 158/238 as wines_spirits.
+                    if _doc_category == 'wines_spirits':
+                        _cat_directive = (
+                            "The rows describe Wines & Spirits products. "
+                            "Set category_slug='wines_spirits' on every row."
+                        )
+                    elif _doc_category == 'perfumes':
+                        _cat_directive = (
+                            "The rows describe Perfume products. Set "
+                            "category_slug='perfumes' on every row and use "
+                            "perfume-specific fields (perfume_format, "
+                            "retail_state, gender). NEVER emit "
+                            "category_slug='wines_spirits' for any row in "
+                            "this file."
+                        )
+                    else:  # cosmetics
+                        _cat_directive = (
+                            "The rows describe Cosmetics / Beauty products. "
+                            "Each row is either a cosmetic (lipstick, "
+                            "foundation, mascara, cream, serum, etc.) or a "
+                            "perfume. Set category_slug='cosmetics' for "
+                            "cosmetic rows and category_slug='perfumes' for "
+                            "perfume rows (identifiable by EDT/EDP/Parfum/"
+                            "Cologne/EDC in the name). NEVER emit "
+                            "category_slug='wines_spirits' for any row in "
+                            "this file."
+                        )
                     batch_text = f"""
                     You are extracting commercial product data from Excel rows.
-                    The rows may describe Wines & Spirits, Perfumes, or Cosmetics —
-                    identify each row's category (Rule 0.23) and emit the
-                    category-specific fields.
+                    {_cat_directive}
                     Return JSON ONLY, no explanation.
 
                     EXCEL DATA BATCH ({batch_start + 1}-{batch_end} of {total_rows}):
@@ -1405,6 +1434,50 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.info(f"[extract_from_file] Fallback extraction result type: {type(fallback_result)}")
                     return fallback_result
 
+                # Phase 3 M2 — post-extraction category correction.
+                # If the file-level detector says cosmetics or perfumes,
+                # any row the LLM mislabeled wines_spirits is reset to
+                # the file-level default. Filename + first-page signal
+                # is a source signal, not inference — a cosmetics file
+                # genuinely contains no W&S products.
+                if _doc_category in ('cosmetics', 'perfumes') and all_extracted_products:
+                    _overrides = 0
+                    for _p in all_extracted_products:
+                        _cs = (_p.get('category_slug') or '').strip().lower()
+                        if _cs == 'wines_spirits':
+                            _p['category_slug'] = _doc_category
+                            _overrides += 1
+                    if _overrides:
+                        logger.info(
+                            f"[extract_from_file] Category override: reset "
+                            f"{_overrides} wines_spirits row(s) → {_doc_category!r} "
+                            f"(file-level detection)"
+                        )
+
+                # Phase 3 M2 — silence LLM-side informational flags that
+                # the pipeline treats as auto-corrections, not REVIEW cases.
+                # Matches strip-info-flags backfill patterns so flags
+                # stripped there never land in the first place.
+                _INFO_PREFIXES = (
+                    "brand name corrected",
+                    "ean_code repaired",
+                    "price_per_case calculated from",
+                    "price_per_unit calculated from",
+                    "MOQ converted from bottles to cases",
+                    "sub_category inferred from brand name",
+                    "Quantity in bottles",
+                    "quantity_case not explicitly stated",
+                )
+                for _p in all_extracted_products:
+                    _flags = _p.get('error_flags') or []
+                    if not isinstance(_flags, list):
+                        continue
+                    _kept = [f for f in _flags
+                             if not any(str(f).startswith(p) or p in str(f)
+                                        for p in _INFO_PREFIXES)]
+                    if len(_kept) != len(_flags):
+                        _p['error_flags'] = _kept
+
                 if all_extracted_products:
                     # Same reason as PDF path: pass back the raw document
                     # text so apply_deterministic_defaults can parse the
@@ -1431,6 +1504,120 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     except Exception as _ce:
                         logger.warning(f"[extract_from_file] XLSX row-count estimator failed: {_ce}")
                         _xlsx_source_row_estimate = len(all_extracted_products)
+
+                    # Phase 3 M2 — XLSX integrity recovery pass. Mirrors
+                    # the PDF path: if extracted < expected, find source
+                    # rows whose BarCode did not land in the extracted
+                    # set, and ask the LLM for ONLY those rows in one
+                    # recovery call. Caps at 50 missing to keep cost
+                    # bounded.
+                    try:
+                        _extracted_eans = {
+                            str(_p.get('ean_code') or '').lstrip('0')
+                            for _p in all_extracted_products
+                            if _p.get('ean_code')
+                        }
+                        # Build a map of {source_barcode: source_row_dict}
+                        # by scanning df. Only rows whose BarCode cell
+                        # looks like a GS1-length digit string count.
+                        import re as _re_rec
+                        _ean_col = None
+                        for _ci, _cv in enumerate(df.columns):
+                            if 'bar' in str(_cv).lower() or 'ean' in str(_cv).lower() or 'gtin' in str(_cv).lower():
+                                _ean_col = _ci
+                                break
+                        if _ean_col is None:
+                            # Fall back to scanning the first row for a header cell
+                            for _ri in range(min(5, len(df))):
+                                for _ci in range(len(df.columns)):
+                                    _cv = str(df.iloc[_ri, _ci]) if df.iloc[_ri, _ci] is not None else ''
+                                    if 'bar' in _cv.lower() or 'ean' in _cv.lower() or 'gtin' in _cv.lower():
+                                        _ean_col = _ci
+                                        break
+                                if _ean_col is not None:
+                                    break
+                        _missing_rows = []
+                        if _ean_col is not None:
+                            for _ri in range(len(df)):
+                                _bc = str(df.iloc[_ri, _ean_col]) if df.iloc[_ri, _ean_col] is not None else ''
+                                _bc_digits = _re_rec.sub(r'\D+', '', _bc).lstrip('0')
+                                if 7 <= len(_bc_digits) <= 14 and _bc_digits not in _extracted_eans:
+                                    # Build a row dict for recovery prompt
+                                    _row_dict = {}
+                                    for _ci, _cv in enumerate(df.columns):
+                                        _val = df.iloc[_ri, _ci]
+                                        try:
+                                            import pandas as _pd_rec
+                                            if _pd_rec.isna(_val):
+                                                _row_dict[str(_cv)] = ''
+                                                continue
+                                        except Exception:
+                                            pass
+                                        _row_dict[str(_cv)] = str(_val)
+                                    _missing_rows.append(_row_dict)
+                                    if len(_missing_rows) >= 50:
+                                        break
+                        _gap = _xlsx_source_row_estimate - len(all_extracted_products)
+                        if _missing_rows and _gap > 0:
+                            logger.warning(
+                                f"[extract_from_file] XLSX integrity gap: extracted "
+                                f"{len(all_extracted_products)} but expected "
+                                f"{_xlsx_source_row_estimate} — attempting recovery "
+                                f"of {len(_missing_rows)} row(s) with missing EAN(s)"
+                            )
+                            _rec_prompt = (
+                                f"The following {len(_missing_rows)} Excel rows were "
+                                f"NOT extracted on the first pass. Each row is a "
+                                f"legitimate product. Emit EXACTLY one product per "
+                                f"row below (so return {len(_missing_rows)} products "
+                                f"total). Apply the same category rules as before: "
+                                f"category_slug={_doc_category!r} on every row; for "
+                                f"a cosmetics file a row with EDT/EDP/Parfum in the "
+                                f"name is category_slug='perfumes', otherwise "
+                                f"category_slug='cosmetics'. NEVER wines_spirits.\n\n"
+                                f"ROWS:\n{json.dumps(_missing_rows, indent=2)}\n\n"
+                                f"Return JSON: {{\"products\":[{{...}}, ...]}}"
+                            )
+                            try:
+                                _rec_resp = await client.chat.completions.create(
+                                    model="gpt-4o",
+                                    messages=[
+                                        {"role": "system",
+                                         "content": (
+                                             f"You extract {_doc_category.replace('_',' & ')} products from Excel rows. "
+                                             f"Emit EXACTLY one product per row supplied."
+                                         )},
+                                        {"role": "user", "content": _rec_prompt},
+                                    ],
+                                    response_format={"type": "json_object"},
+                                    temperature=0.0, max_tokens=16000,
+                                )
+                                _rec_content = _rec_resp.choices[0].message.content
+                                _rec_result = json.loads(_rec_content)
+                                _rec_products = _rec_result.get('products', []) if isinstance(_rec_result, dict) else []
+                                logger.info(f"[extract_from_file] XLSX integrity recovery returned {len(_rec_products)} product(s)")
+                                for _p in _rec_products:
+                                    for _k in list(_p.keys()):
+                                        if _p[_k] is None:
+                                            _p[_k] = "Not Found"
+                                    _cleaned = clean_product_data(_p)
+                                    # Apply the category override + flag silencer to recovered rows too
+                                    if _doc_category in ('cosmetics', 'perfumes'):
+                                        _cs = (_cleaned.get('category_slug') or '').strip().lower()
+                                        if _cs == 'wines_spirits':
+                                            _cleaned['category_slug'] = _doc_category
+                                    _rf = _cleaned.get('error_flags') or []
+                                    if isinstance(_rf, list):
+                                        _cleaned['error_flags'] = [
+                                            f for f in _rf
+                                            if not any(str(f).startswith(p) or p in str(f) for p in _INFO_PREFIXES)
+                                        ]
+                                    all_extracted_products.append(_cleaned)
+                                logger.info(f"[extract_from_file] After XLSX integrity recovery: {len(all_extracted_products)} total products")
+                            except Exception as _rec_err:
+                                logger.error(f"[extract_from_file] XLSX integrity recovery failed: {_rec_err}")
+                    except Exception as _ri_err:
+                        logger.warning(f"[extract_from_file] XLSX integrity recovery scan failed: {_ri_err}")
                     result = {
                         'products': all_extracted_products,
                         'total_products': len(all_extracted_products),
