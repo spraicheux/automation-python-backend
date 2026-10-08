@@ -121,12 +121,20 @@ def strip_info_flags(
     """
     import json as _json
 
+    # Must stay in sync with core.openai_client._INFO_PREFIXES —
+    # same list of auto-correction / LLM-side informational flags
+    # the ingest silencer removes. If the two drift, strip-info-flags
+    # and sync-review-flags will disagree with what the pipeline
+    # actually writes.
     INFO_PATTERNS = (
         "brand name corrected",
         "ean_code repaired",
         "price_per_case calculated from",
         "price_per_unit calculated from",
         "MOQ converted from bottles to cases",
+        "sub_category inferred from brand name",
+        "Quantity in bottles",
+        "quantity_case not explicitly stated",
     )
 
     rows = (db.query(OfferItemDB)
@@ -224,12 +232,20 @@ def sync_review_flags(
     """
     import json as _json
 
+    # Must stay in sync with core.openai_client._INFO_PREFIXES —
+    # same list of auto-correction / LLM-side informational flags
+    # the ingest silencer removes. If the two drift, strip-info-flags
+    # and sync-review-flags will disagree with what the pipeline
+    # actually writes.
     INFO_PATTERNS = (
         "brand name corrected",
         "ean_code repaired",
         "price_per_case calculated from",
         "price_per_unit calculated from",
         "MOQ converted from bottles to cases",
+        "sub_category inferred from brand name",
+        "Quantity in bottles",
+        "quantity_case not explicitly stated",
     )
 
     rows = (db.query(OfferItemDB)
