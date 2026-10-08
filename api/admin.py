@@ -178,11 +178,17 @@ def fix_category_for_file(
 ):
     """
     One-shot: reset category_slug on rows in a given source_filename
-    from `from_category` to `target_category`. Used to clean up
-    extraction mis-classifications on a file whose true category is
-    known (e.g. Cosmetics_Offer_*.xlsx rows that the LLM tagged
-    wines_spirits).
+    from `from_category` to `target_category`. Also updates the
+    free-text `category` display label so the dashboard subheading
+    (which renders `category · sub_category`) matches the slug.
     """
+    # Display label used by the dashboard subheading
+    CAT_DISPLAY = {
+        "wines_spirits": "Wines & Spirits",
+        "perfumes": "Perfumes",
+        "cosmetics": "Cosmetics",
+    }
+    display = CAT_DISPLAY.get(target_category, target_category)
     rows = (db.query(OfferItemDB)
               .filter(OfferItemDB.source_filename == source_filename)
               .filter(OfferItemDB.category_slug == from_category)
@@ -192,16 +198,63 @@ def fix_category_for_file(
         sample.append({"uid": r.uid, "brand": r.brand,
                        "product_name": r.product_name,
                        "ean": r.ean_code,
-                       "from": r.category_slug})
+                       "from_slug": r.category_slug,
+                       "from_category": r.category})
     if apply:
         for r in rows:
             r.category_slug = target_category
+            r.category = display
         db.commit()
     return {"applied": apply,
             "source_filename": source_filename,
             "from_category": from_category,
             "target_category": target_category,
+            "display_label": display,
             "rows_matched": len(rows),
+            "sample": sample}
+
+
+@router.post("/admin/sync-category-display", dependencies=[Depends(_require_admin)])
+def sync_category_display(
+    category_slug: str = "cosmetics",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Backfill: for rows whose category_slug is correct but whose free-
+    text `category` label is a mismatch (e.g. slug=cosmetics but
+    category='Wines & Spirits'), rewrite the free-text label to match
+    the slug. The dashboard subheading reads `category · sub_category`;
+    without this sync, correctly-slugged rows render with the wrong
+    text under the product name.
+    """
+    CAT_DISPLAY = {
+        "wines_spirits": "Wines & Spirits",
+        "perfumes": "Perfumes",
+        "cosmetics": "Cosmetics",
+    }
+    display = CAT_DISPLAY.get(category_slug, category_slug)
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.category_slug == category_slug)
+              .all())
+    touched = 0
+    sample = []
+    for r in rows:
+        existing = (r.category or "").strip()
+        if existing.lower() != display.lower():
+            if apply:
+                r.category = display
+            touched += 1
+            if len(sample) < 10:
+                sample.append({"uid": r.uid, "brand": r.brand,
+                               "product_name": r.product_name,
+                               "from": r.category, "to": display})
+    if apply:
+        db.commit()
+    return {"applied": apply, "category_slug": category_slug,
+            "display_label": display,
+            "rows_examined": len(rows),
+            "rows_touched": touched,
             "sample": sample}
 
 
