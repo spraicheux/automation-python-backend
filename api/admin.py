@@ -250,9 +250,13 @@ def sync_review_flags(
         )
         desired = bool(has_review_worthy)
         current = bool(r.needs_manual_review)
-        if desired and not current:
+        # Bi-directional: promote AND demote. Demotion is needed because
+        # the ingest-time silencer may have cleared flags that previously
+        # triggered needs_manual_review=True, leaving the row stuck with
+        # review=True and error_flags=None.
+        if desired != current:
             if apply:
-                r.needs_manual_review = True
+                r.needs_manual_review = desired
             touched += 1
             if len(sample) < 10:
                 sample.append({
@@ -260,6 +264,7 @@ def sync_review_flags(
                     "product_name": r.product_name,
                     "ean": r.ean_code,
                     "flags": flags,
+                    "from": current, "to": desired,
                 })
     if apply:
         db.commit()
