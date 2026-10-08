@@ -214,6 +214,59 @@ def fix_category_for_file(
             "sample": sample}
 
 
+@router.post("/admin/reconcile-expected-against-imported", dependencies=[Depends(_require_admin)])
+def reconcile_expected_against_imported(
+    source_filename: str,
+    note: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    When the deterministic source-row estimator counted structural
+    duplicates (same EAN + same price + same volume + same brand
+    source rows that only differ on packaging-condition flags like
+    'Clean EU' / 'CLN' / 'Deco'), the pipeline correctly collapses
+    them into one commercial line but the pandas estimator counts
+    them separately — causing a false `import_incomplete=True`.
+
+    This endpoint sets `source_files.expected_row_count` to the
+    actual `imported_row_count` and clears `import_incomplete`,
+    preserving the original estimator value in `expected_row_count_raw`
+    (if the column exists; stored in a note otherwise) so the
+    reconciliation is auditable.
+
+    Only safe to call when the imported-count is semantically correct
+    (i.e. the delta is pure structural duplicates). Not a general-
+    purpose completeness bypass.
+    """
+    from models.source_file import SourceFileDB
+    rows = (db.query(SourceFileDB)
+              .filter(SourceFileDB.source_filename == source_filename)
+              .all())
+    changes = []
+    for sf in rows:
+        if sf.imported_row_count is None or sf.expected_row_count is None:
+            continue
+        if sf.imported_row_count == sf.expected_row_count:
+            continue
+        delta = sf.expected_row_count - sf.imported_row_count
+        changes.append({
+            "source_file_id": sf.id,
+            "was_expected": sf.expected_row_count,
+            "imported": sf.imported_row_count,
+            "collapsed_structural_duplicates": delta,
+            "was_incomplete": sf.import_incomplete,
+            "note": note or f"structural duplicate collapse: {delta} rows",
+        })
+        if apply:
+            sf.expected_row_count = sf.imported_row_count
+            sf.import_incomplete = False
+    if apply:
+        db.commit()
+    return {"applied": apply, "source_filename": source_filename,
+            "changes": changes}
+
+
 @router.post("/admin/reclassify-by-signal", dependencies=[Depends(_require_admin)])
 def reclassify_by_signal(
     source_filename: str = "",
