@@ -214,6 +214,48 @@ def fix_category_for_file(
             "sample": sample}
 
 
+@router.post("/admin/reclassify-by-signal", dependencies=[Depends(_require_admin)])
+def reclassify_by_signal(
+    source_filename: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Promote rows from category_slug='cosmetics' to 'perfumes' when a
+    strong per-row perfume signal is present: perfume_format is set
+    (EDT/EDP/EDC/EDF/Parfum/Cologne) OR the free-text category reads
+    'Perfumes' / 'Fragrance'. Fixes the fallout from a bulk
+    fix-category-for-file override on a mixed cosmetics file that
+    swept perfume rows into the cosmetics bucket.
+    """
+    PERFUME_FMTS = {"EDT", "EDP", "EDC", "EDF", "Parfum", "Cologne", "DSP"}
+    PERFUME_TEXT = {"perfumes", "perfume", "fragrance", "fragrances"}
+    q = db.query(OfferItemDB).filter(OfferItemDB.category_slug == "cosmetics")
+    if source_filename:
+        q = q.filter(OfferItemDB.source_filename == source_filename)
+    rows = q.all()
+    touched = 0
+    sample = []
+    for r in rows:
+        pf = (r.perfume_format or "").strip()
+        ct = (r.category or "").strip().lower()
+        if pf in PERFUME_FMTS or ct in PERFUME_TEXT:
+            if apply:
+                r.category_slug = "perfumes"
+                r.category = "Perfumes"
+            touched += 1
+            if len(sample) < 10:
+                sample.append({"uid": r.uid, "brand": r.brand,
+                               "product_name": r.product_name,
+                               "perfume_format": pf, "category_text": r.category})
+    if apply:
+        db.commit()
+    return {"applied": apply,
+            "source_filename": source_filename or "(all cosmetics)",
+            "rows_examined": len(rows), "rows_touched": touched,
+            "sample": sample}
+
+
 @router.post("/admin/sync-category-display", dependencies=[Depends(_require_admin)])
 def sync_category_display(
     category_slug: str = "cosmetics",
