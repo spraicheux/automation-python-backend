@@ -39,8 +39,8 @@ class OfferItem(BaseModel):
     lead_time: str = Field(default="Not Found")
     moq_cases: Optional[float] = None
     valid_until: Optional[str] = None
-    offer_date: datetime
-    date_received: datetime
+    offer_date: Optional[datetime] = None
+    date_received: Optional[datetime] = None
     best_before_date: Optional[str] = None
     vintage: Optional[str] = None
     supplier_name: Optional[str] = None
