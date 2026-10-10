@@ -2294,14 +2294,19 @@ def clean_product_data(product: dict) -> dict:
         digits = _re_ean.sub(r"\D+", "", str(raw_ean))
         repaired, repair_reason = _repair_ean(digits)
         if repaired is None:
-            # unfixable — keep the raw digits but flag for review
+            # Unfixable: null out ean_code so a bad barcode is never
+            # used in SKU identity or peer-group comparisons.  Preserve
+            # the original value in the flag string for audit so a
+            # reviewer can cross-check the source sheet.
             flags = cleaned_product.get('error_flags') or []
-            flag_text = f"ean_code failed length + check-digit validation ({repair_reason})"
+            flag_text = (f"ean_code invalid (original: {digits}; "
+                         f"reason: {repair_reason})")
             if flag_text not in flags:
                 flags.append(flag_text)
                 cleaned_product['error_flags'] = flags
             cleaned_product['needs_manual_review'] = True
-            logger.warning(f"[clean_product_data] EAN {raw_ean!r} unfixable: {repair_reason}")
+            cleaned_product['ean_code'] = None
+            logger.warning(f"[clean_product_data] EAN {raw_ean!r} unfixable — nulled: {repair_reason}")
         else:
             if repaired != digits:
                 logger.info(f"[clean_product_data] EAN repaired: {raw_ean!r} → {repaired!r} ({repair_reason})")

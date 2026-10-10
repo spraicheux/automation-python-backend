@@ -281,7 +281,7 @@ def reclassify_by_signal(
     fix-category-for-file override on a mixed cosmetics file that
     swept perfume rows into the cosmetics bucket.
     """
-    PERFUME_FMTS = {"EDT", "EDP", "EDC", "EDF", "Parfum", "Cologne", "DSP"}
+    PERFUME_FMTS = {"EDT", "EDP", "EDC", "EDF", "Parfum", "Cologne"}
     PERFUME_TEXT = {"perfumes", "perfume", "fragrance", "fragrances"}
     q = db.query(OfferItemDB).filter(OfferItemDB.category_slug == "cosmetics")
     if source_filename:
@@ -473,12 +473,18 @@ def dedupe_source_rows(
         # conflicting critical attributes would — those are handled by
         # the Best Prices resolver's attribute-conflict guard, not by
         # dedup here.
+        #
+        # retail_state IS in the key: retail ≠ tester ≠ deco at the
+        # SKU level even when brand+name+volume+EAN+price match.
+        # "Clean EU / CLN" rows and "Deco" rows from a source sheet
+        # that differ ONLY in condition MUST NOT collapse into one line.
         return (
             (r.brand or "").strip().lower(),
             (r.product_name or "").strip().lower(),
             float(r.unit_volume_ml or 0),
             (r.ean_code or "").strip().lstrip("0"),
             float(r.price_per_unit or 0),
+            (r.retail_state or "").strip().lower(),
         )
 
     seen = {}  # key -> OfferItemDB (the kept row)
@@ -521,6 +527,85 @@ def dedupe_source_rows(
     return {"applied": apply, "source_filename": source_filename,
             "scanned": len(rows), "duplicates_found": len(dupes),
             "sample": dupes[:10]}
+
+
+@router.get("/admin/dedup-audit", dependencies=[Depends(_require_admin)])
+def dedup_audit(
+    source_filename: str,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    """
+    Show rows that share (brand + product_name + unit_volume_ml + ean_code)
+    but differ in retail_state, product_reference, or price.  This is the
+    "what did the dedup engine see?" view — use it to verify that condition
+    flags (Clean EU / CLN / Deco / Sample) are handled correctly.
+
+    Groups are returned ordered by group size (largest first).  Each group
+    shows every surviving row plus the fields that actually differ within
+    the group.
+    """
+    DIFF_FIELDS = [
+        "retail_state", "product_reference", "packaging",
+        "price_per_unit", "gender", "perfume_format",
+    ]
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.source_filename == source_filename)
+              .order_by(OfferItemDB.brand, OfferItemDB.product_name)
+              .all())
+
+    # Group by the product-identity key (same as sku_identity minus incoterm)
+    from collections import defaultdict
+    groups: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        key = (
+            (r.brand or "").strip().lower(),
+            (r.product_name or "").strip().lower(),
+            float(r.unit_volume_ml or 0),
+            (r.ean_code or "").strip().lstrip("0"),
+        )
+        groups[key].append(r)
+
+    result = []
+    for key, grp in groups.items():
+        if len(grp) < 2:
+            continue
+        # Collect field values for each row in this group
+        rows_out = []
+        for r in grp:
+            rows_out.append({
+                "uid": r.uid,
+                "retail_state": r.retail_state,
+                "product_reference": r.product_reference,
+                "packaging": r.packaging,
+                "price_per_unit": r.price_per_unit,
+                "gender": r.perfume_format,
+                "perfume_format": r.perfume_format,
+                "ean_code": r.ean_code,
+            })
+        # Which fields actually differ within the group?
+        differing = []
+        for f in DIFF_FIELDS:
+            vals = {r.get(f) for r in rows_out}
+            if len(vals) > 1:
+                differing.append(f)
+        result.append({
+            "brand": grp[0].brand,
+            "product_name": grp[0].product_name,
+            "unit_volume_ml": grp[0].unit_volume_ml,
+            "ean_code": grp[0].ean_code,
+            "group_size": len(grp),
+            "differing_fields": differing,
+            "rows": rows_out,
+        })
+
+    result.sort(key=lambda g: g["group_size"], reverse=True)
+    return {
+        "source_filename": source_filename,
+        "total_rows": len(rows),
+        "multi_row_groups": len(result),
+        "groups": result[:limit],
+    }
 
 
 @router.get("/admin/orphan-check", dependencies=[Depends(_require_admin)])
@@ -836,15 +921,19 @@ def backfill_ean_and_retail(
                     ean_samples.append({
                         "uid": r.uid, "brand": r.brand,
                         "product": r.product_name, "was": r.ean_code,
-                        "action": "flagged", "reason": reason,
+                        "action": "nulled+flagged", "reason": reason,
                     })
                 if apply:
                     flags = _load_flags(r.error_flags)
-                    tag = f"ean_code failed length + check-digit validation ({reason})"
+                    # Preserve original barcode in the flag for audit;
+                    # null ean_code so it never enters SKU identity.
+                    tag = (f"ean_code invalid (original: {digits}; "
+                           f"reason: {reason})")
                     if tag not in flags:
                         flags.append(tag)
                         r.error_flags = _dump_flags(flags)
                     r.needs_manual_review = True
+                    r.ean_code = None
             elif repaired == digits:
                 ean_stats["already_valid"] += 1
             else:

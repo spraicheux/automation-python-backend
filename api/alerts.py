@@ -75,8 +75,14 @@ def list_alerts(
         rows = sorted(rows, key=lambda x: x.offer_date or x.created_at or datetime.min)
         latest = rows[-1]
 
-        if not (latest.offer_date or latest.created_at) or \
-           (latest.offer_date or latest.created_at) < cutoff:
+        # Freshness gate: use offer_date ONLY — never fall back to
+        # created_at.  A historical file ingested today for validation
+        # purposes has created_at=today but offer_date=April/June/Sept.
+        # Using created_at as a fallback would fire stale "alerts" for
+        # every historical low in those files; that's not actionable.
+        # If offer_date is absent we have no way to know whether the
+        # offer is genuinely fresh — skip it (conservative, safe).
+        if not latest.offer_date or latest.offer_date < cutoff:
             continue
 
         prior = rows[:-1]
