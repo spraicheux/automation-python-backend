@@ -763,6 +763,44 @@ def attach_row(
         })
 
 
+@router.post("/admin/clear-invalid-perfume-format", dependencies=[Depends(_require_admin)])
+def clear_invalid_perfume_format(
+    brand_contains: str,
+    product_contains: str,
+    invalid_format: str,
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Null out perfume_format on rows where the LLM stored a non-schema
+    value (e.g. DSP) that is not in the valid list
+    EDT|EDP|EDC|EDF|Parfum|Cologne.  Rows are matched by
+    brand_contains + product_contains (case-insensitive) AND
+    perfume_format == invalid_format.
+
+    Example — Clarins Eau Dynamisante DSP:
+      POST /admin/clear-invalid-perfume-format
+        ?brand_contains=clarins&product_contains=dynamisante
+        &invalid_format=DSP&apply=true
+    """
+    VALID_FORMATS = {"EDT", "EDP", "EDC", "EDF", "Parfum", "Cologne"}
+    if invalid_format in VALID_FORMATS:
+        return {"error": f"{invalid_format!r} is a valid format — nothing to clear"}
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.brand.ilike(f"%{brand_contains}%"))
+              .filter(OfferItemDB.product_name.ilike(f"%{product_contains}%"))
+              .filter(OfferItemDB.perfume_format == invalid_format)
+              .all())
+    sample = [{"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
+               "perfume_format": r.perfume_format, "category_slug": r.category_slug}
+              for r in rows]
+    if apply:
+        for r in rows:
+            r.perfume_format = None
+        db.commit()
+    return {"applied": apply, "rows_matched": len(rows), "sample": sample}
+
+
 @router.post("/admin/backfill-doc-defaults", dependencies=[Depends(_require_admin)])
 def backfill_doc_defaults(
     category_slug: str = "perfumes",
@@ -818,6 +856,54 @@ def backfill_doc_defaults(
         db.commit()
     return {"applied": apply, "category_slug": category_slug,
             "rows_examined": len(rows), "changes": changes, "sample": sample}
+
+
+@router.post("/admin/null-processing-offer-dates", dependencies=[Depends(_require_admin)])
+def null_processing_offer_dates(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Null out offer_date on rows where it was incorrectly set to the
+    processing timestamp instead of a real document date.
+
+    Root cause: processor.py used `_parse_offer_date(...) or datetime.utcnow()`
+    so every row whose document had no explicit offer date got
+    offer_date = ingest time. That made the alert freshness gate fire on
+    all historically-ingested files the day they were ingested.
+
+    Detection: a real document date parsed from YYYY-MM-DD lands at
+    midnight (time = 00:00:00). A processing timestamp has a non-zero
+    time component. Rows where offer_date.hour != 0 OR
+    offer_date.minute != 0 OR offer_date.second != 0 are processing
+    artifacts and are nulled out here.
+
+    Idempotent. Deterministic — no OpenAI calls.
+    """
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.offer_date.isnot(None))
+              .all())
+    touched = []
+    for r in rows:
+        od = r.offer_date
+        if od and (od.hour != 0 or od.minute != 0 or od.second != 0
+                   or od.microsecond != 0):
+            touched.append({
+                "uid": r.uid,
+                "source_filename": r.source_filename,
+                "bad_offer_date": od.isoformat(),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+            if apply:
+                r.offer_date = None
+    if apply:
+        db.commit()
+    return {
+        "applied": apply,
+        "rows_examined": len(rows),
+        "rows_touched": len(touched),
+        "sample": touched[:20],
+    }
 
 
 @router.post("/admin/backfill-loose-case-zero", dependencies=[Depends(_require_admin)])
