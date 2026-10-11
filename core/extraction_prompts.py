@@ -37,8 +37,8 @@ def detect_document_category(filename: str = "", sample_text: str = "") -> str:
         "beauty",
     )
     spirits_signals = (
-        "whisky", "whiskey", "bourbon", "cognac", "vodka", "gin",
-        "rum ", "tequila", "liqueur", "champagne", "wine ",
+        "whisky", "whiskey", "bourbon", "cognac", "vodka", " gin",
+        " rum ", "tequila", "liqueur", "champagne", "wine ",
         " abv ", "% vol", "% abv",
     )
 
