@@ -668,6 +668,12 @@ async def process_offer(payload, job_id: str):
             for idx, product_data in enumerate(all_products):
                 try:
                     merged_data = {**extracted_data, **product_data}
+                    # Re-apply pre-scan XLSX metadata when the LLM returned a
+                    # sentinel — "Not Found" from product_data would otherwise
+                    # overwrite the header-row values we extracted before batching.
+                    for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name'):
+                        if merged_data.get(_mf) in (None, '', 'Not Found') and extracted_data.get(_mf):
+                            merged_data[_mf] = extracted_data[_mf]
 
                     if merged_data.get('product_key') in [None, '', 'Not Found']:
                         logger.warning(
