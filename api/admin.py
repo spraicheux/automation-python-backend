@@ -9,6 +9,7 @@ One-off admin endpoints. Currently:
 Not routed publicly on the dashboard — hit with curl once after a deploy.
 """
 import os
+import re
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
@@ -1266,4 +1267,57 @@ def backfill_case_supplier(apply: bool = False, db: Session = Depends(get_db)):
         "quantity_unit_backfill": unit_backfill,
         "units_per_case_backfill": upc_backfill,
         "category_slug_backfill": slug_backfill,
+    }
+
+
+# ── Regex for noise tokens that contaminate product_name ────────────────────
+# T1 / T2 customs flags and RF / NRF refillable flags sometimes leak into the
+# product_name field from the LLM. This pattern strips them cleanly.
+_PRODUCT_NAME_NOISE = re.compile(
+    r'\b(T1|T2|RF|NRF)\b[\s,\-]*',
+    re.IGNORECASE,
+)
+
+
+@router.post("/admin/strip-product-name-noise", dependencies=[Depends(_require_admin)])
+def strip_product_name_noise(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Dry-run (apply=false) or fix (apply=true) rows where product_name contains
+    T1, T2, RF, or NRF tokens that belong in custom_status / refillable_status.
+
+    Returns up to 50 samples showing before/after. Safe to re-run.
+    """
+    rows = db.query(OfferItemDB).filter(
+        OfferItemDB.product_name.op('~*')(r'\m(T1|T2|RF|NRF)\M')
+    ).all()
+
+    changes = []
+    for r in rows:
+        if not r.product_name:
+            continue
+        cleaned = _PRODUCT_NAME_NOISE.sub(' ', r.product_name).strip()
+        # Collapse multiple spaces
+        cleaned = re.sub(r' {2,}', ' ', cleaned)
+        if cleaned == r.product_name:
+            continue
+        changes.append({
+            "uid": r.uid,
+            "brand": r.brand,
+            "before": r.product_name,
+            "after": cleaned,
+        })
+        if apply:
+            r.product_name = cleaned
+
+    if apply:
+        db.commit()
+
+    return {
+        "applied": apply,
+        "rows_matched": len(rows),
+        "rows_changed": len(changes),
+        "samples": changes[:50],
     }

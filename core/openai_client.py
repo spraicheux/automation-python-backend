@@ -325,6 +325,17 @@ RULE 3 — REFILLABLE STATUS (REF / NRF)
 - "NRF" anywhere → refillable_status: "NRF"
 - If neither found → refillable_status: "Not Found"
 - DO NOT default to "NRF" when not stated.
+- NEVER put "RF", "REF", or "NRF" inside product_name — these go in refillable_status only.
+
+══════════════════════════════════════════════════════════════════════
+RULE 3b — PRODUCT NAME MUST NOT CONTAIN STATUS TOKENS  ⚠️ CRITICAL
+══════════════════════════════════════════════════════════════════════
+product_name MUST NOT contain any of: T1, T2, RF, NRF.
+These tokens belong exclusively in their dedicated fields:
+  custom_status      → T1 or T2
+  refillable_status  → REF or NRF
+Strip them from product_name before output. Example:
+  "Hennessy VSOP 70cl T2 NRF" → product_name: "VSOP 70cl", custom_status: "T2", refillable_status: "NRF"
 
 ══════════════════════════════════════════════════════════════════════
 RULE 4 — SUPPLIER NAME — COMPANY NAME ONLY  ⚠️ OVERRIDE RULE

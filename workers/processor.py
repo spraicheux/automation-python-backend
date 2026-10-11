@@ -794,6 +794,10 @@ async def process_offer(payload, job_id: str):
                             _pv * 10 if _pu_unit == 'cl' else
                             _pv * 1000 if _pu_unit == 'l' else _pv
                         )
+                        # Canonical display form — store raw LLM string first
+                        if not safe_data.get('packaging_raw'):
+                            safe_data['packaging_raw'] = _pkg_str
+                        safe_data['packaging'] = f"{_pu}/case"
                         logger.debug(
                             f"Row {idx}: packaging '{_pkg_str}' → "
                             f"units_per_case={_pu}, unit_volume_ml={safe_data['unit_volume_ml']}"

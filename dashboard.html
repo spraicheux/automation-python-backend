@@ -421,7 +421,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input id="global-search" placeholder="Search product, brand, expression (e.g. Don Julio Añejo)…" />
         </div>
-        <div class="search-hint" id="search-hint">Search across product name and brand.</div>
+        <div class="search-hint" id="search-hint">Search brand, product, size (e.g. 100cl / 1L), EAN, T1 / T2.</div>
       </div>
 
       <div class="cat-strip" role="tablist" aria-label="Category">
@@ -554,7 +554,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input id="bp-search" placeholder="Search product or brand to compare…" />
         </div>
-        <div class="search-hint">Products grouped by brand + name + bottle size + packaging so only genuinely comparable offers are compared.</div>
+        <div class="search-hint">Comparable offers grouped by brand, name, bottle size, and incoterm. Search brand, product, size (e.g. 100cl / 1L), T1 / T2.</div>
       </div>
 
       <div class="filter-bar">
@@ -1093,6 +1093,9 @@
     loadingRecords = true;
     if (reset) {
       recordsSkip = 0; allRawItemsCache = [];
+      // Clear accumulated filter values so dropdowns only show values
+      // relevant to the current category / search context.
+      Object.values(availableFilters).forEach(s => s.clear());
       document.getElementById('offers-tbody').innerHTML = `<tr><td colspan="11"><div class="state-box"><div class="spinner"></div><p>Fetching offers…</p></div></td></tr>`;
       document.getElementById('load-more-wrap').style.display = 'none';
     }
@@ -1432,7 +1435,7 @@
 
     return `<tr data-uid="${escapeAttr(i.uid)}" ${hasNeeds ? 'class="needs-review"' : ''}>
       <td class="product">
-        <div class="prod-brand">${escapeHtml(brand)}${reviewPill}</div>
+        <div class="prod-brand">${escapeHtml(brand)}${reviewPill}${i.custom_status && i.custom_status !== 'Not Found' ? statusBadge(i.custom_status) : ''}</div>
         <div class="prod-name">${escapeHtml(name || i.product_name || '—')}</div>
         <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
       </td>

@@ -1,14 +1,54 @@
+import re
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
-from typing import Optional
+from typing import Optional, List
 from core.database import get_db
 from core.normalization import peer_group_id, is_peer_group_qualified
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
+
+# ── Volume-alias normalisation ──────────────────────────────────────────────
+_VOL_ALIAS = {
+    # Litres → ml
+    "1l": 1000, "1.5l": 1500, "2l": 2000, "0.7l": 700, "0.75l": 750,
+    # Centilitres → ml  (most common in EU trade)
+    "1cl": 10, "3cl": 30, "4cl": 40, "5cl": 50, "7cl": 70, "10cl": 100,
+    "20cl": 200, "25cl": 250, "35cl": 350, "37.5cl": 375, "50cl": 500,
+    "70cl": 700, "75cl": 750, "100cl": 1000, "150cl": 1500, "200cl": 2000,
+}
+# e.g. "100cl" → 1000  /  "1L" → 1000  /  "1000ml" → 1000
+def _token_to_ml(tok: str) -> Optional[float]:
+    t = tok.strip().lower().replace(",", ".")
+    if m := re.fullmatch(r"(\d+(?:\.\d+)?)\s*ml", t):
+        return float(m.group(1))
+    if m := re.fullmatch(r"(\d+(?:\.\d+)?)\s*cl", t):
+        return float(m.group(1)) * 10
+    if m := re.fullmatch(r"(\d+(?:\.\d+)?)\s*l", t):
+        return float(m.group(1)) * 1000
+    return _VOL_ALIAS.get(t)
+
+def _parse_search_tokens(raw: str):
+    """
+    Break a free-text search string into structured constraints.
+    Returns (text_terms: list[str], volume_ml: float|None, customs: str|None).
+    """
+    if not raw:
+        return [], None, None
+    text_terms, volume_ml, customs = [], None, None
+    for tok in raw.split():
+        if tok.upper() in ("T1", "T2"):
+            customs = tok.upper()
+            continue
+        ml = _token_to_ml(tok)
+        if ml is not None:
+            volume_ml = ml
+            continue
+        text_terms.append(tok)
+    return text_terms, volume_ml, customs
 
 
 _WINDOW_DAYS = {"1M": 30, "3M": 90, "6M": 182, "12M": 365, "24M": 730, "ALL": None}
@@ -43,7 +83,13 @@ async def get_benchmarks(
     days = _WINDOW_DAYS.get(window, 365)
     cutoff = datetime.utcnow() - timedelta(days=days) if days else None
 
-    q = db.query(OfferItemDB).filter(OfferItemDB.price_per_unit_eur.isnot(None))
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    q = (db.query(OfferItemDB)
+         .filter(OfferItemDB.price_per_unit_eur.isnot(None))
+         # Exclude offers whose valid_until has already passed.
+         .filter(or_(OfferItemDB.valid_until.is_(None),
+                     OfferItemDB.valid_until == '',
+                     OfferItemDB.valid_until >= today)))
     if cutoff:
         q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) >= cutoff)
 
@@ -173,13 +219,23 @@ async def get_records(
         subquery = subquery.filter(OfferItemDB.source_file_id == source_file_id)
 
     if search:
-        search_term = f"%{search}%"
-        subquery = subquery.filter(
-            or_(
-                OfferItemDB.product_name.ilike(search_term),
-                OfferItemDB.brand.ilike(search_term)
-            )
-        )
+        text_terms, volume_ml, customs = _parse_search_tokens(search)
+        # Volume token → exact ml match
+        if volume_ml is not None:
+            subquery = subquery.filter(OfferItemDB.unit_volume_ml == volume_ml)
+        # Customs token (T1/T2)
+        if customs:
+            subquery = subquery.filter(OfferItemDB.custom_status == customs)
+        # Remaining text terms — each must match at least one searchable field
+        for term in text_terms:
+            like = f"%{term}%"
+            subquery = subquery.filter(or_(
+                OfferItemDB.brand.ilike(like),
+                OfferItemDB.product_name.ilike(like),
+                OfferItemDB.ean_code.ilike(like),
+                OfferItemDB.supplier_reference.ilike(like),
+                OfferItemDB.supplier_name.ilike(like),
+            ))
 
     if category:
         subquery = subquery.filter(OfferItemDB.category.ilike(category))
@@ -276,13 +332,19 @@ async def get_best_prices(
     )
 
     if search:
-        search_term = f"%{search}%"
-        query = query.filter(
-            or_(
-                OfferItemDB.product_name.ilike(search_term),
-                OfferItemDB.brand.ilike(search_term)
-            )
-        )
+        text_terms, volume_ml, customs = _parse_search_tokens(search)
+        if volume_ml is not None:
+            query = query.filter(OfferItemDB.unit_volume_ml == volume_ml)
+        if customs:
+            query = query.filter(OfferItemDB.custom_status == customs)
+        for term in text_terms:
+            like = f"%{term}%"
+            query = query.filter(or_(
+                OfferItemDB.brand.ilike(like),
+                OfferItemDB.product_name.ilike(like),
+                OfferItemDB.ean_code.ilike(like),
+                OfferItemDB.supplier_name.ilike(like),
+            ))
 
     if category:
         query = query.filter(OfferItemDB.category.ilike(category))
