@@ -614,6 +614,9 @@ async def process_offer(payload, job_id: str):
                     (p.get("ean_code") or "").strip().lstrip("0"),
                     p.get("price_per_unit") or 0,
                     (p.get("retail_state") or "").strip().lower(),
+                    # Supplier reference distinguishes same-EAN/same-price line
+                    # items with different conditions (e.g. "Clean EU" vs "Deco").
+                    (p.get("supplier_reference") or "").strip().lower(),
                 )
             def _completeness(p):
                 return sum(1 for v in (p.get("gender"), p.get("retail_state"),
@@ -672,7 +675,7 @@ async def process_offer(payload, job_id: str):
                     # sentinel — "Not Found" from product_data would otherwise
                     # overwrite the header-row values we extracted before batching.
                     for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name'):
-                        if merged_data.get(_mf) in (None, '', 'Not Found') and extracted_data.get(_mf):
+                        if merged_data.get(_mf) in (None, '', 'Not Found', 'nan', 'NaN') and extracted_data.get(_mf) not in (None, '', 'Not Found', 'nan', 'NaN'):
                             merged_data[_mf] = extracted_data[_mf]
 
                     if merged_data.get('product_key') in [None, '', 'Not Found']:
