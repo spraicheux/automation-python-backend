@@ -34,6 +34,7 @@ def detect_document_category(filename: str = "", sample_text: str = "") -> str:
         "cosmetic", "makeup", "skincare", "skin care",
         "mascara", "lipstick", "foundation", "concealer",
         "eyeliner", "blush", "serum", "moisturi", "cleanser",
+        "beauty",
     )
     spirits_signals = (
         "whisky", "whiskey", "bourbon", "cognac", "vodka", "gin",
@@ -41,9 +42,15 @@ def detect_document_category(filename: str = "", sample_text: str = "") -> str:
         " abv ", "% vol", "% abv",
     )
 
+    s = sum(1 for w in spirits_signals if w in hay)
+
+    # Fast-path: files titled/labelled as "beauty" with no spirits signals
+    # are mixed perfume+cosmetics offers — cosmetics rules handle both.
+    if "beauty" in hay and s == 0:
+        return "cosmetics"
+
     p = sum(1 for w in perfume_signals if w in hay)
     c = sum(1 for w in cosmetics_signals if w in hay)
-    s = sum(1 for w in spirits_signals if w in hay)
 
     if p >= 2 and p > c and p > s:
         return "perfumes"

@@ -568,6 +568,17 @@ async def process_offer(payload, job_id: str):
                             if 'products' in file_extracted and isinstance(file_extracted['products'], list):
                                 logger.info(f"Found {len(file_extracted['products'])} products in Excel file")
                                 all_products.extend(file_extracted['products'])
+                                # Copy document-level metadata extracted from
+                                # the XLSX header rows (offer_date, incoterm,
+                                # location, currency, supplier_name) as
+                                # fallbacks — only if not already set by text
+                                # extraction. These are absent from product_data
+                                # dicts so merged_data picks them up from here.
+                                for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name'):
+                                    _fv = file_extracted.get(_mf)
+                                    if _fv and not extracted_data.get(_mf):
+                                        extracted_data[_mf] = _fv
+                                        logger.info(f"[process_offer] XLSX metadata fallback: {_mf}={_fv!r}")
                             else:
                                 # Single product extraction (old format)
                                 for key, value in file_extracted.items():
@@ -588,15 +599,13 @@ async def process_offer(payload, job_id: str):
         # or the same product listed twice). Key on normalised name + volume + price.
         if all_products:
             # EAN-first dedup: two product dicts that share brand +
-            # product_name + unit_volume_ml + ean_code + price are the
-            # SAME SKU regardless of attribute completeness. If one copy
-            # has gender populated and the other doesn't, keep the
-            # richer one — never emit two rows for the same physical
-            # product just because the LLM caught the signal on only
-            # one of the extractions. Perfume_format, retail_state,
-            # shade and product_type are NOT part of the dedup key —
-            # they're genuine SKU discriminators but a null-vs-populated
-            # mismatch does not create a new SKU (client §5 fallback).
+            # product_name + unit_volume_ml + ean_code + price +
+            # retail_state are the SAME SKU. retail_state is included
+            # because the same EAN can legitimately appear at different
+            # retail states (e.g. Clean EU vs Deco) as distinct line
+            # items — matches admin._canon_key. Perfume_format, shade,
+            # and product_type are still NOT in the key: a null-vs-
+            # populated mismatch for those does not create a new SKU.
             def _canon_key(p):
                 return (
                     (p.get("brand") or "").strip().lower(),
@@ -604,6 +613,7 @@ async def process_offer(payload, job_id: str):
                     p.get("unit_volume_ml") or 0,
                     (p.get("ean_code") or "").strip().lstrip("0"),
                     p.get("price_per_unit") or 0,
+                    (p.get("retail_state") or "").strip().lower(),
                 )
             def _completeness(p):
                 return sum(1 for v in (p.get("gender"), p.get("retail_state"),

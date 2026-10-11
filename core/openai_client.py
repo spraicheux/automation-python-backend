@@ -1139,12 +1139,52 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 total_batches = (total_rows + batch_size - 1) // batch_size
                 logger.info(f"[extract_from_file] Will process {total_rows} rows in {total_batches} batch(es) of up to {batch_size} rows each")
 
-                # Category detection on the XLSX side: filename plus a text
-                # sample built from column headers + first 5 data rows so the
-                # detector can catch "EDP/EDT/ml" perfume signatures or
-                # "mascara/serum" cosmetics signatures without an LLM call.
+                # Pre-scan: extract document-level metadata rows that some
+                # suppliers embed before the column-header + product rows
+                # (e.g. "Offer Date | 2026-04-15", "Incoterm | EXW").
+                # Also tracks _first_product_row so _xlsx_sample is built
+                # from actual product rows instead of metadata rows.
+                _XLSX_META_KW = {
+                    "offer date": "offer_date",
+                    "supplier": "supplier_name",
+                    "incoterm": "incoterm",
+                    "location": "location",
+                    "currency": "currency",
+                }
+                _doc_metadata: dict = {}
+                _first_product_row = 0
+                for _ri in range(min(20, total_rows)):
+                    _cell0 = df.iloc[_ri, 0] if len(df.columns) > 0 else None
+                    if _cell0 is None or (hasattr(_cell0, '__float__') and pd.isna(_cell0)):
+                        continue
+                    _k = str(_cell0).strip().lower()
+                    if not _k:
+                        continue
+                    _kw_match = None
+                    for _kw, _field in _XLSX_META_KW.items():
+                        if _kw in _k:
+                            _kw_match = _field
+                            break
+                    if _kw_match:
+                        _cell1 = df.iloc[_ri, 1] if len(df.columns) > 1 else None
+                        if _cell1 is not None and not (hasattr(_cell1, '__float__') and pd.isna(_cell1)):
+                            _v = str(_cell1).strip()
+                            if _v and _v.lower() not in ("nan", "none", ""):
+                                _doc_metadata[_kw_match] = _v
+                        _first_product_row = _ri + 1
+                    else:
+                        # First non-keyword non-blank row ends the metadata block
+                        if _doc_metadata:
+                            break
+                if _doc_metadata:
+                    logger.info(f"[extract_from_file] XLSX metadata pre-scan: {_doc_metadata}, first_product_row={_first_product_row}")
+
+                # Category detection: build sample from actual product rows
+                # (after the metadata header block) so "EDP/EDT/lipstick"
+                # signals are visible — not metadata rows like Incoterm/EXW.
+                _sample_df = df.iloc[_first_product_row:_first_product_row + 15]
                 _xlsx_sample = " ".join(str(c) for c in df.columns) + " " + " ".join(
-                    " ".join(str(v) for v in row) for _, row in df.head(5).iterrows()
+                    " ".join(str(v) for v in row) for _, row in _sample_df.iterrows()
                 )
                 _doc_category = detect_document_category(file_path, _xlsx_sample)
                 _EXTRACTION_RULES = rules_for_category(_doc_category, SHARED_EXTRACTION_RULES)
@@ -1627,6 +1667,10 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         'original_rows': total_rows,
                         'source_text': _xlsx_text,
                         'source_row_estimate': _xlsx_source_row_estimate,
+                        # Document-level metadata extracted from header rows
+                        # (offer_date, incoterm, location, currency, supplier_name).
+                        # processor.py copies these into extracted_data as fallbacks.
+                        **_doc_metadata,
                     }
                     logger.info(f"[extract_from_file] ===== END EXCEL — returning {len(all_extracted_products)} products (expected {_xlsx_source_row_estimate}) =====")
                     return result
