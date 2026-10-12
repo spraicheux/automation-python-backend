@@ -1578,11 +1578,14 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 _ean_col = _ci
                                 break
                         if _ean_col is None:
-                            # Fall back to scanning the first row for a header cell
-                            for _ri in range(min(5, len(df))):
+                            # Fall back: scan the first 15 rows for a header cell
+                            # containing "ean"/"bar"/"gtin". Files with metadata
+                            # blocks before the column-header row (like File B's 7
+                            # preamble rows) push the real header past row 5.
+                            for _ri in range(min(15, len(df))):
                                 for _ci in range(len(df.columns)):
                                     _cv = str(df.iloc[_ri, _ci]) if df.iloc[_ri, _ci] is not None else ''
-                                    if 'bar' in _cv.lower() or 'ean' in _cv.lower() or 'gtin' in _cv.lower():
+                                    if 'bar' in _cv.lower() or 'ean' in _cv.lower() or 'gtin' in _cv.lower() or 'upc' in _cv.lower():
                                         _ean_col = _ci
                                         break
                                 if _ean_col is not None:
