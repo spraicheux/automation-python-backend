@@ -1220,6 +1220,22 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     _header_vals = [str(df.iloc[_best_header_row, _ci]) for _ci in range(len(df.columns))]
                     _col_context = f"COLUMN HEADERS (in order): {', '.join(v for v in _header_vals if v and v.lower() not in ('nan','none',''))}\n"
                     logger.info(f"[extract_from_file] Detected column header row {_best_header_row}: {_col_context.strip()}")
+                    # Remap DataFrame column names to the real header values so
+                    # data_rows use human-readable keys ("Line Ref", "EAN / UPC",
+                    # "Brand" …) instead of "Unnamed: N". Without this, batch 5
+                    # (and any small trailing batch) has no surrounding context to
+                    # infer column semantics from, and the LLM drops the rows.
+                    _deduped_cols = []
+                    _seen_col_counts: dict = {}
+                    for _cname in _header_vals:
+                        _cname = _cname.strip() if _cname and _cname.lower() not in ('nan', 'none', '') else f"col_{len(_deduped_cols)}"
+                        _seen_col_counts[_cname] = _seen_col_counts.get(_cname, 0) + 1
+                        if _seen_col_counts[_cname] > 1:
+                            _deduped_cols.append(f"{_cname}_{_seen_col_counts[_cname]}")
+                        else:
+                            _deduped_cols.append(_cname)
+                    df.columns = _deduped_cols
+                    logger.info(f"[extract_from_file] Remapped DataFrame columns to real headers: {list(df.columns)}")
 
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
