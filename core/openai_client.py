@@ -1238,6 +1238,11 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     _data_col_names = _remapped
                     logger.info(f"[extract_from_file] data_row key names remapped to real headers: {_data_col_names}")
 
+                # _ean_header_row: row index of the detected column-header row
+                # (same as _best_header_row for XLSX — reused by the batch-skip
+                # logic and the log message below).
+                _ean_header_row = _best_header_row
+
                 # _product_batch_start: first batch_start whose rows can contain
                 # actual products. All rows before _ean_header_row+1 are metadata
                 # (supplier, offer date, the header row itself). Sending purely-
