@@ -1238,10 +1238,31 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     _data_col_names = _remapped
                     logger.info(f"[extract_from_file] data_row key names remapped to real headers: {_data_col_names}")
 
+                # _product_batch_start: first batch_start whose rows can contain
+                # actual products. All rows before _ean_header_row+1 are metadata
+                # (supplier, offer date, the header row itself). Sending purely-
+                # metadata batches to the LLM causes it to hallucinate products.
+                # We skip them; the recovery pass catches any real rows the header
+                # detection got wrong.
+                _product_batch_start = (
+                    (_ean_header_row // batch_size) * batch_size
+                    if _ean_header_row >= 0 else 0
+                )
+
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
                     batch_df = df.iloc[batch_start:batch_end]
                     batch_num = batch_start // batch_size + 1
+
+                    # Skip batches that are entirely before the product rows.
+                    if batch_start < _product_batch_start:
+                        logger.info(
+                            f"[extract_from_file] Batch {batch_num}: skipping — "
+                            f"entirely pre-product metadata (rows {batch_start}–{batch_end-1}, "
+                            f"product area starts at row {_ean_header_row+1})"
+                        )
+                        processed_row_count += len(batch_df)
+                        continue
 
                     logger.info(f"[extract_from_file] ----- Batch {batch_num}/{total_batches}: rows {batch_start}–{batch_end - 1} ({len(batch_df)} rows) -----")
 
@@ -1643,23 +1664,30 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 _bc = str(df.iloc[_ri, _ean_col]) if df.iloc[_ri, _ean_col] is not None else ''
                                 _bc_digits = _re_rec.sub(r'\D+', '', _bc).lstrip('0')
                                 if 7 <= len(_bc_digits) <= 14 and _bc_digits not in _extracted_eans:
-                                    # Build a row dict for recovery prompt
+                                    # Build a row dict for recovery prompt — use
+                                    # real header names as keys (same as batch rows).
                                     _row_dict = {}
+                                    import pandas as _pd_rec
                                     for _ci, _cv in enumerate(df.columns):
+                                        _rkey = (_data_col_names[_ci]
+                                                 if _ci < len(_data_col_names)
+                                                 else str(_cv))
                                         _val = df.iloc[_ri, _ci]
                                         try:
-                                            import pandas as _pd_rec
-                                            if _pd_rec.isna(_val):
-                                                _row_dict[str(_cv)] = ''
-                                                continue
+                                            _row_dict[_rkey] = '' if _pd_rec.isna(_val) else str(_val)
                                         except Exception:
-                                            pass
-                                        _row_dict[str(_cv)] = str(_val)
+                                            _row_dict[_rkey] = str(_val)
                                     _missing_rows.append(_row_dict)
                                     if len(_missing_rows) >= 50:
                                         break
-                        _gap = _xlsx_source_row_estimate - len(all_extracted_products)
-                        if _missing_rows and _gap > 0:
+                        # Fire recovery whenever _missing_rows is non-empty.
+                        # The _gap > 0 gate was dropped because estimate_xlsx_source_rows
+                        # can return 0 for files with non-standard column layouts (e.g.
+                        # name_col mis-assigned to "Line Ref" instead of "Description"),
+                        # which silently disabled the recovery pass even when rows were
+                        # genuinely missing. _missing_rows is already safely filtered to
+                        # rows with valid 7-14 digit EAN values not yet in _extracted_eans.
+                        if _missing_rows:
                             logger.warning(
                                 f"[extract_from_file] XLSX integrity gap: extracted "
                                 f"{len(all_extracted_products)} but expected "
