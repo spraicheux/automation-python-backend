@@ -1216,26 +1216,27 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     if _score > _best_header_score:
                         _best_header_score = _score
                         _best_header_row = _hri
+                # _data_col_names: the key names to use when building data_rows.
+                # When pandas gave all columns "Unnamed: N" (spreadsheet title in
+                # row 1 → no real header), we substitute the real column-header
+                # values found at _best_header_row so every batch dict uses keys
+                # like "EAN / UPC", "Brand", "Description" instead of "Unnamed: 2".
+                # We do NOT mutate df.columns (async/Celery safe).
+                _data_col_names = list(df.columns)  # default: pandas names
                 if _best_header_row >= 0 and _best_header_score >= 3:
                     _header_vals = [str(df.iloc[_best_header_row, _ci]) for _ci in range(len(df.columns))]
                     _col_context = f"COLUMN HEADERS (in order): {', '.join(v for v in _header_vals if v and v.lower() not in ('nan','none',''))}\n"
                     logger.info(f"[extract_from_file] Detected column header row {_best_header_row}: {_col_context.strip()}")
-                    # Remap DataFrame column names to the real header values so
-                    # data_rows use human-readable keys ("Line Ref", "EAN / UPC",
-                    # "Brand" …) instead of "Unnamed: N". Without this, batch 5
-                    # (and any small trailing batch) has no surrounding context to
-                    # infer column semantics from, and the LLM drops the rows.
-                    _deduped_cols = []
-                    _seen_col_counts: dict = {}
-                    for _cname in _header_vals:
-                        _cname = _cname.strip() if _cname and _cname.lower() not in ('nan', 'none', '') else f"col_{len(_deduped_cols)}"
-                        _seen_col_counts[_cname] = _seen_col_counts.get(_cname, 0) + 1
-                        if _seen_col_counts[_cname] > 1:
-                            _deduped_cols.append(f"{_cname}_{_seen_col_counts[_cname]}")
-                        else:
-                            _deduped_cols.append(_cname)
-                    df.columns = _deduped_cols
-                    logger.info(f"[extract_from_file] Remapped DataFrame columns to real headers: {list(df.columns)}")
+                    _seen_cnames: dict = {}
+                    _remapped: list = []
+                    for _ci, _cname in enumerate(_header_vals):
+                        _cname = (_cname.strip()
+                                  if _cname and _cname.lower() not in ('nan', 'none', '')
+                                  else str(df.columns[_ci]))
+                        _seen_cnames[_cname] = _seen_cnames.get(_cname, 0) + 1
+                        _remapped.append(f"{_cname}_{_seen_cnames[_cname]}" if _seen_cnames[_cname] > 1 else _cname)
+                    _data_col_names = _remapped
+                    logger.info(f"[extract_from_file] data_row key names remapped to real headers: {_data_col_names}")
 
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
@@ -1247,12 +1248,15 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     data_rows = []
                     for idx, row in batch_df.iterrows():
                         row_dict = {}
-                        for col in batch_df.columns:
+                        for _ci, col in enumerate(batch_df.columns):
                             value = row[col]
-                            if pd.isna(value):
-                                row_dict[col] = ""
-                            else:
-                                row_dict[col] = str(value)
+                            # Use the real header name as key if available,
+                            # otherwise fall back to the pandas column name.
+                            _key = _data_col_names[_ci] if _ci < len(_data_col_names) else str(col)
+                            try:
+                                row_dict[_key] = "" if pd.isna(value) else str(value)
+                            except (TypeError, ValueError):
+                                row_dict[_key] = str(value)
                         data_rows.append(row_dict)
 
                     logger.info(f"[extract_from_file] Batch {batch_num}: built {len(data_rows)} row dict(s) for AI")
