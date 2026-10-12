@@ -1321,3 +1321,59 @@ def strip_product_name_noise(
         "rows_changed": len(changes),
         "samples": changes[:50],
     }
+
+
+@router.post("/admin/flush-celery-queue", dependencies=[Depends(_require_admin)])
+def flush_celery_queue(
+    fail_stuck_jobs: bool = True,
+    apply: bool = False,
+):
+    """
+    Mark all Redis job keys currently in "processing" state as "failed",
+    and purge all pending (not-yet-started) tasks from the Celery queue.
+
+    Useful when a Celery worker hangs on a slow OpenAI call and blocks
+    the single-worker queue on the B1 tier.
+
+    Pass apply=true to execute; default is dry-run (shows what would change).
+    """
+    from core.redis_client import redis_manager
+    from core.celery_app import celery_app
+
+    stuck_jobs = []
+    purged_tasks = 0
+
+    if redis_manager.use_redis and redis_manager.client:
+        try:
+            keys = redis_manager.client.keys("job:*:status")
+            for key in keys:
+                status = redis_manager.client.get(key)
+                if status == "processing":
+                    job_id = key.split(":")[1]
+                    stuck_jobs.append(job_id)
+                    if apply and fail_stuck_jobs:
+                        redis_manager.set_job_status(job_id, "failed")
+                        redis_manager.set_job_result(job_id, {
+                            "status": "failed",
+                            "error": "Marked failed by flush-celery-queue admin endpoint",
+                            "products": [],
+                            "total_products": 0,
+                        })
+        except Exception as e:
+            return {"error": f"Redis scan failed: {e}"}
+
+        if apply:
+            try:
+                purged_tasks = celery_app.control.purge()
+            except Exception as e:
+                purged_tasks = f"purge_failed: {e}"
+    else:
+        return {"error": "Redis not connected — cannot scan job keys"}
+
+    return {
+        "applied": apply,
+        "stuck_jobs_found": len(stuck_jobs),
+        "stuck_job_ids": stuck_jobs,
+        "fail_stuck_jobs": fail_stuck_jobs,
+        "purged_queue_tasks": purged_tasks,
+    }
