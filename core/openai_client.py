@@ -1201,6 +1201,26 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 _EXTRACTION_RULES = rules_for_category(_doc_category, SHARED_EXTRACTION_RULES)
                 logger.info(f"[extract_from_file] XLSX category detected: {_doc_category!r}; using {'slim' if _doc_category in ('perfumes','cosmetics') else 'omnibus'} rules ({len(_EXTRACTION_RULES)} chars)")
 
+                # Build a column-context hint so every batch prompt knows what
+                # the real column names are, even when pandas used the title row
+                # as headers and produced "Unnamed: N" columns. We scan up to 15
+                # rows for the actual column-header row (the one with the most
+                # non-empty, non-numeric, non-metadata cells).
+                _col_context = ""
+                _best_header_row = -1
+                _best_header_score = 0
+                for _hri in range(min(15, total_rows)):
+                    _row_vals = [str(df.iloc[_hri, _ci]) for _ci in range(len(df.columns))
+                                 if df.iloc[_hri, _ci] is not None and not (hasattr(df.iloc[_hri, _ci], '__float__') and pd.isna(df.iloc[_hri, _ci]))]
+                    _score = sum(1 for v in _row_vals if v and not v.replace('.','').replace('-','').isdigit() and v.lower() not in ('nan','none',''))
+                    if _score > _best_header_score:
+                        _best_header_score = _score
+                        _best_header_row = _hri
+                if _best_header_row >= 0 and _best_header_score >= 3:
+                    _header_vals = [str(df.iloc[_best_header_row, _ci]) for _ci in range(len(df.columns))]
+                    _col_context = f"COLUMN HEADERS (in order): {', '.join(v for v in _header_vals if v and v.lower() not in ('nan','none',''))}\n"
+                    logger.info(f"[extract_from_file] Detected column header row {_best_header_row}: {_col_context.strip()}")
+
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
                     batch_df = df.iloc[batch_start:batch_end]
@@ -1258,6 +1278,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     {_cat_directive}
                     Return JSON ONLY, no explanation.
 
+                    {_col_context}
                     EXCEL DATA BATCH ({batch_start + 1}-{batch_end} of {total_rows}):
                     Extract EXACTLY {len(batch_df)} products from this data.
                     If a product has MULTIPLE INCOTERMS, create one row per incoterm (duplicate all other fields).
