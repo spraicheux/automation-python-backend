@@ -1573,13 +1573,14 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         # looks like a GS1-length digit string count.
                         import re as _re_rec
                         _ean_col = None
+                        _ean_header_row = 0  # row where the EAN column header was found
                         for _ci, _cv in enumerate(df.columns):
                             if 'bar' in str(_cv).lower() or 'ean' in str(_cv).lower() or 'gtin' in str(_cv).lower():
                                 _ean_col = _ci
                                 break
                         if _ean_col is None:
                             # Fall back: scan the first 15 rows for a header cell
-                            # containing "ean"/"bar"/"gtin". Files with metadata
+                            # containing "ean"/"bar"/"gtin"/"upc". Files with metadata
                             # blocks before the column-header row (like File B's 7
                             # preamble rows) push the real header past row 5.
                             for _ri in range(min(15, len(df))):
@@ -1587,12 +1588,17 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                     _cv = str(df.iloc[_ri, _ci]) if df.iloc[_ri, _ci] is not None else ''
                                     if 'bar' in _cv.lower() or 'ean' in _cv.lower() or 'gtin' in _cv.lower() or 'upc' in _cv.lower():
                                         _ean_col = _ci
+                                        _ean_header_row = _ri
                                         break
                                 if _ean_col is not None:
                                     break
+                        # Start scan AFTER the header row so metadata rows with
+                        # numeric-looking values (e.g. Offer Date "2026-10-09" →
+                        # "20261009") don't pollute _missing_rows.
+                        _product_scan_start = max(_first_product_row, _ean_header_row + 1)
                         _missing_rows = []
                         if _ean_col is not None:
-                            for _ri in range(len(df)):
+                            for _ri in range(_product_scan_start, len(df)):
                                 _bc = str(df.iloc[_ri, _ean_col]) if df.iloc[_ri, _ean_col] is not None else ''
                                 _bc_digits = _re_rec.sub(r'\D+', '', _bc).lstrip('0')
                                 if 7 <= len(_bc_digits) <= 14 and _bc_digits not in _extracted_eans:
