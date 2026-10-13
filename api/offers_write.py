@@ -57,6 +57,7 @@ class OfferCreate(BaseModel):
     units_per_case: Optional[float] = None
     cases_per_pallet: Optional[float] = None
     quantity_case: Optional[float] = None
+    quantity_unit: Optional[str] = "cases"
     gift_box: Optional[str] = None
     refillable_status: Optional[str] = None
     alcohol_percent: Optional[float] = None
@@ -101,7 +102,7 @@ class OfferPatch(BaseModel):
 _EDITABLE_FIELDS = {
     "product_name", "product_key", "brand", "category", "sub_category",
     "packaging", "packaging_raw", "bottle_or_can_type", "unit_volume_ml",
-    "units_per_case", "cases_per_pallet", "quantity_case", "gift_box",
+    "units_per_case", "cases_per_pallet", "quantity_case", "quantity_unit", "gift_box",
     "refillable_status", "currency", "price_per_unit", "price_per_unit_eur",
     "price_per_case", "price_per_case_eur", "fx_rate", "fx_date",
     "alcohol_percent", "origin_country", "supplier_country", "incoterm",
@@ -173,6 +174,7 @@ def create_offer(payload: OfferCreate, db: Session = Depends(get_db)):
         units_per_case=payload.units_per_case,
         cases_per_pallet=payload.cases_per_pallet,
         quantity_case=payload.quantity_case,
+        quantity_unit=payload.quantity_unit or "cases",
         gift_box=payload.gift_box,
         refillable_status=payload.refillable_status,
         currency=(payload.currency or "EUR").upper(),

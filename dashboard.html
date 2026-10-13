@@ -73,6 +73,7 @@
     .alert-body { flex: 1; min-width: 0; }
     .alert-title { font-size: 13px; font-weight: 600; color: white; }
     .alert-msg { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+    .alert-supplier-line { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
     .alert-meta { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--muted); margin-top: 4px; }
     .alert-delta { font-family: 'DM Mono', monospace; font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 12px; }
     .alert-delta.good { background: rgba(52,211,153,0.15); color: var(--green); }
@@ -124,6 +125,8 @@
     .source-item-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .source-item-meta { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 3px; }
     .source-badge { background: var(--pill); border-radius: 20px; padding: 2px 6px; font-size: 9px; font-family: 'DM Mono', monospace; }
+    .source-row-counts { font-family: 'DM Mono', monospace; font-size: 9px; padding: 2px 6px; border-radius: 20px; background: var(--pill); }
+    .source-row-counts.incomplete { background: rgba(220,90,40,0.15); color: var(--red, #c0392b); }
     .all-divider { border: none; border-top: 1px solid var(--border); margin: 6px 0 10px; }
     .sidebar-toggle { position: absolute; top: 76px; left: var(--sidebar-w); background: var(--surface); border: 1px solid var(--border); border-left: none; width: 22px; height: 44px; border-radius: 0 8px 8px 0; display: grid; place-items: center; cursor: pointer; z-index: 50; transition: left 0.2s; }
     .sidebar-toggle:hover { background: var(--card-hover); }
@@ -459,6 +462,7 @@
           <option value="">All Status</option>
           <option value="T1">T1</option>
           <option value="T2">T2</option>
+          <option value="__none__">Unknown (no T1/T2)</option>
         </select>
         <select id="filter-flag-state" class="filter-select" title="Filter by review flag state">
           <option value="">All Flag States</option>
@@ -554,7 +558,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input id="bp-search" placeholder="Search product or brand to compare…" />
         </div>
-        <div class="search-hint">Comparable offers grouped by brand, name, bottle size, and incoterm. Search brand, product, size (e.g. 100cl / 1L), T1 / T2.</div>
+        <div class="search-hint">Comparable offers grouped by EAN when available (takes priority over name matching), otherwise by brand, product name, volume, and ABV. Peer groups are split by incoterm + location — prices on different commercial terms are not directly comparable. Search brand, product, size (e.g. 100cl / 1L), T1 / T2.</div>
       </div>
 
       <div class="filter-bar">
@@ -603,7 +607,7 @@
       <div class="form-field"><label>Supplier email</label><input id="nf-supplier_email" type="email" /></div>
       <div class="form-field"><label>Incoterm</label><select id="nf-incoterm"><option value="">—</option><option>EXW</option><option>DAP</option><option>FOB</option><option>CIF</option><option>DDP</option></select></div>
       <div class="form-field"><label>Location</label><input id="nf-location" placeholder="e.g. Loendersloot" /></div>
-      <div class="form-field"><label>Available quantity (cases)</label><input id="nf-quantity_case" type="number" step="1" /></div>
+      <div class="form-field"><label>Available quantity</label><div style="display:flex;gap:6px;"><input id="nf-quantity_case" type="number" step="1" style="flex:1;min-width:0;" placeholder="e.g. 500" /><select id="nf-quantity_unit" style="width:90px;"><option value="cases">cases</option><option value="bottles">bottles</option><option value="pallets">pallets</option></select></div></div>
       <div class="form-field"><label>MOQ (cases)</label><input id="nf-moq_cases" type="number" step="1" /></div>
       <div class="form-field"><label>Lead time</label><input id="nf-lead_time" placeholder="e.g. 2 weeks" /></div>
       <div class="form-field"><label>T1 / T2</label><select id="nf-custom_status"><option value="">—</option><option>T1</option><option>T2</option></select></div>
@@ -749,6 +753,10 @@
         document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         filters.category_slug = btn.dataset.slug || '';
+        // Always show all files when switching category so the category
+        // filter isn't silently ANDed with a single-file source restriction.
+        activeSourceId = null;
+        filterSourceList();
         loadRecords(true);
       });
     });
@@ -759,6 +767,8 @@
         .forEach(id => document.getElementById(id).value = '');
       globalSearchText = ''; customStatusFilter = ''; flagStateFilter = ''; ageDaysFilter = '';
       Object.keys(filters).forEach(k => filters[k] = '');
+      activeSourceId = null;
+      filterSourceList();
       document.querySelectorAll('.cat-pill').forEach((b, i) => b.classList.toggle('active', i === 0));
       loadRecords(true);
     });
@@ -864,11 +874,15 @@
     const delta = a.previous_best.delta_pct;
     const deltaCls = delta < -5 ? 'good' : (delta < 5 ? 'mid' : 'mid');
     const ageInfo = formatAge(a.current.offer_date);
+    const curSupplier = a.current?.supplier || '—';
+    const curPrice = a.current?.price_eur != null ? `€${Number(a.current.price_eur).toFixed(2)}` : '—';
+    const prevSupplier = a.previous_best?.supplier || '—';
+    const prevPrice = a.previous_best?.price_eur != null ? `€${Number(a.previous_best.price_eur).toFixed(2)}` : '—';
     return `<div class="alert-card" data-uid="${escapeAttr(a.current.uid)}">
       <div class="alert-icon ${iconCls}">${icon}</div>
       <div class="alert-body">
         <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
-        <div class="alert-msg">${escapeHtml(a.message || '')}</div>
+        <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · prev best: ${escapeHtml(prevSupplier)} ${prevPrice}</div>
         <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + ' ago' : ''} · click to open</div>
       </div>
       <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
@@ -896,7 +910,7 @@
       price_per_case: gn('price_per_case'), fx_rate: gn('fx_rate') || 1.0,
       supplier_name: gv('supplier_name'), supplier_email: gv('supplier_email'),
       incoterm: gv('incoterm'), location: gv('location'),
-      quantity_case: gn('quantity_case'), moq_cases: gn('moq_cases'),
+      quantity_case: gn('quantity_case'), quantity_unit: gv('quantity_unit') || 'cases', moq_cases: gn('moq_cases'),
       lead_time: gv('lead_time'), custom_status: gv('custom_status'),
       offer_date: gv('offer_date'), valid_until: gv('valid_until'),
       notes: gv('notes'), source_channel: 'manual',
@@ -916,6 +930,7 @@
       closeNewOfferModal();
       // Clear the form so the next open starts fresh
       ['brand','product_name','category','sub_category','unit_volume_ml','units_per_case','alcohol_percent','ean_code','price_per_unit','price_per_case','supplier_name','supplier_email','location','quantity_case','moq_cases','lead_time','offer_date','valid_until','notes'].forEach(k => document.getElementById('nf-' + k).value = '');
+      document.getElementById('nf-quantity_unit').value = 'cases';
       loadRecords(true);
     } catch (e) {
       const err = document.getElementById('nf-err');
@@ -1005,9 +1020,14 @@
     for (const s of sources) {
       const name = s.source_filename || s.sender_name || s.supplier_name || '(unnamed)';
       const date = s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB') : '';
+      const _exp = s.expected_row_count, _imp = s.imported_row_count ?? s.product_count ?? 0;
+      const _incomplete = s.import_incomplete;
+      const _rowInfo = _exp != null
+        ? `<span class="source-row-counts ${_incomplete ? 'incomplete' : ''}" title="${_imp} imported / ${_exp} expected${_incomplete ? ' — incomplete import' : ''}">${_imp}/${_exp}${_incomplete ? ' ⚠' : ''}</span>`
+        : `<span class="source-badge">${_imp}</span>`;
       html += `<div class="source-item ${s.id === activeSourceId ? 'active' : ''}" onclick="selectSource('${s.id}', '${escapeAttr(name)}')">
         <div class="source-item-name">${escapeHtml(name)}</div>
-        <div class="source-item-meta"><span>${date}</span><span class="source-badge">${s.product_count ?? 0}</span></div>
+        <div class="source-item-meta"><span>${date}</span>${_rowInfo}</div>
       </div>`;
     }
     list.innerHTML = html;
@@ -1144,7 +1164,20 @@
     if (i.sub_category) availableFilters.sub_category.add(i.sub_category);
     if (i.supplier_name) availableFilters.supplier.add(i.supplier_name);
     if (i.unit_volume_ml) availableFilters.bottle.add(String(i.unit_volume_ml));
-    if (i.packaging) availableFilters.packaging.add(i.packaging);
+    // Build canonical pack key from structured fields; fall back to raw string
+    // only when neither field is present. This prevents "12x700ml / 12x70cl /
+    // 12x1L" from appearing as three separate options for the same pack.
+    const _upc = i.units_per_case, _vol = i.unit_volume_ml;
+    if (_upc && _vol) {
+      const _volStr = _vol >= 1000 ? `${(_vol/1000).toFixed(_vol%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol}ml`;
+      availableFilters.packaging.add(`${Math.trunc(_upc)}×${_volStr}`);
+    } else if (_upc && _upc > 1) {
+      availableFilters.packaging.add(`${Math.trunc(_upc)}/case`);
+    } else if (_vol) {
+      availableFilters.packaging.add(`loose ${_vol >= 1000 ? `${(_vol/1000).toFixed(_vol%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol}ml`}`);
+    } else if (i.packaging) {
+      availableFilters.packaging.add(i.packaging);
+    }
     if (i.incoterm) availableFilters.incoterm.add(i.incoterm);
     if (i.location) availableFilters.location.add(i.location);
     if (i.currency) availableFilters.currency.add(i.currency);
@@ -1173,7 +1206,14 @@
     const now = Date.now();
     const ageCutoffMs = ageDaysFilter ? (Number(ageDaysFilter) * 24 * 60 * 60 * 1000) : null;
     return items.filter(i => {
-      if (customStatusFilter && i.custom_status !== customStatusFilter) return false;
+      if (customStatusFilter) {
+        if (customStatusFilter === '__none__') {
+          const cs = (i.custom_status || '').trim();
+          if (cs && cs !== 'Not Found') return false;
+        } else if (i.custom_status !== customStatusFilter) {
+          return false;
+        }
+      }
       if (flagStateFilter) {
         const c = classifyFlags(i.error_flags || []);
         const hasNeeds = c.needs.length > 0 || i.needs_manual_review;
@@ -1195,7 +1235,17 @@
       if (filters.brand && i.brand !== filters.brand) return false;
       if (filters.supplier && i.supplier_name !== filters.supplier) return false;
       if (filters.bottle && String(i.unit_volume_ml) !== filters.bottle) return false;
-      if (filters.packaging && i.packaging !== filters.packaging) return false;
+      if (filters.packaging) {
+        const _upc2 = i.units_per_case, _vol2 = i.unit_volume_ml;
+        let _packKey = null;
+        if (_upc2 && _vol2) {
+          const _vs = _vol2 >= 1000 ? `${(_vol2/1000).toFixed(_vol2%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol2}ml`;
+          _packKey = `${Math.trunc(_upc2)}×${_vs}`;
+        } else if (_upc2 && _upc2 > 1) { _packKey = `${Math.trunc(_upc2)}/case`; }
+        else if (_vol2) { const _vs2 = _vol2 >= 1000 ? `${(_vol2/1000).toFixed(_vol2%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol2}ml`; _packKey = `loose ${_vs2}`; }
+        else { _packKey = i.packaging; }
+        if (_packKey !== filters.packaging) return false;
+      }
       if (filters.incoterm && i.incoterm !== filters.incoterm) return false;
       if (filters.location && i.location !== filters.location) return false;
       if (filters.currency && i.currency !== filters.currency) return false;
@@ -1400,9 +1450,13 @@
     }
     const incoterm = i.incoterm && i.incoterm !== 'Not Found' ? `<span class="pill">${escapeHtml(i.incoterm)}</span>` : nullCell();
     const loc = i.location && i.location !== 'Not Found' ? escapeHtml(i.location) : nullCell();
+    const _hasOfferDate = !!i.offer_date;
     const ageInfo = formatAge(i.offer_date || i.created_at);
+    const _ageTitle = ageInfo
+      ? (_hasOfferDate ? ageInfo.title : `Age based on received date (offer date unavailable). ${ageInfo.title.replace('Offer date:', 'Received:')}`)
+      : '';
     const ageHtml = ageInfo
-      ? `<span title="${escapeAttr(ageInfo.title)}">${escapeHtml(ageInfo.text)}</span>`
+      ? `<span title="${escapeAttr(_ageTitle)}" style="${_hasOfferDate ? '' : 'opacity:0.6;font-style:italic;'}">${escapeHtml(ageInfo.text)}${_hasOfferDate ? '' : '*'}</span>`
       : nullCell();
     const ageCls = ageInfo ? (ageInfo.cls || '') : '';
     const flags = classifyFlags(i.error_flags || []);

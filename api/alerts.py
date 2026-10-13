@@ -105,9 +105,10 @@ def list_alerts(
             # Strict new low
             alert_type = "new_best_price"
             delta_pct = ((cur_price - best_prior_price) / best_prior_price) * 100
-            message = (f"New best price on {latest.brand or ''} {latest.product_name or ''}: "
-                       f"€{cur_price:.2f} — {delta_pct:.1f}% below prior best (€{best_prior_price:.2f}) "
-                       f"from {best_prior.supplier_name or 'unknown'}")
+            message = (f"{latest.supplier_name or 'Unknown supplier'} @ €{cur_price:.2f} — "
+                       f"new best for {latest.brand or ''} {latest.product_name or ''}. "
+                       f"Previous best: {best_prior.supplier_name or 'unknown'} €{best_prior_price:.2f} "
+                       f"({delta_pct:.1f}%)")
         else:
             # Did a NEW supplier just come in with a competitive offer?
             latest_supplier = (latest.supplier_name or "").lower().strip()
