@@ -258,6 +258,59 @@ class TestThreeIdentityLevels:
         assert a == b
 
 
+class TestGS1CheckDigit:
+    """
+    R-04 lock: ean_key() must validate the GS1 check digit and return "" for
+    any EAN whose last digit does not satisfy the alternating-weight formula.
+    Any regression here silently contaminates peer groups with false EAN keys.
+    """
+
+    def test_valid_ean13_accepted(self):
+        # 3348901234566 — check digit 6, computed: total=94, (10-4)%10=6
+        assert ean_key("3348901234566") == "3348901234566"
+
+    def test_invalid_ean13_one_off_rejected(self):
+        # Same stem, wrong last digit: 7 ≠ 6
+        assert ean_key("3348901234567") == ""
+
+    def test_audit_invalid_ean_rejected(self):
+        # Caught during Samuel's audit: client data contained this EAN
+        # with a transposed check digit. Must never form a peer group key.
+        assert ean_key("2901234500153") == ""
+
+    def test_audit_corrected_ean_accepted(self):
+        # Corrected version: check digit 2, total=78, (10-8)%10=2
+        assert ean_key("2901234500152") == "2901234500152"
+
+    def test_known_real_world_ean_accepted(self):
+        # Johnnie Walker Black 700ml 12pk — used as audit evidence
+        # total=68, (10-8)%10=2 ✓
+        assert ean_key("5000112637922") == "5000112637922"
+
+    def test_valid_ean8_accepted(self):
+        # 12345670 — check digit 0, total=60, (10-0)%10=0
+        assert ean_key("12345670") == "12345670"
+
+    def test_invalid_ean8_rejected(self):
+        # Same stem, wrong check digit: 8 ≠ 0
+        assert ean_key("12345678") == ""
+
+    def test_valid_gtin14_accepted(self):
+        # 13348901234563 — check digit 3, total=97, (10-7)%10=3
+        assert ean_key("13348901234563") == "13348901234563"
+
+    def test_invalid_gtin14_rejected(self):
+        # Same stem, wrong check digit: 5 ≠ 3
+        assert ean_key("13348901234565") == ""
+
+    def test_two_valid_eans_are_distinct(self):
+        # Belt-and-braces: the peer splitter depends on distinct ean_keys
+        # for distinct products. Two different valid EANs must not collide.
+        a = ean_key("3348901234566")
+        b = ean_key("3348901234573")
+        assert a and b and a != b
+
+
 class TestEANReconciliation:
     """
     EAN handling per client rules:
@@ -268,9 +321,10 @@ class TestEANReconciliation:
     """
 
     def test_ean_folded_to_digits(self):
-        assert ean_key("3348901234567") == "3348901234567"
-        assert ean_key(" 3348-9012-34567 ") == "3348901234567"
-        assert ean_key("EAN 3348901234567") == "3348901234567"
+        # 3348901234566 — check digit 6 (valid GS1)
+        assert ean_key("3348901234566") == "3348901234566"
+        assert ean_key(" 3348-9012-34566 ") == "3348901234566"
+        assert ean_key("EAN 3348901234566") == "3348901234566"
 
     def test_short_junk_rejected(self):
         # A "code" like "123" is not a real EAN — treat as unknown so we
@@ -280,10 +334,11 @@ class TestEANReconciliation:
         assert ean_key(None) == ""
 
     def test_valid_ean_lengths(self):
-        assert ean_key("12345678") == "12345678"          # EAN-8
-        assert ean_key("123456789012") == "123456789012"  # UPC
-        assert ean_key("1234567890123") == "1234567890123"      # EAN-13
-        assert ean_key("12345678901234") == "12345678901234"    # GTIN-14
+        # Each value below has a correct GS1 check digit.
+        assert ean_key("12345670") == "12345670"                # EAN-8  (check=0)
+        assert ean_key("123456789012") == "123456789012"        # UPC-12 (check=2)
+        assert ean_key("3348901234566") == "3348901234566"      # EAN-13 (check=6)
+        assert ean_key("13348901234563") == "13348901234563"    # GTIN-14 (check=3)
 
     def test_blank_ean_sku_matches_ean_bearing_sku(self):
         # Same attributes, one row with EAN, the other without → sku_identity
@@ -292,15 +347,16 @@ class TestEANReconciliation:
         b = sku_identity("Dior", "Sauvage", unit_volume_ml=100, alcohol_percent=None)
         assert a == b
         # And their EAN keys differ ("" vs "3348...") but the SKU key doesn't.
-        assert ean_key(None) != ean_key("3348901234567")
+        assert ean_key(None) != ean_key("3348901234566")
 
     def test_peer_group_still_splits_on_ean(self):
         # If both rows have EAN and they differ, the peer key catches it
         # so a "trusted best" never mixes them.
+        # 3348901234566 (check=6) and 3348901234573 (check=3) — two distinct valid EANs.
         pg_a = peer_group_id("Dior", "Sauvage", unit_volume_ml=100,
-                             ean_code="3348901234567", incoterm="EXW", location="Rotterdam")
+                             ean_code="3348901234566", incoterm="EXW", location="Rotterdam")
         pg_b = peer_group_id("Dior", "Sauvage", unit_volume_ml=100,
-                             ean_code="3348901234568", incoterm="EXW", location="Rotterdam")
+                             ean_code="3348901234573", incoterm="EXW", location="Rotterdam")
         assert pg_a != pg_b
 
 
@@ -331,10 +387,10 @@ class TestBestPricesHeadlineSemantics:
     def test_ean_conflict_disables_cross_peer_headline(self):
         # Two known & different EANs → the endpoint's ean_conflict flag
         # forces lowest_nominal_price_eur to None regardless of peer state.
-        # We assert the primitive: two distinct real EANs must fold to
+        # We assert the primitive: two distinct valid EANs must fold to
         # distinct ean_keys so the endpoint's `distinct_eans` count is > 1.
-        a = ean_key("3348901234567")
-        b = ean_key("3348901234568")
+        a = ean_key("3348901234566")  # check=6 ✓
+        b = ean_key("3348901234573")  # check=3 ✓
         assert a and b and a != b
 
 
