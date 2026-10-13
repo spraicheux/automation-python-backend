@@ -483,9 +483,12 @@ def backfill_null_case_price(
     is NULL by treating it as that value (use 1.0 for Pack=1 files). Safe to
     run multiple times (only touches null price_per_case rows).
     """
+    from sqlalchemy import or_
     q = (db.query(OfferItemDB)
-           .filter(OfferItemDB.price_per_case.is_(None))
-           .filter(OfferItemDB.price_per_unit.isnot(None)))
+           .filter(or_(OfferItemDB.price_per_case.is_(None),
+                       OfferItemDB.price_per_case == 0))
+           .filter(OfferItemDB.price_per_unit.isnot(None))
+           .filter(OfferItemDB.price_per_unit > 0))
     if assume_units_per_case <= 0:
         q = q.filter(OfferItemDB.units_per_case.isnot(None))
     if source_filename:
@@ -543,6 +546,9 @@ def patch_quantity_by_ref(
                 upc = patch.get("units_per_case")
                 if upc is not None:
                     r.units_per_case = float(upc)
+                pc = patch.get("price_per_case")
+                if pc is not None:
+                    r.price_per_case = float(pc)
     if apply:
         db.commit()
     return {"applied": apply, "patches": results}
