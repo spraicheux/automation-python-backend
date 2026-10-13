@@ -66,6 +66,14 @@ class OfferCreate(BaseModel):
     ean_code: Optional[str] = None
     label_language: Optional[str] = None
     product_reference: Optional[str] = None
+    # Perfume / cosmetics discriminators
+    perfume_format: Optional[str] = None
+    retail_state: Optional[str] = None
+    gender: Optional[str] = None
+    shade: Optional[str] = None
+    product_type: Optional[str] = None
+    size_weight_g: Optional[float] = None
+    range_name: Optional[str] = None
 
     currency: Optional[str] = "EUR"
     price_per_unit: Optional[float] = None
@@ -196,6 +204,13 @@ def create_offer(payload: OfferCreate, db: Session = Depends(get_db)):
         ean_code=payload.ean_code,
         label_language=payload.label_language,
         product_reference=payload.product_reference,
+        perfume_format=payload.perfume_format,
+        retail_state=payload.retail_state,
+        gender=payload.gender,
+        shade=payload.shade,
+        product_type=payload.product_type,
+        size_weight_g=payload.size_weight_g,
+        range_name=payload.range_name,
         supplier_name=payload.supplier_name,
         supplier_email=payload.supplier_email,
         supplier_reference=payload.supplier_reference,
