@@ -472,27 +472,33 @@ def fix_ean(
 @router.post("/admin/backfill-null-case-price", dependencies=[Depends(_require_admin)])
 def backfill_null_case_price(
     source_filename: str = "",
+    assume_units_per_case: float = 0,
     apply: bool = False,
     db: Session = Depends(get_db),
 ):
     """
     Set price_per_case = ROUND(price_per_unit * units_per_case, 2) for every
     row where price_per_case is NULL but price_per_unit and units_per_case are
-    known. Safe to run multiple times (only touches null rows).
+    known. When assume_units_per_case > 0, also covers rows where units_per_case
+    is NULL by treating it as that value (use 1.0 for Pack=1 files). Safe to
+    run multiple times (only touches null price_per_case rows).
     """
     q = (db.query(OfferItemDB)
            .filter(OfferItemDB.price_per_case.is_(None))
-           .filter(OfferItemDB.price_per_unit.isnot(None))
-           .filter(OfferItemDB.units_per_case.isnot(None)))
+           .filter(OfferItemDB.price_per_unit.isnot(None)))
+    if assume_units_per_case <= 0:
+        q = q.filter(OfferItemDB.units_per_case.isnot(None))
     if source_filename:
         q = q.filter(OfferItemDB.source_filename == source_filename)
     rows = q.all()
     changes = []
     for r in rows:
-        computed = round(r.price_per_unit * r.units_per_case, 2)
+        upc = r.units_per_case if r.units_per_case is not None else assume_units_per_case
+        computed = round(r.price_per_unit * upc, 2)
         changes.append({"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
                         "price_per_unit": r.price_per_unit,
                         "units_per_case": r.units_per_case,
+                        "assumed_upc": upc,
                         "price_per_case_computed": computed})
         if apply:
             r.price_per_case = computed
@@ -534,6 +540,9 @@ def patch_quantity_by_ref(
         if apply:
             for r in rows:
                 r.quantity_case = float(qty)
+                upc = patch.get("units_per_case")
+                if upc is not None:
+                    r.units_per_case = float(upc)
     if apply:
         db.commit()
     return {"applied": apply, "patches": results}
