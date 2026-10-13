@@ -165,7 +165,18 @@ def ean_key(ean_code: str | None) -> str:
     digits = re.sub(r"\D+", "", str(ean_code))
     # A real EAN is 8, 12, 13 or 14 digits (EAN-8 / UPC / EAN-13 / GTIN-14).
     # Anything else is data we don't trust — treat as unknown.
-    return digits if len(digits) in (8, 12, 13, 14) else ""
+    if len(digits) not in (8, 12, 13, 14):
+        return ""
+    # Validate the GS1 check digit (last digit) for EAN-8, EAN-13, GTIN-14.
+    # EAN/GTIN check digit: sum alternating weights 3 and 1 from right-to-left
+    # on all but the last digit; check digit = (10 - (sum % 10)) % 10.
+    total = 0
+    for i, d in enumerate(reversed(digits[:-1])):
+        total += int(d) * (3 if i % 2 == 0 else 1)
+    expected = (10 - (total % 10)) % 10
+    if int(digits[-1]) != expected:
+        return ""
+    return digits
 
 
 def sku_identity(

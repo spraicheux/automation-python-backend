@@ -572,6 +572,13 @@ def rename_supplier_in_file(
     if apply:
         for r in rows:
             r.supplier_name = new_supplier_name
+        # Also update supplier_name on the source_file record so the sidebar
+        # shows the corrected name without requiring a re-ingest.
+        source_files = db.query(SourceFileDB).filter(
+            SourceFileDB.source_filename == source_filename
+        ).all()
+        for sf in source_files:
+            sf.supplier_name = new_supplier_name
         db.commit()
     return {"applied": apply, "source_filename": source_filename,
             "old_supplier_names": old_names,

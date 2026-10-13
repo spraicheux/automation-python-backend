@@ -223,9 +223,13 @@ async def get_records(
         # Volume token → exact ml match
         if volume_ml is not None:
             subquery = subquery.filter(OfferItemDB.unit_volume_ml == volume_ml)
-        # Customs token (T1/T2)
+        # Customs token (T1/T2) — match structured field OR product_name fallback
+        # for rows where T1/T2 hasn't been backfilled into custom_status yet.
         if customs:
-            subquery = subquery.filter(OfferItemDB.custom_status == customs)
+            subquery = subquery.filter(or_(
+                OfferItemDB.custom_status == customs,
+                OfferItemDB.product_name.ilike(f"%{customs}%"),
+            ))
         # Remaining text terms — each must match at least one searchable field
         for term in text_terms:
             like = f"%{term}%"
@@ -336,7 +340,10 @@ async def get_best_prices(
         if volume_ml is not None:
             query = query.filter(OfferItemDB.unit_volume_ml == volume_ml)
         if customs:
-            query = query.filter(OfferItemDB.custom_status == customs)
+            query = query.filter(or_(
+                OfferItemDB.custom_status == customs,
+                OfferItemDB.product_name.ilike(f"%{customs}%"),
+            ))
         for term in text_terms:
             like = f"%{term}%"
             query = query.filter(or_(
@@ -507,6 +514,7 @@ async def get_best_prices(
         # Paris still can't be traded against each other without freight /
         # landed-cost normalisation. Each peer group has its own trusted
         # best; the SKU-level number is nominal-only and clearly labelled.
+        today_str = datetime.utcnow().strftime('%Y-%m-%d')
         lowest_qualified_nominal_price = None
         lowest_qualified_nominal_peer = None
         for pg_key, pg_rows in peer_buckets.items():
@@ -515,21 +523,37 @@ async def get_best_prices(
             qualified = all(
                 is_peer_group_qualified(r.incoterm, r.location) for r in pg_rows
             )
+            def _is_expired(r):
+                vu = r.valid_until
+                if not vu:
+                    return False
+                vu_str = str(vu)[:10]
+                return vu_str < today_str
+            def _offer_dict(r):
+                d = r.to_dict()
+                d['is_expired'] = _is_expired(r)
+                return d
+            offers_with_flag = [_offer_dict(r) for r in pg_sorted]
+            # Best price: prefer non-expired offers for the headline
+            active_rows = [r for r in pg_sorted if not _is_expired(r)]
+            best_row = active_rows[0] if active_rows else pg_sorted[0]
             entry = {
                 "peer_group_id": pg_key,
                 "incoterm": head.incoterm,
                 "location": head.location,
                 "is_qualified": qualified,
+                "has_active_offers": len(active_rows) > 0,
                 "supplier_count": len({(r.supplier_name or r.sender_email or '') for r in pg_rows}),
-                "best_price_eur": head.price_per_unit_eur,
-                "best_uid": head.uid,
-                "best_supplier": head.supplier_name,
-                "offers": [r.to_dict() for r in pg_sorted],
+                "best_price_eur": best_row.price_per_unit_eur,
+                "best_uid": best_row.uid,
+                "best_supplier": best_row.supplier_name,
+                "offers": offers_with_flag,
             }
             peers.append(entry)
-            if qualified and head.price_per_unit_eur is not None:
-                if lowest_qualified_nominal_price is None or head.price_per_unit_eur < lowest_qualified_nominal_price:
-                    lowest_qualified_nominal_price = head.price_per_unit_eur
+            # Headline uses active (non-expired) offers only
+            if qualified and best_row.price_per_unit_eur is not None and active_rows:
+                if lowest_qualified_nominal_price is None or best_row.price_per_unit_eur < lowest_qualified_nominal_price:
+                    lowest_qualified_nominal_price = best_row.price_per_unit_eur
                     lowest_qualified_nominal_peer = pg_key
 
         # Sort peers: qualified first, then by best price ascending.

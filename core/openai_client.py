@@ -255,6 +255,8 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - moq_unit: "cases" | "bottles" | "pallets" | "ftl" | "unspecified" — the ORIGINAL unit used in the source.
 - quantity_case: Quantity offered EXPRESSED IN CASES (see RULE 0.3). null if unknown/FTL.
 - quantity_unit: "cases" | "bottles" | "pallets" | "ftl" | "unspecified" — the ORIGINAL unit used for quantity.
+- fx_rate: Exchange rate to EUR (1.0 if already EUR). Extract if stated in the document.
+- fx_date: Date the FX rate was applied (YYYY-MM-DD). Extract from the document if stated (e.g. "rate as of 2024-03-15"). Leave null if not stated.
 
 ══════════════════════════════════════════════════════════════════════
 RULE 1 — CUSTOM STATUS (T1 / T2)  ⚠️ HIGHEST PRIORITY

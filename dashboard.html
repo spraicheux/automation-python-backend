@@ -293,6 +293,8 @@
        Comparison shown but visually downgraded — never confuse for a
        trusted trading signal. */
     .delta-badge.unverified { background: rgba(251,191,36,0.10); color: #eab308; border: 1px dashed rgba(251,191,36,0.55); font-weight: 500; letter-spacing: 0.2px; }
+    .delta-badge.expired { background: rgba(148,163,184,0.12); color: var(--text-dim); border: 1px dashed var(--border); font-weight: 500; }
+    table.bp-offers tr.expired-row td { opacity: 0.5; }
     .delta-badge.best.unverified,
     .delta-badge.up.unverified { opacity: 0.65; border: 1px dashed currentColor; background: transparent; }
     .unverified-star { color: #eab308; font-weight: 700; margin-left: 1px; cursor: help; }
@@ -1910,18 +1912,20 @@
         const pc = o.price_per_case_eur;
         const delta = (pu != null && bestUnit != null && bestUnit > 0)
           ? ((pu - bestUnit) / bestUnit) * 100 : null;
+        const isExpired = !!o.is_expired;
         let deltaBadge = '';
-        if (isBest) deltaBadge = p.is_qualified
+        if (isExpired) deltaBadge = `<span class="delta-badge expired" title="valid_until has passed — historical reference only">EXPIRED</span>`;
+        else if (isBest) deltaBadge = p.is_qualified
           ? `<span class="delta-badge best">BEST</span>`
           : `<span class="delta-badge unverified">BEST · unverified</span>`;
         else if (delta != null) deltaBadge = `<span class="delta-badge up">+${delta.toFixed(1)}%</span>`;
         const ai = formatAge(o.offer_date || o.created_at);
         const dateStr = ai ? `<span title="${escapeAttr(ai.title)}">${escapeHtml(ai.text)}</span>` : '—';
-        return `<tr class="${isBest ? 'best' : ''}" data-uid="${escapeAttr(o.uid)}">
+        return `<tr class="${isBest && !isExpired ? 'best' : ''} ${isExpired ? 'expired-row' : ''}" data-uid="${escapeAttr(o.uid)}">
           <td>${supplierCell(o)}</td>
           <td class="bp-mono">${o.quantity_case != null ? formatQuantity(o) : '—'}</td>
-          <td class="bp-mono" style="color:${pu != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
-          <td class="bp-mono" style="color:${pc != null ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono" style="color:${pu != null && !isExpired ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null && !isExpired ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono" style="color:${pc != null && !isExpired ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null && !isExpired ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
           <td class="bp-mono">${dateStr}</td>
           <td>${deltaBadge}</td>
         </tr>`;
