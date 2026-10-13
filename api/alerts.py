@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.normalization import peer_group_id, is_peer_group_qualified
+from core.normalization import peer_group_id, peer_group_id_from_ean, is_peer_group_qualified
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -49,18 +49,24 @@ def list_alerts(
                   .filter(OfferItemDB.price_per_unit_eur.isnot(None))
                   .all())
 
-    # Group all rows by canonical key
+    # Group all rows by canonical key.
+    # EAN-primary: when a valid EAN is present, records that share the same
+    # EAN + incoterm + location are the same peer regardless of how each
+    # supplier formatted the product name. This is the fix for cross-supplier
+    # alerts not firing when name normalisation differs between files.
+    # Falls back to the full attribute-based peer_group_id when EAN is absent.
     by_key = defaultdict(list)
     for r in all_rows:
-        k = peer_group_id(
-            r.brand, r.product_name,
-            unit_volume_ml=r.unit_volume_ml,
-            units_per_case=r.units_per_case,
-            incoterm=r.incoterm,
-            location=r.location,
-            alcohol_percent=r.alcohol_percent,
-            vintage=r.vintage,
-        )
+        k = (peer_group_id_from_ean(r.ean_code, r.incoterm, r.location)
+             or peer_group_id(
+                 r.brand, r.product_name,
+                 unit_volume_ml=r.unit_volume_ml,
+                 units_per_case=r.units_per_case,
+                 incoterm=r.incoterm,
+                 location=r.location,
+                 alcohol_percent=r.alcohol_percent,
+                 vintage=r.vintage,
+             ))
         by_key[k].append(r)
 
     alerts = []

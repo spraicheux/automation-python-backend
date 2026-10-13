@@ -10,7 +10,7 @@ Not routed publicly on the dashboard — hit with curl once after a deploy.
 """
 import os
 import re
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -436,6 +436,132 @@ def sync_review_flags(
     return {"applied": apply, "category_slug": category_slug,
             "rows_examined": len(rows), "rows_touched": touched,
             "sample": sample}
+
+
+@router.post("/admin/fix-ean", dependencies=[Depends(_require_admin)])
+def fix_ean(
+    old_ean: str,
+    new_ean: str,
+    source_filename: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Correct a specific EAN value across all matching rows.
+    Use when the LLM dropped or mangled a digit and the 12-digit result
+    passes UPC-A validation (so backfill-ean-and-retail won't catch it).
+    """
+    from core.normalization import ean_key
+    if not ean_key(new_ean):
+        raise HTTPException(status_code=400,
+                            detail=f"new_ean '{new_ean}' is not a valid EAN (8/12/13/14 digits)")
+    q = db.query(OfferItemDB).filter(OfferItemDB.ean_code == old_ean)
+    if source_filename:
+        q = q.filter(OfferItemDB.source_filename == source_filename)
+    rows = q.all()
+    sample = [{"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
+               "ean_before": r.ean_code} for r in rows[:10]]
+    if apply:
+        for r in rows:
+            r.ean_code = new_ean
+        db.commit()
+    return {"applied": apply, "old_ean": old_ean, "new_ean": new_ean,
+            "rows_matched": len(rows), "sample": sample}
+
+
+@router.post("/admin/backfill-null-case-price", dependencies=[Depends(_require_admin)])
+def backfill_null_case_price(
+    source_filename: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Set price_per_case = ROUND(price_per_unit * units_per_case, 2) for every
+    row where price_per_case is NULL but price_per_unit and units_per_case are
+    known. Safe to run multiple times (only touches null rows).
+    """
+    q = (db.query(OfferItemDB)
+           .filter(OfferItemDB.price_per_case.is_(None))
+           .filter(OfferItemDB.price_per_unit.isnot(None))
+           .filter(OfferItemDB.units_per_case.isnot(None)))
+    if source_filename:
+        q = q.filter(OfferItemDB.source_filename == source_filename)
+    rows = q.all()
+    changes = []
+    for r in rows:
+        computed = round(r.price_per_unit * r.units_per_case, 2)
+        changes.append({"uid": r.uid, "brand": r.brand, "product_name": r.product_name,
+                        "price_per_unit": r.price_per_unit,
+                        "units_per_case": r.units_per_case,
+                        "price_per_case_computed": computed})
+        if apply:
+            r.price_per_case = computed
+    if apply:
+        db.commit()
+    return {"applied": apply, "rows_matched": len(rows), "changes": changes[:30]}
+
+
+@router.post("/admin/patch-quantity-by-ref", dependencies=[Depends(_require_admin)])
+def patch_quantity_by_ref(
+    patches: list = Body(...),
+    source_filename: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Update quantity_case on rows identified by supplier_reference.
+    Body JSON array: [{"supplier_reference": "JS-SG200", "quantity_case": 18}, ...]
+    Scoped by source_filename when provided.
+    """
+    results = []
+    for patch in patches:
+        ref = patch.get("supplier_reference", "")
+        qty = patch.get("quantity_case")
+        if not ref or qty is None:
+            results.append({"supplier_reference": ref, "error": "missing fields"})
+            continue
+        q = db.query(OfferItemDB).filter(OfferItemDB.supplier_reference == ref)
+        if source_filename:
+            q = q.filter(OfferItemDB.source_filename == source_filename)
+        rows = q.all()
+        results.append({
+            "supplier_reference": ref,
+            "quantity_case": qty,
+            "rows_matched": len(rows),
+            "sample": [{"uid": r.uid, "brand": r.brand, "current_qty": r.quantity_case}
+                       for r in rows[:3]],
+        })
+        if apply:
+            for r in rows:
+                r.quantity_case = float(qty)
+    if apply:
+        db.commit()
+    return {"applied": apply, "patches": results}
+
+
+@router.post("/admin/rename-supplier-in-file", dependencies=[Depends(_require_admin)])
+def rename_supplier_in_file(
+    source_filename: str,
+    new_supplier_name: str,
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Update supplier_name on every offer_items row for a given source file.
+    Use when a file was ingested with the wrong supplier_name (e.g. "Test").
+    """
+    rows = db.query(OfferItemDB).filter(
+        OfferItemDB.source_filename == source_filename
+    ).all()
+    old_names = list({r.supplier_name for r in rows})
+    if apply:
+        for r in rows:
+            r.supplier_name = new_supplier_name
+        db.commit()
+    return {"applied": apply, "source_filename": source_filename,
+            "old_supplier_names": old_names,
+            "new_supplier_name": new_supplier_name,
+            "rows_matched": len(rows)}
 
 
 @router.post("/admin/dedupe-source-rows", dependencies=[Depends(_require_admin)])

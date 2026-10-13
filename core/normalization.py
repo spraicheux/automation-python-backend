@@ -314,6 +314,24 @@ def peer_group_id(
     ])
 
 
+def peer_group_id_from_ean(
+    ean_code: str | None,
+    incoterm: str | None = None,
+    location: str | None = None,
+) -> str | None:
+    """
+    EAN-primary peer group key. When a valid EAN is present, two records
+    with the same EAN, incoterm, and delivery location are the same peer
+    regardless of how each supplier formatted the product name. Returns
+    None when no valid EAN is provided — callers fall back to the full
+    attribute-based peer_group_id.
+    """
+    ean = ean_key(ean_code)
+    if not ean:
+        return None
+    return f"ean:{ean}|{_norm_incoterm(incoterm)}|{_normalize_location(location)}"
+
+
 # ── Backward-compat shim ────────────────────────────────────────────────────
 # Older call sites still pass the pre-split (brand, name, vol, upc, incoterm)
 # signature. Keep the function name resolving to peer_group_id so nothing
