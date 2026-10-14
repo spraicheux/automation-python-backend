@@ -1699,9 +1699,23 @@
 
     document.getElementById('drawer-brand').textContent = (item.brand && item.brand !== 'Not Found') ? item.brand : '';
     document.getElementById('drawer-name').textContent = item.product_name || '—';
+    // Drawer subtitle wants plain text; formatPack() returns HTML for the
+    // records-table cell. Build a text equivalent here so the subtitle
+    // doesn't render raw <div> markup.
+    const _vol = item.unit_volume_ml;
+    const _upc = item.units_per_case;
+    let _packText = '';
+    if (_vol) {
+      const vs = _vol >= 1000
+        ? `${(_vol/1000).toFixed(_vol % 1000 === 0 ? 0 : 2).replace(/\.00$/,'')}L`
+        : `${_vol}ml`;
+      _packText = (_upc && _upc > 1) ? `${vs} · ${Math.trunc(_upc)}/case` : `${vs} · loose`;
+    } else if (_upc && _upc > 1) {
+      _packText = `${Math.trunc(_upc)}/case`;
+    }
     document.getElementById('drawer-sub').innerHTML = [
       [item.category, item.sub_category].filter(x => x && x !== 'Not Found').join(' · '),
-      formatPack(item),
+      _packText,
       item.alcohol_percent != null ? `${Number(item.alcohol_percent).toFixed(1)}% ABV` : null,
       item.ean_code && item.ean_code !== 'Not Found' ? `EAN ${item.ean_code}` : null,
     ].filter(Boolean).map(escapeHtml).join(' &nbsp;|&nbsp; ');
