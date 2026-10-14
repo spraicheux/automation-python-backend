@@ -182,6 +182,8 @@
     table.offers tbody tr.needs-review td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
     td.product { max-width: 320px; }
     .prod-brand { font-size: 15px; text-transform: uppercase; letter-spacing: 0.5px; color: white; font-weight: 700; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .customs-chip { margin-left: 6px; vertical-align: middle; text-transform: none; }
+    .customs-chip .badge { font-size: 10px; font-weight: 600; padding: 1px 5px; }
     .prod-name  { font-size: 12px; color: var(--text-dim); font-weight: 500; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .prod-cat   { font-size: 10px; color: var(--muted); margin-top: 3px; letter-spacing: 0.3px; }
     td.pack, td.abv, td.qty, td.date { font-family: 'DM Mono', monospace; color: var(--text); }
@@ -1591,10 +1593,18 @@
     }
     const reviewPill = hasNeeds ? `<span class="review-pill" title="Extraction flagged this row for manual review">REVIEW</span>` : '';
 
+    // R-02 (retest): the status badge must NOT sit inside the uppercase
+    // .prod-brand div — that rendered "HENNESSY" + "T2" visually as a single
+    // uppercase string "HENNESSY T2", which the retest read as T2 embedded
+    // in the brand. Render brand first, then the badge as a separate chip
+    // outside the uppercase block.
+    const statusChip = (i.custom_status && i.custom_status !== 'Not Found')
+      ? `<span class="customs-chip">${statusBadge(i.custom_status)}</span>`
+      : '';
     return `<tr data-uid="${escapeAttr(i.uid)}" ${hasNeeds ? 'class="needs-review"' : ''}>
       <td class="product">
-        <div class="prod-brand">${escapeHtml(brand)}${reviewPill}${i.custom_status && i.custom_status !== 'Not Found' ? statusBadge(i.custom_status) : ''}</div>
-        <div class="prod-name">${escapeHtml(name || i.product_name || '—')}</div>
+        <div class="prod-brand">${escapeHtml(brand)}${reviewPill}</div>
+        <div class="prod-name">${escapeHtml(name || i.product_name || '—')} ${statusChip}</div>
         <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
       </td>
       <td class="pack">${pack}</td>
