@@ -85,6 +85,9 @@ def init_db():
             ("product_type",        "VARCHAR(64)"),
             ("shade",               "VARCHAR(128)"),
             ("size_weight_g",       "DOUBLE PRECISION"),
+            # Phase 3 retest fixes (R-03, R-16): immutable raw descriptions
+            ("product_name_raw",    "VARCHAR(1024)"),
+            ("brand_raw",           "VARCHAR(255)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:

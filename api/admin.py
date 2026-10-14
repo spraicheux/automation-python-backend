@@ -1525,3 +1525,255 @@ def flush_celery_queue(
         "fail_stuck_jobs": fail_stuck_jobs,
         "purged_queue_tasks": purged_tasks,
     }
+
+
+# ===========================================================================
+# Phase 3 RETEST fixes (14 Oct 2026) — one-shot historical cleanups
+# ===========================================================================
+
+_T1T2_PATTERN = re.compile(r"\b(T1|T2)\b", re.IGNORECASE)
+_PRODUCT_NOISE_PATTERN = re.compile(
+    r"""
+    \s* (?:
+      \d+[.,]?\d*\s*(?:L|CL|ML|LITRO[S]?)      # volumes
+      | \d+[°º]                                 # alcohol degrees
+      | caja\s*@\s*\d+\s*BT\s*X\s*[\d.,]+\s*(?:L|CL|ML|LITRO[S]?)?  # Spanish "Caja @ 6 BT X 1,00 Litros"
+      | pack\s*\d+                              # "pack 12"
+      | box\s*of\s*\d+
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _extract_customs_token(text: str) -> str | None:
+    """Return 'T1' or 'T2' if the text contains an isolated T1/T2 token."""
+    if not text:
+        return None
+    m = _T1T2_PATTERN.search(text)
+    if not m:
+        return None
+    return m.group(1).upper()
+
+
+def _strip_customs_token(text: str) -> str:
+    """Remove 'T1' / 'T2' tokens from a text field, collapsing whitespace."""
+    if not text:
+        return text
+    cleaned = _T1T2_PATTERN.sub("", text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" -,")
+
+
+def _canonicalise_product_name(name: str) -> str:
+    """Deterministic cleanup of noisy LLM-extracted product names.
+    Removes volume/alcohol/pack text that belongs in separate fields."""
+    if not name:
+        return name
+    cleaned = _PRODUCT_NOISE_PATTERN.sub(" ", name)
+    cleaned = re.sub(r"\.\.\.|…", " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -,.")
+    return cleaned
+
+
+@router.post("/admin/retest-backfill-customs-status", dependencies=[Depends(_require_admin)])
+def retest_backfill_customs_status(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-02: historical rows carry 'T1' / 'T2' inside the brand or product_name
+    string instead of in the structured custom_status column. Scan every row,
+    extract the token to custom_status, strip it from brand/product_name,
+    and preserve the originals in brand_raw / product_name_raw.
+
+    Idempotent — a second run with apply=true is a no-op on already-cleaned rows.
+    Call with apply=false first for a dry run; the response reports the counts.
+    """
+    rows = db.query(OfferItemDB).limit(limit).all()
+    stats = {"scanned": 0, "custom_status_populated": 0, "brand_cleaned": 0,
+             "product_name_cleaned": 0, "raw_preserved": 0}
+    examples = []
+
+    for r in rows:
+        stats["scanned"] += 1
+        token = (_extract_customs_token(r.brand or "")
+                 or _extract_customs_token(r.product_name or ""))
+
+        if not token and r.custom_status in (None, "", "Not Found"):
+            continue
+        if not token:
+            continue
+
+        if not r.custom_status or r.custom_status in ("Not Found", ""):
+            if apply:
+                r.custom_status = token
+            stats["custom_status_populated"] += 1
+
+        if r.brand and _T1T2_PATTERN.search(r.brand):
+            if apply:
+                if r.brand_raw is None:
+                    r.brand_raw = r.brand
+                r.brand = _strip_customs_token(r.brand)
+            stats["brand_cleaned"] += 1
+            if r.brand_raw is None and apply:
+                stats["raw_preserved"] += 1
+
+        if r.product_name and _T1T2_PATTERN.search(r.product_name):
+            if apply:
+                if r.product_name_raw is None:
+                    r.product_name_raw = r.product_name
+                r.product_name = _strip_customs_token(r.product_name)
+            stats["product_name_cleaned"] += 1
+
+        if len(examples) < 10:
+            examples.append({
+                "uid": r.uid, "token": token,
+                "brand_was": (r.brand_raw or r.brand)[:80] if r.brand else None,
+                "product_name_was": (r.product_name_raw or r.product_name)[:80] if r.product_name else None,
+            })
+
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}
+
+
+@router.post("/admin/retest-backfill-product-names", dependencies=[Depends(_require_admin)])
+def retest_backfill_product_names(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-03 / R-16: historical product_name strings contain volume, alcohol
+    degrees, and pack descriptions ("Hennessy X.O. 1,00 Litro 40° ... Caja @ 6
+    BT X 1,00 Litros"). Preserve the full original in product_name_raw and
+    write a canonical cleaned name back to product_name. Idempotent."""
+    rows = db.query(OfferItemDB).limit(limit).all()
+    stats = {"scanned": 0, "cleaned": 0, "raw_preserved": 0, "unchanged": 0}
+    examples = []
+
+    for r in rows:
+        stats["scanned"] += 1
+        if not r.product_name:
+            stats["unchanged"] += 1
+            continue
+        cleaned = _canonicalise_product_name(r.product_name)
+        if cleaned == r.product_name:
+            stats["unchanged"] += 1
+            continue
+        if len(cleaned) < 3:  # don't blank out a name
+            stats["unchanged"] += 1
+            continue
+
+        if apply:
+            if r.product_name_raw is None:
+                r.product_name_raw = r.product_name
+                stats["raw_preserved"] += 1
+            r.product_name = cleaned
+        stats["cleaned"] += 1
+
+        if len(examples) < 10:
+            examples.append({"uid": r.uid, "was": r.product_name[:100], "now": cleaned[:100]})
+
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}
+
+
+@router.post("/admin/retest-backfill-quantity-cases", dependencies=[Depends(_require_admin)])
+def retest_backfill_quantity_cases(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-14: historical offers imported as 'bottles' had quantity_case left
+    equal to the bottle count (NARS: 20 btls → quantity_case=20.0). For every
+    row where quantity_unit='bottles': recompute quantity_case = qty / units_per_case
+    when a case pack is known, otherwise null quantity_case and null
+    price_per_case (loose packs have no meaningful per-case price). Idempotent."""
+    rows = db.query(OfferItemDB).limit(limit).all()
+    stats = {"scanned": 0, "converted": 0, "nulled_loose": 0,
+             "price_per_case_nulled": 0, "unchanged": 0}
+    examples = []
+
+    for r in rows:
+        stats["scanned"] += 1
+        unit = (r.quantity_unit or "").lower().strip()
+        if unit != "bottles":
+            stats["unchanged"] += 1
+            continue
+
+        qty = r.quantity_case  # LLM put the bottle count here
+        upc = r.units_per_case
+        if qty is None:
+            stats["unchanged"] += 1
+            continue
+
+        if upc and upc > 1:
+            new_qty = round(float(qty) / float(upc), 2)
+            if apply:
+                r.quantity_case = new_qty
+            stats["converted"] += 1
+            if len(examples) < 10:
+                examples.append({"uid": r.uid, "upc": upc, "was": float(qty),
+                                 "now_cases": new_qty, "pack": "cased"})
+        else:
+            if apply:
+                r.quantity_case = None
+                if r.price_per_case is not None:
+                    r.price_per_case = None
+                    stats["price_per_case_nulled"] += 1
+                if r.price_per_case_eur is not None:
+                    r.price_per_case_eur = None
+            stats["nulled_loose"] += 1
+            if len(examples) < 10:
+                examples.append({"uid": r.uid, "upc": upc, "was_cases": float(qty),
+                                 "now_cases": None, "pack": "loose"})
+
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}
+
+
+@router.post("/admin/retest-canonicalise-supplier-names", dependencies=[Depends(_require_admin)])
+def retest_canonicalise_supplier_names(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-13: supplier_name is stored inconsistently (ELIXEMARKET vs ElixeMarket).
+    Build a canonical mapping from the longest casing variant per lower-case key
+    and rewrite every offer_item + source_file to that canonical form."""
+    # Build canonical: for each lower(name) use the most common casing (or longest)
+    from collections import Counter
+    all_names = [n for (n,) in db.query(OfferItemDB.supplier_name).distinct().all() if n]
+    canon_map: dict[str, str] = {}
+    for name in all_names:
+        key = name.strip().lower()
+        if not key:
+            continue
+        prev = canon_map.get(key)
+        if prev is None or (sum(1 for c in name if c.islower()) > sum(1 for c in prev if c.islower())):
+            canon_map[key] = name.strip()
+
+    offer_updates = source_updates = 0
+    for offer in db.query(OfferItemDB).filter(OfferItemDB.supplier_name.isnot(None)).limit(limit):
+        key = (offer.supplier_name or "").strip().lower()
+        target = canon_map.get(key)
+        if target and offer.supplier_name != target:
+            if apply:
+                offer.supplier_name = target
+            offer_updates += 1
+
+    for sf in db.query(SourceFileDB).filter(SourceFileDB.supplier_name.isnot(None)).limit(limit):
+        key = (sf.supplier_name or "").strip().lower()
+        target = canon_map.get(key)
+        if target and sf.supplier_name != target:
+            if apply:
+                sf.supplier_name = target
+            source_updates += 1
+
+    if apply:
+        db.commit()
+    return {"applied": apply, "distinct_suppliers": len(canon_map),
+            "offer_rows_updated": offer_updates, "source_rows_updated": source_updates,
+            "canonical_sample": dict(list(canon_map.items())[:20])}

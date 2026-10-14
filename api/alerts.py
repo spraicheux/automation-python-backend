@@ -161,6 +161,8 @@ def list_alerts(
                 "supplier": latest.supplier_name,
                 "price_eur": cur_price,
                 "offer_date": (latest.offer_date or latest.created_at).isoformat(),
+                "source_filename": latest.source_filename,
+                "custom_status": latest.custom_status,
             },
             "previous_best": {
                 "uid": best_prior.uid,

@@ -227,6 +227,8 @@
     .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
 
     .state-box { text-align: center; padding: 60px 20px; color: var(--muted); grid-column: 1/-1; }
+    .state-box .btn-link { background:none; border:none; color: var(--accent, #3b82f6); font: inherit; cursor:pointer; text-decoration:underline; padding:0; }
+    .state-box .btn-link:hover { opacity: 0.8; }
     .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 16px; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -600,8 +602,43 @@
       <div class="form-section-title">Product</div>
       <div class="form-field"><label>Brand</label><input id="nf-brand" placeholder="e.g. Grey Goose" /></div>
       <div class="form-field"><label>Product name <span style="color:var(--red);">*</span></label><input id="nf-product_name" placeholder="e.g. Original" required /></div>
-      <div class="form-field"><label>Category</label><input id="nf-category" placeholder="e.g. Spirits" /></div>
-      <div class="form-field"><label>Sub-category</label><input id="nf-sub_category" placeholder="e.g. Vodka" /></div>
+      <div class="form-field">
+        <label>Category</label>
+        <select id="nf-category">
+          <option value="">—</option>
+          <option value="Spirits">Spirits</option>
+          <option value="Wine">Wine</option>
+          <option value="Beer">Beer</option>
+          <option value="Champagne">Champagne</option>
+          <option value="Perfumes">Perfumes</option>
+          <option value="Cosmetics">Cosmetics</option>
+          <option value="Skincare">Skincare</option>
+          <option value="Haircare">Haircare</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Sub-category</label>
+        <select id="nf-sub_category">
+          <option value="">—</option>
+          <!-- Spirits -->
+          <option class="sc-spirits" value="Vodka">Vodka</option>
+          <option class="sc-spirits" value="Whisky">Whisky</option>
+          <option class="sc-spirits" value="Cognac">Cognac</option>
+          <option class="sc-spirits" value="Gin">Gin</option>
+          <option class="sc-spirits" value="Rum">Rum</option>
+          <option class="sc-spirits" value="Liqueur">Liqueur</option>
+          <option class="sc-spirits" value="Tequila">Tequila</option>
+          <!-- Perfumes -->
+          <option class="sc-perfume" value="Men">Men</option>
+          <option class="sc-perfume" value="Women">Women</option>
+          <option class="sc-perfume" value="Unisex">Unisex</option>
+          <!-- Cosmetics -->
+          <option class="sc-cosmetics" value="Face">Face</option>
+          <option class="sc-cosmetics" value="Eyes">Eyes</option>
+          <option class="sc-cosmetics" value="Lips">Lips</option>
+          <option class="sc-cosmetics" value="Body">Body</option>
+        </select>
+      </div>
       <div class="form-field"><label>Size (ml)</label><input id="nf-unit_volume_ml" type="number" step="0.01" placeholder="700" /></div>
       <div class="form-field"><label>Units per case</label><input id="nf-units_per_case" type="number" step="1" placeholder="6" /></div>
       <!-- Spirits fields -->
@@ -775,10 +812,20 @@
         document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         filters.category_slug = btn.dataset.slug || '';
-        // Always show all files when switching category so the category
-        // filter isn't silently ANDed with a single-file source restriction.
-        activeSourceId = null;
-        filterSourceList();
+        // R-04 (retest): KEEP activeSourceId. Category and source filters
+        // now INTERSECT instead of clearing each other. If the intersection
+        // is empty, the records table shows a "No matching offers in this
+        // source" hint with a one-click "Clear source filter" button.
+        // Also sync the secondary dropdown so the two category controls
+        // can never show contradictory values.
+        const secondarySelect = document.getElementById('filter-category');
+        if (secondarySelect) {
+          // Secondary dropdown is free-form "Category" labels, not slugs.
+          // When a pill is active, clear the secondary so results aren't
+          // narrowed further by a stale free-form text match.
+          secondarySelect.value = '';
+          filters.category = '';
+        }
         loadRecords(true);
       });
     });
@@ -905,7 +952,7 @@
       <div class="alert-body">
         <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
         <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · prev best: ${escapeHtml(prevSupplier)} ${prevPrice}</div>
-        <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + ' ago' : ''} · click to open</div>
+        <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + ' ago' : ''}${a.current?.offer_date ? ` · offer ${String(a.current.offer_date).slice(0,10)}` : ''}${a.current?.source_filename ? ` · <span title="${escapeAttr(a.current.source_filename)}">${escapeHtml(String(a.current.source_filename).slice(0,24))}${String(a.current.source_filename).length > 24 ? '…' : ''}</span>` : ''} · click to open</div>
       </div>
       <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
     </div>`;
@@ -1408,7 +1455,20 @@
   function renderOffersTable(items) {
     const tbody = document.getElementById('offers-tbody');
     if (!items.length) {
-      tbody.innerHTML = `<tr><td colspan="11"><div class="state-box"><p>No offers match your filters.</p></div></td></tr>`;
+      // R-04 (retest): when category + source filter intersect to empty,
+      // explain the intersection and offer a one-click clear.
+      const activeCat = filters.category_slug ? (document.querySelector(`.cat-pill[data-slug="${filters.category_slug}"]`)?.textContent || filters.category_slug) : null;
+      const activeSrc = activeSourceId ? (allSources.find(s => s.id === activeSourceId)?.source_filename || 'the selected source') : null;
+      let msg = `<p>No offers match your filters.</p>`;
+      if (activeCat && activeSrc) {
+        msg = `<p>No <b>${activeCat}</b> offers in <b>${activeSrc}</b>.</p>
+               <p style="margin-top:8px;"><button class="btn-link" onclick="selectSource(null)">Clear source filter</button>
+               &nbsp;|&nbsp; <button class="btn-link" onclick="document.querySelector('.cat-pill[data-slug=&quot;&quot;]').click()">Clear category</button></p>`;
+      } else if (activeSrc) {
+        msg = `<p>No offers in <b>${activeSrc}</b> match your filters.</p>
+               <p style="margin-top:8px;"><button class="btn-link" onclick="selectSource(null)">Clear source filter</button></p>`;
+      }
+      tbody.innerHTML = `<tr><td colspan="11"><div class="state-box">${msg}</div></td></tr>`;
       return;
     }
     tbody.innerHTML = items.map((i, idx) => rowHtml(i, idx)).join('');
@@ -1437,7 +1497,13 @@
     const sup = supplierCell(i);
     const qty = formatQuantity(i);
     const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : nullCell();
-    const pcEur = i.price_per_case_eur != null ? `€${Number(i.price_per_case_eur).toFixed(2)}` : nullCell();
+    // R-14 (retest): a loose pack (no units_per_case or UPC=1) has no case
+    // price even if raw data showed one. Show "N/A (loose)" so the buyer
+    // can't misread per-bottle as per-case.
+    const _loose = !i.units_per_case || i.units_per_case <= 1;
+    const pcEur = i.price_per_case_eur != null
+      ? `€${Number(i.price_per_case_eur).toFixed(2)}`
+      : (_loose ? `<span class="null-cell" title="Loose pack — case price does not apply">N/A</span>` : nullCell());
 
     // Historical benchmark cell — shows the PRIOR low (excluding this offer)
     // so a first-ever observation reads as "—" rather than as its own low.
@@ -1767,8 +1833,17 @@
             ${kv('Supplier reference', i.supplier_reference)}
             ${kv('Product reference', i.product_reference)}
             ${kv('Product key', i.product_key)}
-            ${kv('Status', i.custom_status ? statusBadge(i.custom_status) : null, true)}
+            ${kv('Customs status (T1/T2)', i.custom_status ? statusBadge(i.custom_status) : null, true)}
+            ${kv('FX rate', i.fx_rate, true)}
+            ${kv('FX date', i.fx_date)}
           </div>
+          ${(i.product_name_raw || i.brand_raw) ? `
+          <div style="margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted);">
+            <div style="font-weight: 600; color: var(--text-dim); margin-bottom: 4px;">Immutable raw source description</div>
+            ${i.brand_raw ? `<div>Brand (raw): <code>${escapeHtml(i.brand_raw)}</code></div>` : ''}
+            ${i.product_name_raw ? `<div>Product name (raw): <code>${escapeHtml(i.product_name_raw)}</code></div>` : ''}
+            <div style="margin-top: 4px; opacity: 0.75;">R-16: original text as extracted; never overwritten by backfills.</div>
+          </div>` : ''}
         </div>
       </div>
 

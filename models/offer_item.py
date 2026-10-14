@@ -18,8 +18,15 @@ class OfferItemDB(Base):
 
     # Core product fields
     product_name        = Column(String(512), nullable=True)
+    # R-16: Immutable raw source description — the LLM's original extraction
+    # before any canonicalisation. Never overwritten by backfills; drawer
+    # shows this beside the canonical name so auditors can prove nothing
+    # was silently rewritten.
+    product_name_raw    = Column(String(1024), nullable=True)
     product_key         = Column(String(255), nullable=True)
     brand               = Column(String(255), nullable=True)
+    # R-03: raw brand before T1/T2 token extraction + canonicalisation.
+    brand_raw           = Column(String(255), nullable=True)
     range_name          = Column(String(255), nullable=True)  # e.g. Dior "Sauvage"
     category            = Column(String(255), nullable=True)  # human label
     sub_category        = Column(String(255), nullable=True)
@@ -174,8 +181,10 @@ class OfferItemDB(Base):
             "job_id": self.job_id,
             "source_file_id": self.source_file_id,
             "product_name": self.product_name,
+            "product_name_raw": self.product_name_raw,
             "product_key": self.product_key,
             "brand": self.brand,
+            "brand_raw": self.brand_raw,
             "range_name": self.range_name,
             "category": self.category,
             "category_slug": self.category_slug,

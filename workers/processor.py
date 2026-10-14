@@ -351,12 +351,20 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
         safe_data['quantity_case'] = None
         error_flags.append('Quantity: FTL (Full Truck Load)')
     elif qty_unit == 'bottles' and qty:
-        if upc:
+        if upc and upc > 1:
             converted = round(qty / upc, 2)
             safe_data['quantity_case'] = converted
             error_flags.append(f'Quantity converted from {int(qty)} bottles to {converted} cases')
         else:
-            error_flags.append(f'Quantity in bottles ({int(qty)}), cases unknown')
+            # Loose or unknown pack: cases is NOT the bottle count.
+            # Null quantity_case and keep raw bottles in moq_bottles for traceability
+            # so the UI shows "20 btls (loose)" rather than "20 cases".
+            safe_data['quantity_case'] = None
+            safe_data['_quantity_bottles'] = qty
+            if not upc or upc in (0, 1):
+                error_flags.append(f'Quantity in bottles ({int(qty)}), loose pack — case qty N/A')
+            else:
+                error_flags.append(f'Quantity in bottles ({int(qty)}), cases unknown (no units_per_case)')
 
     return safe_data
 
@@ -892,17 +900,22 @@ async def process_offer(payload, job_id: str):
 
                     # ── Loose-unit €/case cleanup ───────────────────────────
                     # If no case pack was declared (units_per_case null / 0 / 1),
-                    # a €/case value of 0 is a display artifact, not a real
-                    # price. Null it out so the dashboard shows "—" instead
-                    # of "€0.00" (client requirement §3).
+                    # a per-case price is meaningless — either a display artifact
+                    # or (R-14 bug) a copy of the per-bottle price. Null it so the
+                    # dashboard shows "—" or "N/A (loose)" instead.
                     upc = offer_dict.get("units_per_case")
                     if not upc or upc in (0, 0.0, 1, 1.0):
-                        if offer_dict.get("price_per_case") in (0, 0.0):
-                            offer_dict["price_per_case"] = None
-                        if offer_dict.get("price_per_case_eur") in (0, 0.0):
-                            offer_dict["price_per_case_eur"] = None
+                        # NARS retest bug: loose pack with price_per_case == price_per_unit
+                        # was passing through. Treat all loose-pack case prices as unavailable.
+                        offer_dict["price_per_case"] = None
+                        offer_dict["price_per_case_eur"] = None
                         if upc in (0, 0.0):
                             offer_dict["units_per_case"] = None
+                        # Also null quantity_case if it was passed through as bottle count
+                        # (defensive — the processor's _normalize_quantity_units should have
+                        # already caught this, but belt-and-braces for direct DB writes).
+                        if (offer_dict.get("quantity_unit") or "").lower() == "bottles":
+                            offer_dict["quantity_case"] = None
 
                     offers.append(offer_dict)
                     valid_count += 1
