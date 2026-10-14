@@ -1724,6 +1724,24 @@ def retest_backfill_quantity_cases(
                     stats["price_per_case_nulled"] += 1
                 if r.price_per_case_eur is not None:
                     r.price_per_case_eur = None
+                # Rewrite stale ingest-time error_flags so the review tooltip
+                # doesn't still say "Quantity converted from 20 bottles to
+                # 20.0 cases" after we've nulled the field.
+                try:
+                    import json as _json
+                    raw_flags = r.error_flags
+                    if raw_flags:
+                        flags_list = _json.loads(raw_flags) if isinstance(raw_flags, str) else raw_flags
+                        if isinstance(flags_list, list):
+                            rewritten = []
+                            for f in flags_list:
+                                if isinstance(f, str) and "Quantity converted from" in f and "bottles to" in f and "cases" in f:
+                                    rewritten.append(f"Quantity in {int(qty)} bottles (loose pack — case qty N/A)")
+                                else:
+                                    rewritten.append(f)
+                            r.error_flags = _json.dumps(rewritten)
+                except Exception:
+                    pass
             stats["nulled_loose"] += 1
             if len(examples) < 10:
                 examples.append({"uid": r.uid, "upc": upc, "was_cases": float(qty),
