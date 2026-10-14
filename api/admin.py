@@ -1918,6 +1918,58 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
             "note": "Cleanup: POST /api/admin/retest-cleanup-fixtures"}
 
 
+@router.post("/admin/retest-rewrite-stale-quantity-flags", dependencies=[Depends(_require_admin)])
+def retest_rewrite_stale_quantity_flags(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-14 follow-up: rows where quantity_case was nulled by an earlier
+    backfill still carry the ingest-time error_flag "Quantity converted
+    from N bottles to N.0 cases" which Samuel's retest read as proof the
+    bug is still live. Rewrite that flag to "Quantity in N bottles (loose
+    pack — case qty N/A)" on every row where quantity_unit='bottles' and
+    quantity_case is null. Idempotent — once rewritten, the regex misses
+    on the next pass."""
+    import json as _json
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.quantity_unit == "bottles")
+              .filter(OfferItemDB.quantity_case.is_(None))
+              .filter(OfferItemDB.error_flags.isnot(None))
+              .limit(limit).all())
+    stats = {"scanned": len(rows), "rewritten": 0, "flags_touched": 0}
+    examples = []
+    pattern = re.compile(r"Quantity converted from (\d+) bottles to [\d.]+ cases?", re.IGNORECASE)
+    for r in rows:
+        try:
+            raw = r.error_flags
+            flags = _json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(flags, list):
+                continue
+        except Exception:
+            continue
+        new_flags = []
+        touched = False
+        for f in flags:
+            if isinstance(f, str):
+                m = pattern.search(f)
+                if m:
+                    new_flags.append(f"Quantity in {m.group(1)} bottles (loose pack — case qty N/A)")
+                    touched = True
+                    stats["flags_touched"] += 1
+                    continue
+            new_flags.append(f)
+        if touched:
+            if apply:
+                r.error_flags = _json.dumps(new_flags)
+            stats["rewritten"] += 1
+            if len(examples) < 10:
+                examples.append({"uid": r.uid, "flags": new_flags})
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}
+
+
 @router.post("/admin/retest-cleanup-fixtures", dependencies=[Depends(_require_admin)])
 def retest_cleanup_fixtures(apply: bool = False, db: Session = Depends(get_db)):
     """Remove every row created by retest-seed-fixtures. Idempotent."""
