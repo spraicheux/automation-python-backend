@@ -1535,10 +1535,11 @@ _T1T2_PATTERN = re.compile(r"\b(T1|T2)\b", re.IGNORECASE)
 _PRODUCT_NOISE_PATTERN = re.compile(
     r"""
     \s* (?:
-      \d+[.,]?\d*\s*(?:L|CL|ML|LITRO[S]?)      # volumes
-      | \d+[°º]                                 # alcohol degrees
-      | caja\s*@\s*\d+\s*BT\s*X\s*[\d.,]+\s*(?:L|CL|ML|LITRO[S]?)?  # Spanish "Caja @ 6 BT X 1,00 Litros"
-      | pack\s*\d+                              # "pack 12"
+      \d+[.,]?\d*\s*(?:LITROS|LITRO|ML|CL|L)\b   # volumes — longest match first so
+                                                 # "1,00 Litros" doesn't leave "itros"
+      | \d+[°º]                                   # alcohol degrees
+      | caja\s*@\s*\d+\s*BT\s*X\s*[\d.,]+\s*(?:LITROS|LITRO|ML|CL|L)?\b
+      | pack\s*\d+                                # "pack 12"
       | box\s*of\s*\d+
     )
     """,
@@ -1674,6 +1675,43 @@ def retest_backfill_product_names(
         if len(examples) < 10:
             examples.append({"uid": r.uid, "was": r.product_name[:100], "now": cleaned[:100]})
 
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}
+
+
+@router.post("/admin/retest-recanonicalize-from-raw", dependencies=[Depends(_require_admin)])
+def retest_recanonicalize_from_raw(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-03 follow-up: once product_name_raw holds the original text, we can
+    re-run _canonicalise_product_name on the raw to produce a better cleaned
+    version. The previous backfill picked the shortest alternation match
+    ("1,00 Litros" → kept "itros"); this re-run uses the fixed regex that
+    prefers longest matches. Only touches rows where product_name_raw exists
+    AND the fresh cleanup differs from current product_name."""
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.product_name_raw.isnot(None))
+              .limit(limit).all())
+    stats = {"scanned": len(rows), "updated": 0, "unchanged": 0}
+    examples = []
+    for r in rows:
+        fresh = _canonicalise_product_name(r.product_name_raw)
+        if not fresh or len(fresh) < 3:
+            stats["unchanged"] += 1
+            continue
+        if fresh == r.product_name:
+            stats["unchanged"] += 1
+            continue
+        if apply:
+            r.product_name = fresh
+        stats["updated"] += 1
+        if len(examples) < 10:
+            examples.append({"uid": r.uid, "raw": r.product_name_raw[:100],
+                             "was": r.product_name[:100] if r.product_name else "",
+                             "now": fresh[:100]})
     if apply:
         db.commit()
     return {"applied": apply, **stats, "examples": examples}
