@@ -1,5 +1,7 @@
 # Automation Python Backend
 
+[![tests](https://github.com/spraicheux/automation-python-backend/actions/workflows/tests.yml/badge.svg)](https://github.com/spraicheux/automation-python-backend/actions/workflows/tests.yml)
+
 Async FastAPI backend deployed on Azure App Service.
 
 This service is designed to process Email and WhatsApp offers via Make.com without timeout by using a fully asynchronous, non-blocking architecture.

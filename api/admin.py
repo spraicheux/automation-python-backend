@@ -1777,3 +1777,144 @@ def retest_canonicalise_supplier_names(
     return {"applied": apply, "distinct_suppliers": len(canon_map),
             "offer_rows_updated": offer_updates, "source_rows_updated": source_updates,
             "canonical_sample": dict(list(canon_map.items())[:20])}
+
+
+@router.post("/admin/retest-seed-fixtures", dependencies=[Depends(_require_admin)])
+def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
+    """R-05 and R-08: controlled test fixtures the independent retester can
+    exercise end-to-end. Creates exactly four rows under supplier sentinel
+    '__retest_fixture__'. Idempotent — second call with apply=true is a no-op.
+
+    Pair 1 — R-05 packaging alias (same product, two raw spellings):
+      A. Hennessy VSOP · packaging_raw="12x700ml"
+      B. Hennessy VSOP · packaging_raw="12x70cl"
+      → Must merge into one peer group (canonical pack key).
+
+    Pair 2 — R-08 expired/active best-prices split:
+      C. Belvedere Vodka · €29 · valid_until=yesterday  (EXPIRED, cheaper)
+      D. Belvedere Vodka · €34 · valid_until=future    (ACTIVE)
+      → Headline Best Price = €34, not €29. Expired row shown but dimmed.
+    """
+    import uuid as _uuid
+    from datetime import datetime, timedelta
+    from models.offer_item import OfferItemDB
+    from models.source_file import SourceFileDB
+
+    SENTINEL = "__retest_fixture__"
+    today = datetime.utcnow()
+    yesterday_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    future_str = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    existing = (db.query(OfferItemDB)
+                  .filter(OfferItemDB.supplier_name.ilike(f"{SENTINEL}%"))
+                  .all())
+
+    plan = [
+        # Pair 1 — packaging alias (both must land in one peer group)
+        dict(brand="Hennessy", product_name="VSOP (retest fixture)",
+             packaging_raw="12x700ml", packaging="12/case",
+             unit_volume_ml=700, units_per_case=12, quantity_case=50,
+             quantity_unit="cases", price_per_unit=42.0,
+             price_per_unit_eur=42.0, price_per_case=504.0,
+             price_per_case_eur=504.0, currency="EUR",
+             supplier_name=f"{SENTINEL}_pkg_ml", incoterm="EXW",
+             location="Rotterdam", ean_code="3245990123004",
+             category="Spirits", category_slug="wines_spirits",
+             alcohol_percent=40.0, custom_status="T1",
+             valid_until=future_str),
+        dict(brand="Hennessy", product_name="VSOP (retest fixture)",
+             packaging_raw="12x70cl", packaging="12/case",
+             unit_volume_ml=700, units_per_case=12, quantity_case=30,
+             quantity_unit="cases", price_per_unit=41.5,
+             price_per_unit_eur=41.5, price_per_case=498.0,
+             price_per_case_eur=498.0, currency="EUR",
+             supplier_name=f"{SENTINEL}_pkg_cl", incoterm="EXW",
+             location="Rotterdam", ean_code="3245990123004",
+             category="Spirits", category_slug="wines_spirits",
+             alcohol_percent=40.0, custom_status="T1",
+             valid_until=future_str),
+        # Pair 2 — expired must NOT win headline
+        dict(brand="Belvedere", product_name="Pure Vodka (retest fixture)",
+             packaging_raw="6x700ml", packaging="6/case",
+             unit_volume_ml=700, units_per_case=6, quantity_case=100,
+             quantity_unit="cases", price_per_unit=29.0,
+             price_per_unit_eur=29.0, price_per_case=174.0,
+             price_per_case_eur=174.0, currency="EUR",
+             supplier_name=f"{SENTINEL}_expired", incoterm="EXW",
+             location="Rotterdam", ean_code="5901041004055",
+             category="Spirits", category_slug="wines_spirits",
+             alcohol_percent=40.0, valid_until=yesterday_str),
+        dict(brand="Belvedere", product_name="Pure Vodka (retest fixture)",
+             packaging_raw="6x700ml", packaging="6/case",
+             unit_volume_ml=700, units_per_case=6, quantity_case=80,
+             quantity_unit="cases", price_per_unit=34.0,
+             price_per_unit_eur=34.0, price_per_case=204.0,
+             price_per_case_eur=204.0, currency="EUR",
+             supplier_name=f"{SENTINEL}_active", incoterm="EXW",
+             location="Rotterdam", ean_code="5901041004055",
+             category="Spirits", category_slug="wines_spirits",
+             alcohol_percent=40.0, valid_until=future_str),
+    ]
+
+    created = []
+    if apply and not existing:
+        src = SourceFileDB(
+            id=str(_uuid.uuid4()),
+            job_id=f"retest-fixture-{today.strftime('%Y%m%d-%H%M%S')}",
+            source_filename=f"RETEST_FIXTURES_{today.strftime('%Y%m%d')}.xlsx",
+            sender_name="retest-seed",
+            supplier_name=SENTINEL,
+            source_channel="retest-fixture",
+            product_count=len(plan),
+            expected_row_count=len(plan),
+            imported_row_count=len(plan),
+            import_incomplete=False,
+        )
+        db.add(src)
+        db.flush()
+
+        for p in plan:
+            row = OfferItemDB(
+                uid=str(_uuid.uuid4()),
+                source_file_id=src.id,
+                job_id=src.job_id,
+                source_filename=src.source_filename,
+                source_channel="retest-fixture",
+                confidence_score=1.0,
+                needs_manual_review=False,
+                offer_date=today,
+                date_received=today,
+                created_at=today,
+                **p,
+            )
+            db.add(row)
+            created.append({"supplier": p["supplier_name"],
+                            "product": p["product_name"],
+                            "packaging_raw": p.get("packaging_raw"),
+                            "price_eur": p["price_per_unit_eur"],
+                            "valid_until": p.get("valid_until")})
+        db.commit()
+    return {"applied": apply, "sentinel": SENTINEL,
+            "existing_rows": len(existing), "planned_rows": len(plan),
+            "created": created,
+            "note": "Cleanup: POST /api/admin/retest-cleanup-fixtures"}
+
+
+@router.post("/admin/retest-cleanup-fixtures", dependencies=[Depends(_require_admin)])
+def retest_cleanup_fixtures(apply: bool = False, db: Session = Depends(get_db)):
+    """Remove every row created by retest-seed-fixtures. Idempotent."""
+    from models.offer_item import OfferItemDB
+    from models.source_file import SourceFileDB
+    SENTINEL = "__retest_fixture__"
+    offers = (db.query(OfferItemDB)
+                .filter(OfferItemDB.supplier_name.ilike(f"{SENTINEL}%"))
+                .all())
+    srcs = (db.query(SourceFileDB)
+              .filter(SourceFileDB.source_channel == "retest-fixture")
+              .all())
+    if apply:
+        for o in offers: db.delete(o)
+        for s in srcs: db.delete(s)
+        db.commit()
+    return {"applied": apply, "offer_rows_removed": len(offers),
+            "source_rows_removed": len(srcs)}

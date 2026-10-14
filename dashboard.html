@@ -299,6 +299,13 @@
     .delta-badge.unverified { background: rgba(251,191,36,0.10); color: #eab308; border: 1px dashed rgba(251,191,36,0.55); font-weight: 500; letter-spacing: 0.2px; }
     .delta-badge.expired { background: rgba(148,163,184,0.12); color: var(--text-dim); border: 1px dashed var(--border); font-weight: 500; }
     table.bp-offers tr.expired-row td { opacity: 0.5; }
+    /* R-07: Current vs Historical split */
+    table.bp-offers tr.bp-section-header td { background: var(--surface); padding: 6px 16px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700; color: var(--muted); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border-soft); }
+    table.bp-offers tr.bp-section-header.bp-current td { color: var(--green); background: rgba(52,211,153,0.05); }
+    table.bp-offers tr.bp-section-header.bp-history td { color: var(--muted); background: rgba(100,100,100,0.04); }
+    table.bp-offers tr.bp-section-header .bp-section-count { font-weight: 400; opacity: 0.7; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+    table.bp-offers tr.history-row td { opacity: 0.72; font-style: italic; }
+    .delta-badge.history { background: rgba(100,100,100,0.12); color: var(--muted); border: 1px solid var(--border); }
     .delta-badge.best.unverified,
     .delta-badge.up.unverified { opacity: 0.65; border: 1px dashed currentColor; background: transparent; }
     .unverified-star { color: #eab308; font-weight: 700; margin-left: 1px; cursor: help; }
@@ -2027,8 +2034,22 @@
     const peerBlocks = peers.map(p => {
       const offers = p.offers || [];
       const bestUnit = p.best_price_eur;
-      const rows = offers.map((o, idx) => {
-        const isBest = idx === 0;
+      // R-07 (retest): split rows into "Actionable current" (≤60 days OR not
+      // expired) and "Benchmark history" (>60 days OR expired). A visible
+      // header row separates the two so a buyer cannot confuse an old cheap
+      // offer with a current one.
+      const _CURRENT_DAYS = 60;
+      const _dayMs = 1000 * 60 * 60 * 24;
+      const _now = Date.now();
+      const _isCurrent = (o) => {
+        if (o.is_expired) return false;
+        const d = o.offer_date || o.created_at;
+        if (!d) return true;
+        const age = (_now - new Date(d).getTime()) / _dayMs;
+        return age <= _CURRENT_DAYS;
+      };
+      const _currentRow = (o, idx, group) => {
+        const isBest = idx === 0 && group === 'current';
         const pu = o.price_per_unit_eur;
         const pc = o.price_per_case_eur;
         const delta = (pu != null && bestUnit != null && bestUnit > 0)
@@ -2037,20 +2058,42 @@
         let deltaBadge = '';
         if (isExpired) deltaBadge = `<span class="delta-badge expired" title="valid_until has passed — historical reference only">EXPIRED</span>`;
         else if (isBest) deltaBadge = p.is_qualified
-          ? `<span class="delta-badge best">BEST</span>`
+          ? `<span class="delta-badge best">BEST (current)</span>`
           : `<span class="delta-badge unverified">BEST · unverified</span>`;
+        else if (group === 'history') deltaBadge = `<span class="delta-badge history" title="Older than ${_CURRENT_DAYS} days — kept for benchmarking, not actionable">HISTORY</span>`;
         else if (delta != null) deltaBadge = `<span class="delta-badge up">+${delta.toFixed(1)}%</span>`;
         const ai = formatAge(o.offer_date || o.created_at);
         const dateStr = ai ? `<span title="${escapeAttr(ai.title)}">${escapeHtml(ai.text)}</span>` : '—';
-        return `<tr class="${isBest && !isExpired ? 'best' : ''} ${isExpired ? 'expired-row' : ''}" data-uid="${escapeAttr(o.uid)}">
+        const trClass = [
+          isBest ? 'best' : '',
+          isExpired ? 'expired-row' : '',
+          group === 'history' ? 'history-row' : '',
+        ].filter(Boolean).join(' ');
+        return `<tr class="${trClass}" data-uid="${escapeAttr(o.uid)}">
           <td>${supplierCell(o)}</td>
           <td class="bp-mono">${o.quantity_case != null ? formatQuantity(o) : '—'}</td>
-          <td class="bp-mono" style="color:${pu != null && !isExpired ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null && !isExpired ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
-          <td class="bp-mono" style="color:${pc != null && !isExpired ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null && !isExpired ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono" style="color:${pu != null && !isExpired && group === 'current' ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null && !isExpired && group === 'current' ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
+          <td class="bp-mono" style="color:${pc != null && !isExpired && group === 'current' ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null && !isExpired && group === 'current' ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
           <td class="bp-mono">${dateStr}</td>
           <td>${deltaBadge}</td>
         </tr>`;
-      }).join('');
+      };
+      const currentOffers = offers.filter(_isCurrent);
+      const historyOffers = offers.filter(o => !_isCurrent(o));
+      const sectionHeader = (label, count, cls) =>
+        `<tr class="bp-section-header ${cls}"><td colspan="6"><span class="bp-section-label">${label}</span> <span class="bp-section-count">${count} ${count === 1 ? 'offer' : 'offers'}</span></td></tr>`;
+      let rows = '';
+      if (currentOffers.length) {
+        rows += sectionHeader(`Actionable current (≤ ${_CURRENT_DAYS} days)`, currentOffers.length, 'bp-current');
+        rows += currentOffers.map((o, idx) => _currentRow(o, idx, 'current')).join('');
+      }
+      if (historyOffers.length) {
+        rows += sectionHeader('Benchmark history', historyOffers.length, 'bp-history');
+        rows += historyOffers.map((o, idx) => _currentRow(o, idx, 'history')).join('');
+      }
+      if (!rows) {
+        rows = `<tr><td colspan="6" style="text-align:center; color: var(--muted); padding: 20px;">No offers in this peer group</td></tr>`;
+      }
 
       const termsLabel = p.is_qualified
         ? `<span class="peer-terms"><b>${escapeHtml(p.incoterm || '—')}</b> · ${escapeHtml(p.location || '—')}</span>`
