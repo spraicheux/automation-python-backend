@@ -675,8 +675,8 @@
       <div class="form-field"><label>Supplier email</label><input id="nf-supplier_email" type="email" /></div>
       <div class="form-field"><label>Incoterm</label><select id="nf-incoterm"><option value="">—</option><option>EXW</option><option>DAP</option><option>FOB</option><option>CIF</option><option>DDP</option></select></div>
       <div class="form-field"><label>Location</label><input id="nf-location" placeholder="e.g. Loendersloot" /></div>
-      <div class="form-field"><label>Available quantity</label><div style="display:flex;gap:6px;"><input id="nf-quantity_case" type="number" step="1" style="flex:1;min-width:0;" placeholder="e.g. 500" /><select id="nf-quantity_unit" style="width:90px;"><option value="cases">cases</option><option value="bottles">bottles</option><option value="pallets">pallets</option></select></div></div>
-      <div class="form-field"><label>MOQ (cases)</label><input id="nf-moq_cases" type="number" step="1" /></div>
+      <div class="form-field"><label>Available quantity</label><div style="display:flex;gap:6px;"><input id="nf-quantity_case" type="number" step="1" style="flex:1;min-width:0;" placeholder="e.g. 500" /><select id="nf-quantity_unit" style="width:90px;"><option value="cases">cases</option><option value="bottles">bottles</option><option value="pallets">pallets</option><option value="pieces">pieces</option><option value="ftl">FTL</option></select></div></div>
+      <div class="form-field"><label>MOQ</label><div style="display:flex;gap:6px;"><input id="nf-moq_cases" type="number" step="1" style="flex:1;min-width:0;" /><select id="nf-moq_unit" style="width:90px;"><option value="cases">cases</option><option value="bottles">bottles</option><option value="pallets">pallets</option><option value="pieces">pieces</option><option value="ftl">FTL</option></select></div></div>
       <div class="form-field"><label>Lead time</label><input id="nf-lead_time" placeholder="e.g. 2 weeks" /></div>
       <div class="form-field"><label>T1 / T2</label><select id="nf-custom_status"><option value="">—</option><option>T1</option><option>T2</option></select></div>
       <div class="form-field"><label>Offer date</label><input id="nf-offer_date" type="date" /></div>
@@ -830,10 +830,17 @@
         const secondarySelect = document.getElementById('filter-category');
         if (secondarySelect) {
           // Secondary dropdown is free-form "Category" labels, not slugs.
-          // When a pill is active, clear the secondary so results aren't
-          // narrowed further by a stale free-form text match.
+          // When a category pill is active, clear AND disable the secondary
+          // so later re-populations (updateDropdown on reload) can't
+          // silently re-apply a stale value and the two controls can never
+          // show contradictory selections.
           secondarySelect.value = '';
           filters.category = '';
+          const pillActive = !!filters.category_slug;
+          secondarySelect.disabled = pillActive;
+          secondarySelect.title = pillActive
+            ? 'Category pill is active — clear the pill first to use the free-form category filter'
+            : 'Free-form category label from source';
         }
         loadRecords(true);
       });
@@ -848,6 +855,9 @@
       activeSourceId = null;
       filterSourceList();
       document.querySelectorAll('.cat-pill').forEach((b, i) => b.classList.toggle('active', i === 0));
+      // Re-enable the secondary category dropdown — Reset clears the active pill.
+      const _sec = document.getElementById('filter-category');
+      if (_sec) { _sec.disabled = false; _sec.title = 'Free-form category label from source'; }
       loadRecords(true);
     });
 
@@ -999,7 +1009,7 @@
       price_per_case: gn('price_per_case'), fx_rate: gn('fx_rate') || 1.0,
       supplier_name: gv('supplier_name'), supplier_email: gv('supplier_email'),
       incoterm: gv('incoterm'), location: gv('location'),
-      quantity_case: gn('quantity_case'), quantity_unit: gv('quantity_unit') || 'cases', moq_cases: gn('moq_cases'),
+      quantity_case: gn('quantity_case'), quantity_unit: gv('quantity_unit') || 'cases', moq_cases: gn('moq_cases'), moq_unit: gv('moq_unit') || 'cases',
       lead_time: gv('lead_time'), custom_status: gv('custom_status'),
       offer_date: gv('offer_date'), valid_until: gv('valid_until'),
       notes: gv('notes'), source_channel: 'manual',

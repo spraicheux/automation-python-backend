@@ -1565,14 +1565,23 @@ def _strip_customs_token(text: str) -> str:
     return re.sub(r"\s{2,}", " ", cleaned).strip(" -,")
 
 
-def _canonicalise_product_name(name: str) -> str:
+def _canonicalise_product_name(name: str, brand: str | None = None) -> str:
     """Deterministic cleanup of noisy LLM-extracted product names.
-    Removes volume/alcohol/pack text that belongs in separate fields."""
+    Removes volume/alcohol/pack text that belongs in separate fields.
+    When a brand is provided and the product_name starts with it, strip the
+    duplicate (so "Hennessy X.O." under brand=Hennessy becomes "X.O.")."""
     if not name:
         return name
     cleaned = _PRODUCT_NOISE_PATTERN.sub(" ", name)
     cleaned = re.sub(r"\.\.\.|…", " ", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -,.")
+    if brand:
+        # Strip leading brand prefix (case-insensitive). Only when the result
+        # keeps a sensible product name — never produce an empty string.
+        pat = re.compile(r"^" + re.escape(brand.strip()) + r"\s+", re.IGNORECASE)
+        stripped = pat.sub("", cleaned)
+        if stripped and len(stripped) >= 2:
+            cleaned = stripped
     return cleaned
 
 
@@ -1657,7 +1666,7 @@ def retest_backfill_product_names(
         if not r.product_name:
             stats["unchanged"] += 1
             continue
-        cleaned = _canonicalise_product_name(r.product_name)
+        cleaned = _canonicalise_product_name(r.product_name, r.brand)
         if cleaned == r.product_name:
             stats["unchanged"] += 1
             continue
@@ -1698,7 +1707,7 @@ def retest_recanonicalize_from_raw(
     stats = {"scanned": len(rows), "updated": 0, "unchanged": 0}
     examples = []
     for r in rows:
-        fresh = _canonicalise_product_name(r.product_name_raw)
+        fresh = _canonicalise_product_name(r.product_name_raw, r.brand)
         if not fresh or len(fresh) < 3:
             stats["unchanged"] += 1
             continue
@@ -1910,6 +1919,18 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              location="Rotterdam", ean_code="5901041004055",
              category="Spirits", category_slug="wines_spirits",
              alcohol_percent=40.0, valid_until=future_str),
+        # Pair 3 — Campari 100cl T2 (search coverage requirement)
+        dict(brand="Campari", product_name="Bitter Aperitivo (retest fixture)",
+             packaging_raw="6x1000ml", packaging="6/case",
+             unit_volume_ml=1000, units_per_case=6, quantity_case=60,
+             quantity_unit="cases", price_per_unit=14.5,
+             price_per_unit_eur=14.5, price_per_case=87.0,
+             price_per_case_eur=87.0, currency="EUR",
+             supplier_name=f"{SENTINEL}_campari_t2", incoterm="EXW",
+             location="Rotterdam", ean_code="8000414114104",
+             category="Spirits", category_slug="wines_spirits",
+             alcohol_percent=25.0, custom_status="T2",
+             valid_until=future_str),
     ]
 
     created = []
@@ -2006,6 +2027,103 @@ def retest_rewrite_stale_quantity_flags(
     if apply:
         db.commit()
     return {"applied": apply, **stats, "examples": examples}
+
+
+@router.post("/admin/retest-cleanup-stale-flags", dependencies=[Depends(_require_admin)])
+def retest_cleanup_stale_flags(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """Remove error_flags that contradict the current field state. The ingest
+    pipeline sets flags like "custom_status not found" at extraction time;
+    when a later backfill populates custom_status the flag becomes a lie that
+    reads as a defect in UI tooltips. For every row:
+      - drop "custom_status not found" when custom_status is populated
+      - drop "incoterm not found" when incoterm is populated
+      - drop "refillable_status not found" when refillable_status is populated
+      - drop "supplier_name not found" when supplier_name is populated
+    Idempotent."""
+    import json as _json
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.error_flags.isnot(None))
+              .limit(limit).all())
+    stats = {"scanned": len(rows), "rewritten": 0, "flags_dropped": 0}
+    # (flag text contains → field name on OfferItemDB that, when truthy, contradicts the flag)
+    contradictions = [
+        ("custom_status not found",      "custom_status"),
+        ("incoterm not found",           "incoterm"),
+        ("refillable_status not found",  "refillable_status"),
+        ("supplier_name not found",      "supplier_name"),
+        ("supplier_email not found",     "supplier_email"),
+        ("location not found",           "location"),
+        ("origin_country not found",     "origin_country"),
+        ("label_language not found",     "label_language"),
+    ]
+    for r in rows:
+        try:
+            flags = _json.loads(r.error_flags) if isinstance(r.error_flags, str) else r.error_flags
+            if not isinstance(flags, list):
+                continue
+        except Exception:
+            continue
+        new_flags = []
+        changed = False
+        for f in flags:
+            drop = False
+            if isinstance(f, str):
+                for needle, field in contradictions:
+                    if needle in f:
+                        v = getattr(r, field, None)
+                        if v and (not isinstance(v, str) or v.strip() and v.strip().lower() != "not found"):
+                            drop = True
+                            break
+            if drop:
+                stats["flags_dropped"] += 1
+                changed = True
+            else:
+                new_flags.append(f)
+        if changed:
+            stats["rewritten"] += 1
+            if apply:
+                r.error_flags = _json.dumps(new_flags)
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats}
+
+
+@router.post("/admin/retest-backfill-legacy-source-counts", dependencies=[Depends(_require_admin)])
+def retest_backfill_legacy_source_counts(
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Older source files were ingested before the row-count estimator shipped,
+    so they carry expected_row_count=null and the sidebar shows just a bare
+    product count instead of "x/x". For every file with null counts, set
+    expected_row_count = imported_row_count = actual row count in offer_items.
+    Idempotent — only touches files where either field is null."""
+    from models.source_file import SourceFileDB
+    from sqlalchemy import func
+    srcs = db.query(SourceFileDB).all()
+    stats = {"scanned": len(srcs), "updated": 0}
+    for s in srcs:
+        if s.expected_row_count is not None and s.imported_row_count is not None:
+            continue
+        actual = (db.query(func.count(OfferItemDB.uid))
+                    .filter(OfferItemDB.source_file_id == s.id)
+                    .scalar()) or 0
+        if actual == 0:
+            continue
+        if apply:
+            if s.imported_row_count is None:
+                s.imported_row_count = actual
+            if s.expected_row_count is None:
+                s.expected_row_count = actual
+            s.import_incomplete = False
+        stats["updated"] += 1
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats}
 
 
 @router.post("/admin/retest-cleanup-fixtures", dependencies=[Depends(_require_admin)])

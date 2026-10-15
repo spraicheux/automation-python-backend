@@ -88,6 +88,7 @@ def init_db():
             # Phase 3 retest fixes (R-03, R-16): immutable raw descriptions
             ("product_name_raw",    "VARCHAR(1024)"),
             ("brand_raw",           "VARCHAR(255)"),
+            ("moq_unit",            "VARCHAR(32)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:

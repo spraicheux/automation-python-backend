@@ -91,6 +91,7 @@ class OfferCreate(BaseModel):
     location: Optional[str] = None
     lead_time: Optional[str] = None
     moq_cases: Optional[float] = None
+    moq_unit: Optional[str] = "cases"
     valid_until: Optional[str] = None
     best_before_date: Optional[str] = None
     offer_date: Optional[str] = None
@@ -114,7 +115,7 @@ _EDITABLE_FIELDS = {
     "refillable_status", "currency", "price_per_unit", "price_per_unit_eur",
     "price_per_case", "price_per_case_eur", "fx_rate", "fx_date",
     "alcohol_percent", "origin_country", "supplier_country", "incoterm",
-    "location", "lead_time", "moq_cases", "valid_until", "best_before_date",
+    "location", "lead_time", "moq_cases", "moq_unit", "valid_until", "best_before_date",
     "vintage", "ean_code", "label_language", "product_reference",
     "supplier_name", "supplier_email", "supplier_reference", "sender_name",
     "sender_email", "source_channel", "source_message_id", "source_filename",
@@ -198,6 +199,7 @@ def create_offer(payload: OfferCreate, db: Session = Depends(get_db)):
         location=payload.location,
         lead_time=payload.lead_time,
         moq_cases=payload.moq_cases,
+        moq_unit=payload.moq_unit or "cases",
         valid_until=payload.valid_until,
         best_before_date=payload.best_before_date,
         vintage=payload.vintage,

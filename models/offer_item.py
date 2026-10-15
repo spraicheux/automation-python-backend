@@ -76,6 +76,7 @@ class OfferItemDB(Base):
     location          = Column(String(255), nullable=True)
     lead_time         = Column(String(255), nullable=True)
     moq_cases         = Column(Float, nullable=True)
+    moq_unit          = Column(String(32), nullable=True)   # cases | bottles | pallets | pieces | ftl
     valid_until       = Column(String(64), nullable=True)
     best_before_date  = Column(String(64), nullable=True)
     vintage           = Column(String(64), nullable=True)
@@ -219,6 +220,7 @@ class OfferItemDB(Base):
             "location": self.location,
             "lead_time": self.lead_time,
             "moq_cases": self.moq_cases,
+            "moq_unit": self.moq_unit,
             "valid_until": self.valid_until,
             "best_before_date": self.best_before_date,
             "vintage": self.vintage,
