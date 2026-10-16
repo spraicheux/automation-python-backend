@@ -29,6 +29,10 @@ jobs:
         env:
           REDIS_URL: redis://localhost:6379/0
           DATABASE_URL: sqlite:///./test.db
+          # core.openai_client builds an AsyncOpenAI client at import time, which
+          # requires a key to exist. These unit tests never call the API — this
+          # is a placeholder so module import (and test collection) succeeds.
+          OPENAI_API_KEY: sk-test-not-used-in-unit-tests
         run: |
           pytest tests/test_normalization.py \
                  tests/test_categories.py \
