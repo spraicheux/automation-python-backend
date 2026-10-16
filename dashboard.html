@@ -966,11 +966,17 @@
     const curPrice = a.current?.price_eur != null ? `€${Number(a.current.price_eur).toFixed(2)}` : '—';
     const prevSupplier = a.previous_best?.supplier || '—';
     const prevPrice = a.previous_best?.price_eur != null ? `€${Number(a.previous_best.price_eur).toFixed(2)}` : '—';
+    // "previous best peer" = the best CURRENT competing offer in this peer group
+    // that the new offer undercuts — NOT a historical benchmark. Its date/source
+    // are shown so the comparison is traceable. (A row's drawer "no comparable
+    // history" refers separately to OLDER offers in the benchmark window.)
+    const prevDate = a.previous_best?.offer_date ? String(a.previous_best.offer_date).slice(0,10) : null;
+    const prevSrc = a.previous_best?.source_filename || null;
     return `<div class="alert-card" data-uid="${escapeAttr(a.current.uid)}">
       <div class="alert-icon ${iconCls}">${icon}</div>
       <div class="alert-body">
         <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
-        <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · prev best: ${escapeHtml(prevSupplier)} ${prevPrice}</div>
+        <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · vs previous best peer: ${escapeHtml(prevSupplier)} ${prevPrice}${prevDate ? ` <span class="prev-trace">(offer ${prevDate}${prevSrc ? `, ${escapeHtml(String(prevSrc).slice(0,20))}${String(prevSrc).length>20?'…':''}` : ''})</span>` : ''}</div>
         <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + (ageInfo.ago ? ' ago' : '') : ''}${a.current?.offer_date ? ` · offer ${String(a.current.offer_date).slice(0,10)}` : ''}${a.current?.source_filename ? ` · <span title="${escapeAttr(a.current.source_filename)}">${escapeHtml(String(a.current.source_filename).slice(0,24))}${String(a.current.source_filename).length > 24 ? '…' : ''}</span>` : ''} · click to open</div>
       </div>
       <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
@@ -1935,7 +1941,7 @@
   function benchmarkBlock(i) {
     const b = getBenchmark(i);
     if (!b || b.low_eur == null) {
-      return `<div class="bench-strip"><span class="b-empty">No comparable history in the last ${benchmarkWindow} yet.</span></div>`;
+      return `<div class="bench-strip"><span class="b-empty">No older (historical) offers for this peer in the last ${benchmarkWindow} — current competing offers, if any, appear in Best Prices.</span></div>`;
     }
     const cur = i.price_per_unit_eur;
     const dSign = (v) => v >= 0 ? '+' : '';

@@ -169,6 +169,7 @@ def list_alerts(
                 "supplier": best_prior.supplier_name,
                 "price_eur": best_prior_price,
                 "offer_date": (best_prior.offer_date or best_prior.created_at).isoformat() if best_prior.offer_date or best_prior.created_at else None,
+                "source_filename": best_prior.source_filename,
                 "delta_pct": round(delta_pct, 2),
             },
             "message": message,
