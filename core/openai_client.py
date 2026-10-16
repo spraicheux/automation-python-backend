@@ -1584,6 +1584,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     "price_per_case calculated from",
                     "price_per_unit calculated from",
                     "MOQ converted from bottles to cases",
+                    "Quantity converted from",
                     "sub_category inferred from brand name",
                     "Quantity in bottles",
                     "quantity_case not explicitly stated",

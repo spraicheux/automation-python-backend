@@ -34,4 +34,5 @@ jobs:
                  tests/test_categories.py \
                  tests/test_extraction_helpers.py \
                  tests/test_quantity_integrity.py \
+                 tests/test_backfill_idempotence.py \
                  -v --tb=short

@@ -81,3 +81,30 @@ class TestFtl:
         out, flags = _run(qty=1, unit='ftl', upc=12)
         assert out['quantity_case'] is None
         assert any('FTL' in f for f in flags)
+
+
+class TestConversionFlagContract:
+    """R-14 (Samuel's acceptance blocker): a VALID bottles->cases conversion is
+    an informational audit note, not a REVIEW case. The flag text is a contract
+    shared by three places — core.openai_client._INFO_PREFIXES, api.admin
+    INFO_PATTERNS, and the dashboard classifyFlags INFO_FLAG_PREFIXES — all of
+    which key on the exact prefix 'Quantity converted from'. If the flag text
+    ever drifts from that prefix, the row silently reverts to a false REVIEW
+    badge (the Johnnie Walker Red Label symptom). Lock the prefix here."""
+
+    CONVERSION_PREFIX = "Quantity converted from"
+
+    def test_valid_conversion_flag_uses_contract_prefix(self):
+        out, flags = _run(qty=9600, unit='bottles', upc=6)
+        # 9600 bottles / 6 per case = 1600 cases — the exact JW Red Label case.
+        assert out['quantity_case'] == 1600.0
+        conv = [f for f in flags if f.startswith(self.CONVERSION_PREFIX)]
+        assert conv, (
+            f"conversion flag must start with {self.CONVERSION_PREFIX!r} so the "
+            f"info-classification in every layer keeps matching; got {flags!r}"
+        )
+
+    def test_loose_pack_does_not_emit_conversion_prefix(self):
+        # No case pack -> no 'converted to cases' claim (would be a lie).
+        _out, flags = _run(qty=20, unit='bottles', upc=None)
+        assert not any(f.startswith(self.CONVERSION_PREFIX) for f in flags)

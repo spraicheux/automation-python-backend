@@ -133,6 +133,7 @@ def strip_info_flags(
         "price_per_case calculated from",
         "price_per_unit calculated from",
         "MOQ converted from bottles to cases",
+        "Quantity converted from",
         "sub_category inferred from brand name",
         "Quantity in bottles",
         "quantity_case not explicitly stated",
@@ -392,6 +393,7 @@ def sync_review_flags(
         "price_per_case calculated from",
         "price_per_unit calculated from",
         "MOQ converted from bottles to cases",
+        "Quantity converted from",
         "sub_category inferred from brand name",
         "Quantity in bottles",
         "quantity_case not explicitly stated",
@@ -1869,6 +1871,12 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
     today = datetime.utcnow()
     yesterday_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
     future_str = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+    # Offer dates must always PRECEDE validity dates — a real offer is made
+    # before it expires. `recent` (active rows) and `older` (the expired row,
+    # which must still predate its yesterday validity) give every fixture a
+    # sane past offer_date so the age cell renders "5d"/"10d", never "future".
+    recent = today - timedelta(days=5)
+    older = today - timedelta(days=10)
 
     existing = (db.query(OfferItemDB)
                   .filter(OfferItemDB.supplier_name.ilike(f"{SENTINEL}%"))
@@ -1886,7 +1894,7 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              location="Rotterdam", ean_code="3245990123004",
              category="Spirits", category_slug="wines_spirits",
              alcohol_percent=40.0, custom_status="T1",
-             valid_until=future_str),
+             offer_date=recent, valid_until=future_str),
         dict(brand="Hennessy", product_name="VSOP (retest fixture)",
              packaging_raw="12x70cl", packaging="12/case",
              unit_volume_ml=700, units_per_case=12, quantity_case=30,
@@ -1897,8 +1905,9 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              location="Rotterdam", ean_code="3245990123004",
              category="Spirits", category_slug="wines_spirits",
              alcohol_percent=40.0, custom_status="T1",
-             valid_until=future_str),
-        # Pair 2 — expired must NOT win headline
+             offer_date=recent, valid_until=future_str),
+        # Pair 2 — expired must NOT win headline. offer_date (older) precedes
+        # its yesterday validity so the date sequence stays logical.
         dict(brand="Belvedere", product_name="Pure Vodka (retest fixture)",
              packaging_raw="6x700ml", packaging="6/case",
              unit_volume_ml=700, units_per_case=6, quantity_case=100,
@@ -1908,7 +1917,7 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              supplier_name=f"{SENTINEL}_expired", incoterm="EXW",
              location="Rotterdam", ean_code="5901041004055",
              category="Spirits", category_slug="wines_spirits",
-             alcohol_percent=40.0, valid_until=yesterday_str),
+             alcohol_percent=40.0, offer_date=older, valid_until=yesterday_str),
         dict(brand="Belvedere", product_name="Pure Vodka (retest fixture)",
              packaging_raw="6x700ml", packaging="6/case",
              unit_volume_ml=700, units_per_case=6, quantity_case=80,
@@ -1918,7 +1927,7 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              supplier_name=f"{SENTINEL}_active", incoterm="EXW",
              location="Rotterdam", ean_code="5901041004055",
              category="Spirits", category_slug="wines_spirits",
-             alcohol_percent=40.0, valid_until=future_str),
+             alcohol_percent=40.0, offer_date=recent, valid_until=future_str),
         # Pair 3 — Campari 100cl T2 (search coverage requirement)
         dict(brand="Campari", product_name="Bitter Aperitivo (retest fixture)",
              packaging_raw="6x1000ml", packaging="6/case",
@@ -1930,7 +1939,7 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
              location="Rotterdam", ean_code="8000414114104",
              category="Spirits", category_slug="wines_spirits",
              alcohol_percent=25.0, custom_status="T2",
-             valid_until=future_str),
+             offer_date=recent, valid_until=future_str),
     ]
 
     created = []
@@ -1959,7 +1968,6 @@ def retest_seed_fixtures(apply: bool = False, db: Session = Depends(get_db)):
                 source_channel="retest-fixture",
                 confidence_score=1.0,
                 needs_manual_review=False,
-                offer_date=today,
                 date_received=today,
                 created_at=today,
                 **p,

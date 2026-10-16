@@ -971,7 +971,7 @@
       <div class="alert-body">
         <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
         <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · prev best: ${escapeHtml(prevSupplier)} ${prevPrice}</div>
-        <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + ' ago' : ''}${a.current?.offer_date ? ` · offer ${String(a.current.offer_date).slice(0,10)}` : ''}${a.current?.source_filename ? ` · <span title="${escapeAttr(a.current.source_filename)}">${escapeHtml(String(a.current.source_filename).slice(0,24))}${String(a.current.source_filename).length > 24 ? '…' : ''}</span>` : ''} · click to open</div>
+        <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + (ageInfo.ago ? ' ago' : '') : ''}${a.current?.offer_date ? ` · offer ${String(a.current.offer_date).slice(0,10)}` : ''}${a.current?.source_filename ? ` · <span title="${escapeAttr(a.current.source_filename)}">${escapeHtml(String(a.current.source_filename).slice(0,24))}${String(a.current.source_filename).length > 24 ? '…' : ''}</span>` : ''} · click to open</div>
       </div>
       <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
     </div>`;
@@ -1268,20 +1268,10 @@
     if (i.sub_category) availableFilters.sub_category.add(i.sub_category);
     if (i.supplier_name) availableFilters.supplier.add(i.supplier_name);
     if (i.unit_volume_ml) availableFilters.bottle.add(String(i.unit_volume_ml));
-    // Build canonical pack key from structured fields; fall back to raw string
-    // only when neither field is present. This prevents "12x700ml / 12x70cl /
-    // 12x1L" from appearing as three separate options for the same pack.
-    const _upc = i.units_per_case, _vol = i.unit_volume_ml;
-    if (_upc && _vol) {
-      const _volStr = _vol >= 1000 ? `${(_vol/1000).toFixed(_vol%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol}ml`;
-      availableFilters.packaging.add(`${Math.trunc(_upc)}×${_volStr}`);
-    } else if (_upc && _upc > 1) {
-      availableFilters.packaging.add(`${Math.trunc(_upc)}/case`);
-    } else if (_vol) {
-      availableFilters.packaging.add(`loose ${_vol >= 1000 ? `${(_vol/1000).toFixed(_vol%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol}ml`}`);
-    } else if (i.packaging) {
-      availableFilters.packaging.add(i.packaging);
-    }
+    // Packaging filter = case-pack dimension only (see packKey). Bottle size
+    // is the separate filter-bottle dropdown, so the two are never conflated.
+    const _pk = packKey(i);
+    if (_pk) availableFilters.packaging.add(_pk);
     if (i.incoterm) availableFilters.incoterm.add(i.incoterm);
     if (i.location) availableFilters.location.add(i.location);
     if (i.currency) availableFilters.currency.add(i.currency);
@@ -1339,17 +1329,7 @@
       if (filters.brand && i.brand !== filters.brand) return false;
       if (filters.supplier && i.supplier_name !== filters.supplier) return false;
       if (filters.bottle && String(i.unit_volume_ml) !== filters.bottle) return false;
-      if (filters.packaging) {
-        const _upc2 = i.units_per_case, _vol2 = i.unit_volume_ml;
-        let _packKey = null;
-        if (_upc2 && _vol2) {
-          const _vs = _vol2 >= 1000 ? `${(_vol2/1000).toFixed(_vol2%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol2}ml`;
-          _packKey = `${Math.trunc(_upc2)}×${_vs}`;
-        } else if (_upc2 && _upc2 > 1) { _packKey = `${Math.trunc(_upc2)}/case`; }
-        else if (_vol2) { const _vs2 = _vol2 >= 1000 ? `${(_vol2/1000).toFixed(_vol2%1000===0?0:2).replace(/\.00$/,'')}L` : `${_vol2}ml`; _packKey = `loose ${_vs2}`; }
-        else { _packKey = i.packaging; }
-        if (_packKey !== filters.packaging) return false;
-      }
+      if (filters.packaging && packKey(i) !== filters.packaging) return false;
       if (filters.incoterm && i.incoterm !== filters.incoterm) return false;
       if (filters.location && i.location !== filters.location) return false;
       if (filters.currency && i.currency !== filters.currency) return false;
@@ -1413,14 +1393,16 @@
     const exact = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
       + (d.getHours() || d.getMinutes() ? ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
     const title = `Offer date: ${exact}`;
-    if (days < 0) return { text: 'future', cls: 'old', title };
+    // `ago` tells callers whether an " ago" suffix reads correctly. "future"
+    // and "now" are not past-relative, so they must never render "future ago".
+    if (days < 0) return { text: 'future', cls: 'old', title, ago: false };
     if (days < 1) {
       const hrs = Math.floor(diffMs / (60*60*1000));
-      return { text: hrs <= 0 ? 'now' : hrs + 'h', cls: 'fresh', title };
+      return { text: hrs <= 0 ? 'now' : hrs + 'h', cls: 'fresh', title, ago: hrs > 0 };
     }
-    if (days < 60) return { text: days + 'd', cls: days <= 7 ? 'fresh' : days <= 30 ? '' : 'stale', title };
-    if (days < 365) return { text: Math.round(days/30) + 'mo', cls: 'stale', title };
-    return { text: (days/365).toFixed(1) + 'y', cls: 'old', title };
+    if (days < 60) return { text: days + 'd', cls: days <= 7 ? 'fresh' : days <= 30 ? '' : 'stale', title, ago: true };
+    if (days < 365) return { text: Math.round(days/30) + 'mo', cls: 'stale', title, ago: true };
+    return { text: (days/365).toFixed(1) + 'y', cls: 'old', title, ago: true };
   }
 
   function sortItems(items, key) {
@@ -1688,11 +1670,40 @@
   }
 
   // ─── Flag categorization ────────────────────────────────────────────────────
+  // Must mirror core.openai_client._INFO_PREFIXES / api.admin INFO_PATTERNS —
+  // the backend's list of auto-correction / unit-normalisation notes that are
+  // informational, NOT review-worthy. Kept explicit (not just regex) so a note
+  // like "Quantity converted from bottles to cases" never falls through to the
+  // "default to material" branch and raises a false REVIEW pill on a row the
+  // backend already considers clean (needs_manual_review=false).
+  const INFO_FLAG_PREFIXES = [
+    'brand name corrected',
+    'ean_code repaired',
+    'price_per_case calculated from',
+    'price_per_unit calculated from',
+    'moq converted from bottles to cases',
+    'quantity converted from',
+    'sub_category inferred from brand name',
+    'quantity in bottles',
+    'quantity_case not explicitly stated',
+  ];
+  // Packaging filter key = CASE-PACK dimension ONLY (bottles per case).
+  // Bottle size has its own filter (filter-bottle), so the packaging filter must
+  // not re-encode volume — "6×700ml", "6×70cl" and "6×1L" are all "6/case" here.
+  // Single source of truth for both the dropdown build and the row match so the
+  // two never drift.
+  function packKey(i) {
+    const upc = i.units_per_case;
+    if (upc && upc > 1) return `${Math.trunc(upc)}/case`;
+    if (upc === 1) return `1/case`;
+    return i.packaging || null;
+  }
   function classifyFlags(flags) {
     const info = [], needs = [];
     for (const f of flags || []) {
       const s = String(f).toLowerCase();
-      const isInfo = /calc(ulated)?|inferred|auto[- ]?derived|assumed default|derived/.test(s);
+      const explicitInfo = INFO_FLAG_PREFIXES.some(p => s.includes(p));
+      const isInfo = explicitInfo || /calc(ulated)?|inferred|auto[- ]?derived|assumed default|derived|normali[sz]ed|repaired/.test(s);
       const isNeeds = /ambigu|assume|assumption|missing|conflict|mismatch|error|invalid|unknown|out of range|suspicious/.test(s);
       if (isNeeds && !isInfo) needs.push(f);
       else if (isInfo) info.push(f);
@@ -1833,6 +1844,7 @@
           ${kv('MOQ', i.moq_cases != null ? `${Number(i.moq_cases)} cs` : null, true, 'moq_cases')}
           ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true, 'incoterm')}
           ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
+          ${kv('Customs status (T1/T2)', (i.custom_status && i.custom_status !== 'Not Found') ? statusBadge(i.custom_status) : null, true, 'custom_status')}
           ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null, false, 'lead_time')}
           ${kv('Offer date', formatDate(i.offer_date), false, 'offer_date')}
           ${kv('Valid until', formatDate(i.valid_until), false, 'valid_until')}
