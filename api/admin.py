@@ -1537,11 +1537,26 @@ _T1T2_PATTERN = re.compile(r"\b(T1|T2)\b", re.IGNORECASE)
 _PRODUCT_NOISE_PATTERN = re.compile(
     r"""
     \s* (?:
-      \d+[.,]?\d*\s*(?:LITROS|LITRO|ML|CL|L)\b   # volumes — longest match first so
-                                                 # "1,00 Litros" doesn't leave "itros"
+      \d+[.,]?\d*\s*(?:LITROS|LITRO|MILILITROS|MILILITRO|ML|CL|L)\b  # volumes — longest
+                                                 # match first so "1,00 Litros" doesn't
+                                                 # leave "itros"; Spanish Mililitros too
       | \d+[°º]                                   # alcohol degrees
       | caja\s*@\s*\d+\s*BT\s*X\s*[\d.,]+\s*(?:LITROS|LITRO|ML|CL|L)?\b
-      | pack\s*\d+                                # "pack 12"
+      # ── Spanish wholesale pack / market descriptors (R-03 / R-16) ──
+      # These belong in packaging, not the canonical product name. Raw text is
+      # always preserved in product_name_raw before this runs.
+      | \(\s*[RI]\s*\)                            # (R) / (I) returnable / market markers
+      | \+?\s*estuche(?:\s+metalico|\s+caja)?     # + Estuche / Estuche Caja / Metalico
+      | \+?\s*copa(?:\s+caja)?                     # + Copa / Copa Caja
+      | \+?\s*\d*\s*vasos?(?:\s+metal)?(?:\s+y\s+sifon)?  # + N Vasos / Metal / y Sifon
+      | \+?\s*negroni\s+glass
+      | \+?\s*sifon
+      | bandeja\s*@?\s*\d*\s*(?:BT|LATAS|BOTELLAS)?\s*[xX]?   # Bandeja @ 24 BT X
+      | pack\s*@?\s*\d*\s*(?:BT|LATAS|BOTELLAS)?\s*[xX]?      # Pack @ 3 BT X / pack 12
+      | @\s*\d+\s*(?:BT|LATAS|BOTELLAS|Latas)\s*[xX]?        # @ 24 Latas X
+      | \bcaja\b | \bbandeja\b | \bbotella\b | \blatas?\b    # box/tray/bottle/can(s)
+      | \bcon\s+luz\b                             # "con luz" (with light)
+      | \bBT\b\s*[xX]?                             # stray bottle marker
       | box\s*of\s*\d+
     )
     """,
@@ -2152,3 +2167,60 @@ def retest_cleanup_fixtures(apply: bool = False, db: Session = Depends(get_db)):
         db.commit()
     return {"applied": apply, "offer_rows_removed": len(offers),
             "source_rows_removed": len(srcs)}
+
+
+def _is_loose_pack(units_per_case) -> bool:
+    """A loose / single-unit pack has no meaningful case configuration:
+    units_per_case is null, 0, or 1. Mirrors the ingest-time guard in
+    workers.processor so backfill and pipeline agree on what 'loose' means."""
+    try:
+        upc = float(units_per_case) if units_per_case is not None else None
+    except (TypeError, ValueError):
+        upc = None
+    return upc is None or upc <= 1
+
+
+@router.post("/admin/retest-null-loose-pack-case-price", dependencies=[Depends(_require_admin)])
+def retest_null_loose_pack_case_price(
+    apply: bool = False,
+    limit: int = 100000,
+    db: Session = Depends(get_db),
+):
+    """R-14 (Samuel P0): a loose / single-unit product has no case, so a
+    per-case price is meaningless (it was a display artifact or a copy of the
+    per-bottle price — e.g. NARS €33/bottle shown as €33/case). The ingest
+    pipeline already nulls these (workers.processor loose-unit cleanup); this
+    brings EXISTING rows that predate that guard into line. For every row whose
+    units_per_case is null/0/1 and that still carries a price_per_case, null
+    price_per_case and price_per_case_eur and record an informational note.
+    Idempotent — once nulled, the row no longer matches."""
+    import json as _json
+    rows = (db.query(OfferItemDB)
+              .filter(OfferItemDB.price_per_case.isnot(None))
+              .limit(limit).all())
+    stats = {"scanned": len(rows), "nulled": 0}
+    examples = []
+    for r in rows:
+        if not _is_loose_pack(r.units_per_case):
+            continue
+        if apply:
+            r.price_per_case = None
+            r.price_per_case_eur = None
+            try:
+                flags = _json.loads(r.error_flags) if isinstance(r.error_flags, str) else (r.error_flags or [])
+                if not isinstance(flags, list):
+                    flags = []
+            except Exception:
+                flags = []
+            note = "Case price N/A (loose pack)"
+            if note not in flags:
+                flags.append(note)
+            r.error_flags = _json.dumps(flags)
+        stats["nulled"] += 1
+        if len(examples) < 15:
+            examples.append({"uid": r.uid, "brand": r.brand,
+                             "product_name": r.product_name,
+                             "units_per_case": r.units_per_case})
+    if apply:
+        db.commit()
+    return {"applied": apply, **stats, "examples": examples}

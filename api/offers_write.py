@@ -120,6 +120,10 @@ _EDITABLE_FIELDS = {
     "supplier_name", "supplier_email", "supplier_reference", "sender_name",
     "sender_email", "source_channel", "source_message_id", "source_filename",
     "custom_status", "confidence_score", "needs_manual_review", "offer_date",
+    # Category-specific attributes (REQ 15) — the manual create form collects
+    # these; the edit path must be able to correct them too.
+    "perfume_format", "retail_state", "gender", "shade", "product_type",
+    "size_weight_g", "range_name",
 }
 
 

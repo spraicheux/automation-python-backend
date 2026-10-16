@@ -20,7 +20,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 
-from api.admin import _extract_customs_token, _strip_customs_token  # noqa: E402
+from api.admin import (  # noqa: E402
+    _extract_customs_token, _strip_customs_token, _is_loose_pack,
+)
 from core.normalization import (  # noqa: E402
     canonical_brand, canonical_product, sku_identity, product_family_id,
 )
@@ -72,3 +74,24 @@ class TestIdentityDeterminism:
         f1 = product_family_id("Hennessy", "VSOP")
         f2 = product_family_id("Hennessy", "VSOP")
         assert f1 == f2 and f1
+
+
+class TestLoosePackCasePrice:
+    """R-14: a loose / single-unit pack (units_per_case null/0/1) has no real
+    case, so the backfill must treat it as loose and null its case price;
+    a genuine multi-unit pack must not be touched."""
+
+    def test_loose_detection(self):
+        assert _is_loose_pack(None) is True
+        assert _is_loose_pack(0) is True
+        assert _is_loose_pack(1) is True
+        assert _is_loose_pack(1.0) is True
+
+    def test_real_pack_not_loose(self):
+        assert _is_loose_pack(6) is False
+        assert _is_loose_pack(12) is False
+        assert _is_loose_pack(2) is False
+
+    def test_garbage_treated_as_loose(self):
+        # Unparseable units_per_case -> treat as no case config (loose).
+        assert _is_loose_pack("not-a-number") is True
