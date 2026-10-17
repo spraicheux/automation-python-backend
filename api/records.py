@@ -11,6 +11,37 @@ from models.offer_item import OfferItemDB
 
 router = APIRouter()
 
+# ── Search term matching (R-01) ─────────────────────────────────────────────
+# Apostrophe variants are folded so "jack daniels" matches "Jack Daniel's", and
+# supplier_name is intentionally NOT searched — otherwise a supplier like
+# "Bacardi Martini" pulls every unrelated brand it carries into a brand/product
+# query. Supplier filtering has its own dedicated facet.
+_APOS_CHARS = ["'", "’", "‘", "ʼ", "`", "´"]
+
+
+def _fold_apos(s: str) -> str:
+    for a in _APOS_CHARS:
+        s = s.replace(a, "")
+    return s
+
+
+def _strip_apos_col(col):
+    expr = col
+    for a in _APOS_CHARS:
+        expr = func.replace(expr, a, "")
+    return expr
+
+
+def _term_match(term: str):
+    like = f"%{_fold_apos(term)}%"
+    return or_(
+        _strip_apos_col(OfferItemDB.brand).ilike(like),
+        _strip_apos_col(OfferItemDB.product_name).ilike(like),
+        OfferItemDB.ean_code.ilike(f"%{term}%"),
+        OfferItemDB.supplier_reference.ilike(f"%{term}%"),
+    )
+
+
 # ── Volume-alias normalisation ──────────────────────────────────────────────
 _VOL_ALIAS = {
     # Litres → ml
@@ -230,16 +261,10 @@ async def get_records(
                 OfferItemDB.custom_status == customs,
                 OfferItemDB.product_name.ilike(f"%{customs}%"),
             ))
-        # Remaining text terms — each must match at least one searchable field
+        # Remaining text terms — each must match a product-identity field
+        # (apostrophe-folded; supplier_name excluded — see _term_match).
         for term in text_terms:
-            like = f"%{term}%"
-            subquery = subquery.filter(or_(
-                OfferItemDB.brand.ilike(like),
-                OfferItemDB.product_name.ilike(like),
-                OfferItemDB.ean_code.ilike(like),
-                OfferItemDB.supplier_reference.ilike(like),
-                OfferItemDB.supplier_name.ilike(like),
-            ))
+            subquery = subquery.filter(_term_match(term))
 
     if category:
         subquery = subquery.filter(OfferItemDB.category.ilike(category))
@@ -345,13 +370,7 @@ async def get_best_prices(
                 OfferItemDB.product_name.ilike(f"%{customs}%"),
             ))
         for term in text_terms:
-            like = f"%{term}%"
-            query = query.filter(or_(
-                OfferItemDB.brand.ilike(like),
-                OfferItemDB.product_name.ilike(like),
-                OfferItemDB.ean_code.ilike(like),
-                OfferItemDB.supplier_name.ilike(like),
-            ))
+            query = query.filter(_term_match(term))
 
     if category:
         query = query.filter(OfferItemDB.category.ilike(category))

@@ -73,3 +73,24 @@ class TestInvalidEanNeverJoinsPeerGroup:
         one = peer_group_id("NARS", "Prism Veil", ean_code="2901234500084", **kw)
         two = peer_group_id("NARS", "Prism Veil", ean_code="2901234500084", **kw)
         assert one == two and one
+
+
+class TestLooseAndSinglePackMerge:
+    """R-07/R-10: a loose pack (units_per_case None) and a single-unit pack
+    (units_per_case 1) are the same physical product and MUST land in the same
+    peer group — otherwise same-EAN offers split and a historical offer drops
+    out of Best Prices (the NARS 30ml case Samuel flagged)."""
+
+    def _nars(self, upc):
+        return peer_group_id("NARS", "Prism Veil Foundation", unit_volume_ml=30,
+                             units_per_case=upc, incoterm="EXW", location="Rotterdam",
+                             category_slug="cosmetics", retail_state="retail",
+                             shade="Deauville", ean_code="2901234500084")
+
+    def test_none_and_one_merge(self):
+        assert self._nars(None) == self._nars(1)
+        assert self._nars(0) == self._nars(1)
+
+    def test_multi_pack_stays_distinct(self):
+        assert self._nars(6) != self._nars(1)
+        assert self._nars(12) != self._nars(6)

@@ -125,6 +125,22 @@ def _norm_num(v, decimals: int = 0) -> str:
         return ""
 
 
+def _norm_upc(v) -> str:
+    """Units-per-case key component. A loose pack (None / 0) and a single-unit
+    pack (1) are the same physical thing, so they must collapse to one key —
+    otherwise the same-EAN offers (e.g. NARS 30ml, one supplier with upc=null
+    and one with upc=1) split into two peer groups and a historical offer is
+    dropped from Best Prices. Any pack of >1 keeps its real count.
+    """
+    try:
+        n = float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        n = None
+    if n is None or n <= 1:
+        return "1"
+    return f"{n:.0f}"
+
+
 def _norm_text(s: str | None) -> str:
     """Short text field (vintage, age statement, edition) folded to bare letters."""
     if not s:
@@ -222,7 +238,7 @@ def sku_identity(
         product_family_id(brand, product_name),
         _norm_text(range_name),
         _norm_num(unit_volume_ml, 0),
-        _norm_num(units_per_case, 0),
+        _norm_upc(units_per_case),
         _norm_num(alcohol_percent, 1),
         _norm_text(vintage),
         _norm_text(age_statement),
