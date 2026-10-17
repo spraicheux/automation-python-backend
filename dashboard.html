@@ -2031,7 +2031,11 @@
       // page size — otherwise "Load more" made the count read 2 then 1.
       document.getElementById('bp-count').textContent = bpTotal;
       document.getElementById('bp-list').dataset.loaded = 'true';
-      bpSkip += groups.length;
+      // Advance by the API page size (24), NOT the merged display count — the
+      // backend paginates groups at the SQL level and several merge into one
+      // display group, so advancing by the merged count re-fetched (and would
+      // have repeated) rows already shown.
+      bpSkip += 24;
       document.getElementById('bp-load-more-wrap').style.display = bpSkip < bpTotal ? 'flex' : 'none';
     } catch(e) {
       document.getElementById('bp-list').innerHTML = `<div class="state-box"><p>Error loading best prices.</p></div>`;
