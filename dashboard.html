@@ -735,6 +735,7 @@
 
   // Best Prices
   let bpSkip = 0, bpTotal = 0, loadingBp = false;
+  const bpSeenKeys = new Set();   // sku_identity keys already rendered (dedupe across pages)
   let bpSearch = "", bpCategory = "", bpSubCategory = "";
   const bpAvail = { category: new Set(), sub_category: new Set() };
 
@@ -2004,6 +2005,7 @@
     loadingBp = true;
     if (reset) {
       bpSkip = 0;
+      bpSeenKeys.clear();
       document.getElementById('bp-list').innerHTML = `<div class="state-box"><div class="spinner"></div><p>Loading best prices…</p></div>`;
       document.getElementById('bp-load-more-wrap').style.display = 'none';
     }
@@ -2025,7 +2027,9 @@
       updateDropdown('bp-filter-subcategory', bpAvail.sub_category, 'All Sub-categories', bpSubCategory);
 
       renderBestPrices(groups, reset);
-      document.getElementById('bp-count').textContent = groups.length;
+      // Show the stable TOTAL number of comparable groups, not the current
+      // page size — otherwise "Load more" made the count read 2 then 1.
+      document.getElementById('bp-count').textContent = bpTotal;
       document.getElementById('bp-list').dataset.loaded = 'true';
       bpSkip += groups.length;
       document.getElementById('bp-load-more-wrap').style.display = bpSkip < bpTotal ? 'flex' : 'none';
@@ -2041,7 +2045,14 @@
     const list = document.getElementById('bp-list');
     if (reset) list.innerHTML = '';
     if (!groups.length && reset) { list.innerHTML = `<div class="state-box"><p>No comparable groups yet. Need 2+ suppliers for the same product.</p></div>`; return; }
-    for (const g of groups) list.insertAdjacentHTML('beforeend', bpGroupHtml(g));
+    for (const g of groups) {
+      // Dedupe across pages: a group already rendered (same sku_identity) must
+      // not repeat if pagination overlaps.
+      const key = g.sku_identity || g.peer_group_id || JSON.stringify([g.brand, g.product_name, g.unit_volume_ml]);
+      if (bpSeenKeys.has(key)) continue;
+      bpSeenKeys.add(key);
+      list.insertAdjacentHTML('beforeend', bpGroupHtml(g));
+    }
   }
 
   function bpGroupHtml(g) {
