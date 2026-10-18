@@ -57,6 +57,11 @@ def list_alerts(
     # Falls back to the full attribute-based peer_group_id when EAN is absent.
     by_key = defaultdict(list)
     for r in all_rows:
+        # Peer key MUST match the Best Prices roll-up (api/records.get_best_prices
+        # → sku_identity/peer_group_id) or alerts fire on groups Best Prices does
+        # not treat as comparable. In particular perfume/cosmetics discriminators
+        # (format, retail state, gender, shade, product type, size, range) and the
+        # category slug keep EDP vs EDT (e.g. YSL Midnight Halo) in separate peers.
         k = (peer_group_id_from_ean(r.ean_code, r.incoterm, r.location)
              or peer_group_id(
                  r.brand, r.product_name,
@@ -66,6 +71,14 @@ def list_alerts(
                  location=r.location,
                  alcohol_percent=r.alcohol_percent,
                  vintage=r.vintage,
+                 category_slug=getattr(r, 'category_slug', None),
+                 perfume_format=getattr(r, 'perfume_format', None),
+                 retail_state=getattr(r, 'retail_state', None),
+                 gender=getattr(r, 'gender', None),
+                 shade=getattr(r, 'shade', None),
+                 product_type=getattr(r, 'product_type', None),
+                 size_weight_g=getattr(r, 'size_weight_g', None),
+                 range_name=getattr(r, 'range_name', None),
              ))
         by_key[k].append(r)
 

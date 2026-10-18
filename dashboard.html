@@ -1418,14 +1418,17 @@
 
   function sortItems(items, key) {
     const withNulls = (val, dir) => val == null ? (dir === 'asc' ? Infinity : -Infinity) : val;
+    // A null OR zero EUR price is "no price" (unusable) — it must never rank as
+    // the cheapest. Push it to the end regardless of sort direction.
+    const priceKey = (val) => (val == null || val === 0) ? Infinity : val;
     const cmp = (a, b, dir=1) => (a < b ? -1 : a > b ? 1 : 0) * dir;
     switch (key) {
       case 'quality_desc':
         return [...items].sort((a,b) => qualityScore(b) - qualityScore(a));
       case 'price_per_unit_eur_asc':
-        return [...items].sort((a,b) => cmp(withNulls(a.price_per_unit_eur, 'asc'), withNulls(b.price_per_unit_eur, 'asc'), 1));
+        return [...items].sort((a,b) => cmp(priceKey(a.price_per_unit_eur), priceKey(b.price_per_unit_eur), 1));
       case 'price_per_case_eur_asc':
-        return [...items].sort((a,b) => cmp(withNulls(a.price_per_case_eur, 'asc'), withNulls(b.price_per_case_eur, 'asc'), 1));
+        return [...items].sort((a,b) => cmp(priceKey(a.price_per_case_eur), priceKey(b.price_per_case_eur), 1));
       case 'offer_date_desc':
         return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), -1));
       case 'offer_date_asc':

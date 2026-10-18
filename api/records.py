@@ -141,6 +141,9 @@ async def get_benchmarks(
         # core.normalization. The full commercial key includes location,
         # ABV, vintage, age_statement, edition — so an EXW Rotterdam 40%
         # offer never gets peered with an EXW Dubai 43% offer.
+        # Key MUST match the Best Prices roll-up (sku_identity/peer_group_id)
+        # so the "12M LOW" badge in All Offers and the Best Prices benchmark
+        # describe the SAME peer — including perfume/cosmetics discriminators.
         key = peer_group_id(
             r.brand, r.product_name,
             unit_volume_ml=r.unit_volume_ml,
@@ -149,6 +152,14 @@ async def get_benchmarks(
             location=r.location,
             alcohol_percent=r.alcohol_percent,
             vintage=r.vintage,
+            category_slug=getattr(r, 'category_slug', None),
+            perfume_format=getattr(r, 'perfume_format', None),
+            retail_state=getattr(r, 'retail_state', None),
+            gender=getattr(r, 'gender', None),
+            shade=getattr(r, 'shade', None),
+            product_type=getattr(r, 'product_type', None),
+            size_weight_g=getattr(r, 'size_weight_g', None),
+            range_name=getattr(r, 'range_name', None),
         )
         entry = peers.setdefault(key, {"samples": [], "all_qualified": True})
         entry["samples"].append((r.price_per_unit_eur, r.uid))
@@ -327,11 +338,16 @@ async def get_best_prices(
     # Build a subquery that counts distinct suppliers per product group.
     # Incoterm is part of the group key so an EXW €20 and DAP €21 offer for
     # the same product don't get lined up as apples-to-apples comparisons.
+    # NOTE: sub_category is deliberately NOT a grouping key. It is a free-form
+    # label that suppliers populate inconsistently (e.g. one puts "EDT"/"EDP"
+    # in it, another leaves it null), which would split the same product from
+    # two suppliers into separate 1-supplier groups and drop it from Best
+    # Prices entirely (Samuel: YSL Midnight Halo). The real physical-SKU split
+    # happens later via sku_identity, which carries the actual discriminators.
     group_cols = [
         func.lower(func.coalesce(OfferItemDB.product_name, '')),
         func.coalesce(OfferItemDB.unit_volume_ml, 0),
         func.lower(func.coalesce(OfferItemDB.category, '')),
-        func.lower(func.coalesce(OfferItemDB.sub_category, '')),
         func.lower(func.coalesce(OfferItemDB.brand, '')),
         func.upper(func.coalesce(OfferItemDB.incoterm, '')),
     ]
@@ -341,7 +357,6 @@ async def get_best_prices(
             func.lower(func.coalesce(OfferItemDB.product_name, '')).label("pn"),
             func.coalesce(OfferItemDB.unit_volume_ml, 0).label("vol"),
             func.lower(func.coalesce(OfferItemDB.category, '')).label("cat"),
-            func.lower(func.coalesce(OfferItemDB.sub_category, '')).label("subcat"),
             func.lower(func.coalesce(OfferItemDB.brand, '')).label("brand"),
             func.upper(func.coalesce(OfferItemDB.incoterm, '')).label("inco"),
             func.count(func.distinct(
@@ -364,7 +379,6 @@ async def get_best_prices(
             (func.lower(func.coalesce(OfferItemDB.product_name, '')) == multi_supplier_subq.c.pn) &
             (func.coalesce(OfferItemDB.unit_volume_ml, 0) == multi_supplier_subq.c.vol) &
             (func.lower(func.coalesce(OfferItemDB.category, '')) == multi_supplier_subq.c.cat) &
-            (func.lower(func.coalesce(OfferItemDB.sub_category, '')) == multi_supplier_subq.c.subcat) &
             (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand) &
             (func.upper(func.coalesce(OfferItemDB.incoterm, '')) == multi_supplier_subq.c.inco)
         )
