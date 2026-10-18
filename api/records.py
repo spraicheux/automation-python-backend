@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy.orm import Session
@@ -12,31 +13,40 @@ from models.offer_item import OfferItemDB
 router = APIRouter()
 
 # ── Search term matching (R-01) ─────────────────────────────────────────────
-# Apostrophe variants are folded so "jack daniels" matches "Jack Daniel's", and
-# supplier_name is intentionally NOT searched — otherwise a supplier like
-# "Bacardi Martini" pulls every unrelated brand it carries into a brand/product
-# query. Supplier filtering has its own dedicated facet.
+# Both apostrophe AND accent variants are folded, on the query and the stored
+# value, so "jack daniels" matches "Jack Daniel's" and "bacardi" matches
+# "Bacardí". supplier_name is intentionally NOT searched — otherwise a supplier
+# like "Bacardi Martini" pulls every unrelated brand it carries into a
+# brand/product query. Supplier filtering has its own dedicated facet.
 _APOS_CHARS = ["'", "’", "‘", "ʼ", "`", "´"]
 
 
-def _fold_apos(s: str) -> str:
+def _ascii_fold(s: str) -> str:
+    s = str(s or "")
     for a in _APOS_CHARS:
         s = s.replace(a, "")
-    return s
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
 
-def _strip_apos_col(col):
+# Accented chars → ASCII, for folding the stored column in SQL (translate is
+# case-sensitive, so include both cases). Built once; both strings same length.
+_ACC_FROM = "áàâäãåçéèêëíìîïñóòôöõúùûüýÁÀÂÄÃÅÇÉÈÊËÍÌÎÏÑÓÒÔÖÕÚÙÛÜÝ"
+_ACC_TO = _ascii_fold(_ACC_FROM)
+
+
+def _fold_col(col):
     expr = col
     for a in _APOS_CHARS:
         expr = func.replace(expr, a, "")
-    return expr
+    return func.translate(expr, _ACC_FROM, _ACC_TO)
 
 
 def _term_match(term: str):
-    like = f"%{_fold_apos(term)}%"
+    like = f"%{_ascii_fold(term)}%"
     return or_(
-        _strip_apos_col(OfferItemDB.brand).ilike(like),
-        _strip_apos_col(OfferItemDB.product_name).ilike(like),
+        _fold_col(OfferItemDB.brand).ilike(like),
+        _fold_col(OfferItemDB.product_name).ilike(like),
         OfferItemDB.ean_code.ilike(f"%{term}%"),
         OfferItemDB.supplier_reference.ilike(f"%{term}%"),
     )
@@ -358,6 +368,11 @@ async def get_best_prices(
             (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand) &
             (func.upper(func.coalesce(OfferItemDB.incoterm, '')) == multi_supplier_subq.c.inco)
         )
+        # Zero / null EUR prices are not actionable and must not surface as
+        # "€0.00" offers in Best Prices or its benchmark history (Samuel: the
+        # Baileys €0.00 rows). They are flagged "Unusable: no price" elsewhere.
+        .filter(OfferItemDB.price_per_unit_eur.isnot(None))
+        .filter(OfferItemDB.price_per_unit_eur > 0)
     )
 
     if search:
@@ -387,8 +402,12 @@ async def get_best_prices(
         nulls_last(OfferItemDB.price_per_unit_eur.asc())
     )
 
-    total = query.count()
-    rows = query.offset(skip).limit(limit).all()
+    # Fetch ALL rows in the multi-supplier universe (bounded — only products
+    # with 2+ suppliers qualify), then paginate at the GROUP level after the
+    # sku/EAN roll-up below. Paginating rows here cut groups at page
+    # boundaries, so "Load more" could land entirely inside already-shown
+    # groups and appear to do nothing.
+    rows = query.all()
 
     # ── Best Prices: two-level roll-up ───────────────────────────────
     # Level 1 (outer): sku_identity — gather all competing offers for the
@@ -626,8 +645,8 @@ async def get_best_prices(
         })
 
     return {
-        "total": total,
+        "total": len(grouped_list),          # real comparable-GROUP count
         "skip": skip,
         "limit": limit,
-        "groups": grouped_list,
+        "groups": grouped_list[skip:skip + limit],   # paginate groups, not rows
     }
