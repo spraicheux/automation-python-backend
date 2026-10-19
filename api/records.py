@@ -597,8 +597,13 @@ async def get_best_prices(
                     _upc = float(d.get('units_per_case')) if d.get('units_per_case') is not None else None
                 except (TypeError, ValueError):
                     _upc = None
+                try:
+                    _pce = float(d.get('price_per_case_eur')) if d.get('price_per_case_eur') is not None else None
+                except (TypeError, ValueError):
+                    _pce = None
                 if (d.get('category_slug') in ('perfumes', 'cosmetics')
-                        and _upc is not None and _upc > 60):
+                        and ((_upc is not None and _upc > 60)
+                             or (_pce is not None and _pce > 2000))):
                     d['price_per_case'] = None
                     d['price_per_case_eur'] = None
                     d['units_per_case'] = None
