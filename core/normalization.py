@@ -86,6 +86,49 @@ def canonical_product(s: str | None) -> str:
     return " ".join(tokens)
 
 
+# Liquor-category descriptors that some sources glue onto the brand or emit as
+# the whole product name (e.g. Chinese "Baijiu" prepended to "Wu Liang Ye", or
+# a row whose product_name is literally "Baijiu"). These are the category, not
+# an identity, so they must not sit in the displayed brand / product name —
+# otherwise the same product splits into inconsistent identities across files
+# ("BaijiuWu Liang Ye" vs "Wu Liang Ye"). Raw values stay preserved in the
+# *_raw columns; this only cleans the canonical display value.
+_CATEGORY_DESCRIPTORS = ("baijiu",)
+
+
+def _strip_category_prefix(text: str) -> str:
+    """Remove a leading liquor-category descriptor from a brand/name, whether
+    space-separated ("Baijiu Wu Liang Ye") or glued ("BaijiuWu Liang Ye")."""
+    if not text:
+        return text
+    out = text
+    for cat in _CATEGORY_DESCRIPTORS:
+        # space/punctuation-separated prefix
+        m = re.match(rf"(?i)\s*{cat}[\s\-_.]+", out)
+        if m and m.end() < len(out):
+            out = out[m.end():].strip()
+            continue
+        # glued to the real brand, next char starts a new word (upper/lower)
+        m = re.match(rf"(?i){cat}(?=[A-Za-z])", out)
+        if m and m.end() < len(out):
+            out = out[m.end():].strip()
+    return out
+
+
+def depollute_identity(brand: str | None, product_name: str | None):
+    """Strip category descriptors from brand/name and replace a name that is
+    only a category word with the brand, so one product keeps one identity.
+    Returns (brand, product_name); inputs that clean to empty are left as-is."""
+    b_in, p_in = (brand or ""), (product_name or "")
+    b = _strip_category_prefix(b_in).strip()
+    p = p_in
+    # A product name that is nothing but a category descriptor is not a name.
+    if _fold(p).strip() in _CATEGORY_DESCRIPTORS:
+        p = b or b_in
+    p = _strip_category_prefix(p).strip()
+    return (b or b_in or brand), (p or p_in or product_name)
+
+
 def _normalize_location(s: str | None) -> str:
     """
     Fold a location string the same way we fold brands, then take the first

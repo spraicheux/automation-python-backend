@@ -22,7 +22,34 @@ from core.normalization import (
     ean_key,
     peer_group_id,
     is_peer_group_qualified,
+    depollute_identity,
 )
+
+
+class TestDepolluteIdentity:
+    """A liquor-category descriptor (e.g. 'Baijiu') must not sit in the brand
+    or be the whole product name — one product must keep one identity across
+    files (Samuel 19 Oct: 'BaijiuWu Liang Ye' vs 'Wu Liang Ye' vs name 'Baijiu')."""
+
+    def test_glued_prefix_stripped(self):
+        assert depollute_identity("BaijiuWu Liang Ye", "BaijiuWu Liang Ye") == ("Wu Liang Ye", "Wu Liang Ye")
+
+    def test_name_that_is_only_category_takes_brand(self):
+        assert depollute_identity("Wu Liang Ye", "Baijiu") == ("Wu Liang Ye", "Wu Liang Ye")
+
+    def test_space_separated_prefix_stripped(self):
+        assert depollute_identity("Baijiu Wu Liang Ye", "Baijiu") == ("Wu Liang Ye", "Wu Liang Ye")
+
+    def test_clean_identity_untouched(self):
+        assert depollute_identity("Hennessy", "VS") == ("Hennessy", "VS")
+        assert depollute_identity("Wu Liang Ye", "Wu Liang Ye") == ("Wu Liang Ye", "Wu Liang Ye")
+
+    def test_all_three_variants_share_one_family(self):
+        variants = [("BaijiuWu Liang Ye", "BaijiuWu Liang Ye"),
+                    ("Wu Liang Ye", "Baijiu"),
+                    ("Wu Liang Ye", "Wu Liang Ye")]
+        fams = {product_family_id(*depollute_identity(b, p)) for b, p in variants}
+        assert len(fams) == 1
 
 
 class TestUnicodeFolding:

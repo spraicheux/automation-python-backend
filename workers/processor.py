@@ -14,6 +14,7 @@ from core.openai_client import extract_offer, extract_from_file, parse_buffer_da
 from core.redis_client import redis_manager
 from core.excel_client import write_offer_row
 from core.database import get_session_factory
+from core.normalization import depollute_identity
 from models.offer_item import OfferItemDB
 from models.source_file import SourceFileDB
 
@@ -789,10 +790,12 @@ async def process_offer(payload, job_id: str):
                     logger.debug(
                         f"Row {idx} raw data: {merged_data.get('product_name')} | {merged_data.get('brand')}")
 
+                    _dp_brand, _dp_name = depollute_identity(
+                        merged_data.get('brand'), merged_data.get('product_name'))
                     safe_data = {
-                        'product_name': merged_data.get('product_name') or "Not Found",
+                        'product_name': _dp_name or "Not Found",
                         'product_key': merged_data.get('product_key') or "Not Found",
-                        'brand': merged_data.get('brand') or "Not Found",
+                        'brand': _dp_brand or "Not Found",
                         'range_name': merged_data.get('range_name'),
                         'category': merged_data.get('category'),
                         'sub_category': merged_data.get('sub_category'),
@@ -1030,10 +1033,12 @@ async def process_offer(payload, job_id: str):
         else:
             logger.info(f"No Excel products found, using single product extraction for job {job_id}")
             try:
+                _dp_brand, _dp_name = depollute_identity(
+                    extracted_data.get('brand'), extracted_data.get('product_name'))
                 safe_data = {
-                    'product_name': extracted_data.get('product_name') or "Not Found",
+                    'product_name': _dp_name or "Not Found",
                     'product_key': extracted_data.get('product_key') or "Not Found",
-                    'brand': extracted_data.get('brand') or "Not Found",
+                    'brand': _dp_brand or "Not Found",
                     'category': extracted_data.get('category'),
                     'sub_category': extracted_data.get('sub_category'),
                     'packaging': extracted_data.get('packaging') or "Bottle",
