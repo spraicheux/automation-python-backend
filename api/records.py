@@ -144,6 +144,10 @@ async def get_benchmarks(
         # Key MUST match the Best Prices roll-up (sku_identity/peer_group_id)
         # so the "12M LOW" badge in All Offers and the Best Prices benchmark
         # describe the SAME peer — including perfume/cosmetics discriminators.
+        # Must reproduce EXACTLY what OfferItemDB.to_dict() emits as
+        # `peer_group_id` (the dashboard looks up benchmarks[item.peer_group_id]),
+        # which includes ean_code. Omitting it produced a different key and left
+        # the All Offers "12M LOW" blank while Best Prices showed the history.
         key = peer_group_id(
             r.brand, r.product_name,
             unit_volume_ml=r.unit_volume_ml,
@@ -152,6 +156,7 @@ async def get_benchmarks(
             location=r.location,
             alcohol_percent=r.alcohol_percent,
             vintage=r.vintage,
+            ean_code=r.ean_code,
             category_slug=getattr(r, 'category_slug', None),
             perfume_format=getattr(r, 'perfume_format', None),
             retail_state=getattr(r, 'retail_state', None),
@@ -584,6 +589,19 @@ async def get_best_prices(
             def _offer_dict(r):
                 d = r.to_dict()
                 d['is_expired'] = _is_expired(r)
+                # Implausible pack guard: a full-size perfume/cosmetic does not
+                # come in a case of hundreds. A mis-extracted units_per_case
+                # (e.g. 380) produced absurd case prices (€12,730). Treat such a
+                # row as loose for display — no case price, no case pack.
+                try:
+                    _upc = float(d.get('units_per_case')) if d.get('units_per_case') is not None else None
+                except (TypeError, ValueError):
+                    _upc = None
+                if (d.get('category_slug') in ('perfumes', 'cosmetics')
+                        and _upc is not None and _upc > 60):
+                    d['price_per_case'] = None
+                    d['price_per_case_eur'] = None
+                    d['units_per_case'] = None
                 return d
             offers_with_flag = [_offer_dict(r) for r in pg_sorted]
             # Best price: prefer non-expired offers for the headline

@@ -1302,9 +1302,15 @@
     const el = document.getElementById(id);
     if (!el) return;
     const prev = el.value;
+    const vals = [...valueSet];
+    // Always keep the currently-selected value available even if it is not in
+    // the current result page — otherwise clearing one facet (e.g. the category
+    // pill) silently drops another (Samuel: supplier reset to "All Suppliers").
+    if (currentVal && !vals.some(v => String(v) === String(currentVal))) vals.push(currentVal);
     el.innerHTML = `<option value="">${placeholder}</option>` +
-      [...valueSet].sort((a,b) => String(a).localeCompare(String(b))).map(v => `<option value="${escapeAttr(v)}" ${v == currentVal ? 'selected' : ''}>${escapeHtml(formatter(v))}</option>`).join('');
-    if (prev && [...valueSet].some(v => String(v) === prev)) el.value = prev;
+      vals.sort((a,b) => String(a).localeCompare(String(b))).map(v => `<option value="${escapeAttr(v)}" ${String(v) == String(currentVal) ? 'selected' : ''}>${escapeHtml(formatter(v))}</option>`).join('');
+    if (currentVal) el.value = currentVal;
+    else if (prev && vals.some(v => String(v) === prev)) el.value = prev;
   }
 
   function applyClientFilters(items) {
