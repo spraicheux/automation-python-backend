@@ -420,6 +420,99 @@ def _parse_offer_date(raw) -> Optional[datetime]:
     return None
 
 
+_FILENAME_MONTHS = {
+    'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+    'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12,
+    **_FRENCH_MONTHS,
+}
+
+
+def _date_from_filename(filename: str, fallback_year: int) -> Optional[datetime]:
+    """
+    Derive the document's own date from the source filename when the offer
+    itself carries no parseable date (typical for stock lists / price lists,
+    e.g. "STOCK LIST PERFUMES 13.04.xlsx", "W39_Designer_Offer_23.09.xlsx",
+    "Cosmetics_Offer_09.06.2026.xlsx", "BACARDI MARTINI - OFFER (AUGUST 2026).xlsx",
+    "FBC Trades - Perfumes stock list - 8 June 2026.pdf").
+
+    This is the price's real age for the buyer, so it takes priority over the
+    ingest date.  Returns None when no date can be read from the name, so the
+    caller falls back to the received/ingest date.  A date that parses to the
+    future (bad year inference) is rejected.
+    """
+    if not filename:
+        return None
+    name = str(filename)
+    now = datetime.utcnow()
+
+    def _ok(dt: Optional[datetime]) -> Optional[datetime]:
+        # Reject future dates (e.g. a DD.MM whose inferred year overshoots).
+        return dt if (dt is not None and dt <= now) else None
+
+    # 1. D.M.YYYY or D-M-YYYY (e.g. 09.06.2026, 18.9.2026)
+    m = re.search(r'(?<!\d)(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})(?!\d)', name)
+    if m:
+        d, mo, y = (int(x) for x in m.groups())
+        try:
+            return _ok(datetime(y, mo, d))
+        except ValueError:
+            pass
+
+    # 2. "8 June 2026" / "8 juin 2026"
+    m = re.search(r'(?<!\d)(\d{1,2})\s+([A-Za-zûéèçîôàâäïüö]+)\s+(\d{4})', name)
+    if m:
+        d, mon, y = m.group(1), m.group(2).lower(), m.group(3)
+        mo = _FILENAME_MONTHS.get(mon)
+        if mo:
+            try:
+                return _ok(datetime(int(y), mo, int(d)))
+            except ValueError:
+                pass
+
+    # 3. "August 2026" / "April 2026" (month + year, no day → first of month)
+    m = re.search(r'([A-Za-zûéèçîôàâäïüö]{3,})\s+(\d{4})', name)
+    if m:
+        mo = _FILENAME_MONTHS.get(m.group(1).lower())
+        if mo:
+            try:
+                return _ok(datetime(int(m.group(2)), mo, 1))
+            except ValueError:
+                pass
+
+    # 4. D.M with no year (e.g. 13.04, 23.09) → infer the fallback year, and
+    #    step back a year if that lands in the future.
+    m = re.search(r'(?<!\d)(\d{1,2})[.\-](\d{1,2})(?!\d)', name)
+    if m:
+        d, mo = int(m.group(1)), int(m.group(2))
+        for y in (fallback_year, fallback_year - 1):
+            try:
+                cand = datetime(y, mo, d)
+            except ValueError:
+                break
+            if cand <= now:
+                return cand
+
+    return None
+
+
+def _resolve_offer_date(raw, source_filename: str, received: datetime) -> datetime:
+    """
+    Resolve the stored offer_date, in priority order:
+      1. a real date parsed from the document/header (AI-extracted),
+      2. the date encoded in the source filename (stock lists / price lists),
+      3. the received/ingest date — offers arrive and are ingested together,
+         so arrival is the logical offer date when nothing else is known.
+    Always returns a date, so no row ever shows an age with no offer date.
+    """
+    parsed = _parse_offer_date(raw)
+    if parsed is not None:
+        return parsed
+    from_name = _date_from_filename(source_filename or "", (received or datetime.utcnow()).year)
+    if from_name is not None:
+        return from_name
+    return received or datetime.utcnow()
+
+
 def _apply_offer_defaults(data: dict) -> dict:
     """
     Replace AI's 'Not Found' with the proper default value according to the OfferItem schema.
@@ -854,7 +947,10 @@ async def process_offer(payload, job_id: str):
                         lead_time=safe_data['lead_time'],
                         moq_cases=safe_data['moq_cases'],
                         valid_until=safe_data['valid_until'],
-                        offer_date=_parse_offer_date(merged_data.get('offer_date')),
+                        offer_date=_resolve_offer_date(
+                            merged_data.get('offer_date'),
+                            payload.source_filename or "",
+                            datetime.utcnow()),
                         date_received=datetime.utcnow(),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
@@ -1039,7 +1135,10 @@ async def process_offer(payload, job_id: str):
                     lead_time=safe_data['lead_time'],
                     moq_cases=safe_data['moq_cases'],
                     valid_until=safe_data['valid_until'],
-                    offer_date=_parse_offer_date(extracted_data.get('offer_date')),
+                    offer_date=_resolve_offer_date(
+                        extracted_data.get('offer_date'),
+                        payload.source_filename or "",
+                        datetime.utcnow()),
                     date_received=datetime.utcnow(),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],
