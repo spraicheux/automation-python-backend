@@ -557,7 +557,12 @@
       <div class="search-bar">
         <div class="big-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12" y2="16"/></svg>
-          <input id="alerts-window" placeholder="Window: last N days" value="7" style="max-width: 220px; padding-left: 46px;" />
+          <select id="alerts-window" title="Trading-event window" style="max-width: 220px; padding-left: 46px;">
+            <option value="7" selected>Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
         </div>
         <div class="search-hint">Recent trading events — new best prices and newly competitive suppliers based on canonical product identity (same brand, product, size, packaging, incoterm).</div>
       </div>
