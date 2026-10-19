@@ -196,6 +196,35 @@ def _safe_float(value, default=None):
         return default
 
 
+def _is_placeholder_supplier(value, source_filename) -> bool:
+    """A supplier that is really the source filename or a test marker, not a
+    trading partner. Bulk-uploaded catalogs (stock lists / price lists) with no
+    per-line supplier were landing with a filename-stem value like
+    "STOCK_LIST_PERFUMES" / "W39_Designer" / "Cosmetics_18_06", or a test label
+    like "L'Oreal Luxury Test". Those must never be stored as a supplier.
+
+    Signals (kept conservative so real names are never rejected):
+      - the value ends with a "test" token;
+      - the value contains an underscore AND its tokens are a subset of the
+        source filename's tokens — real supplier names use spaces, not
+        underscores, so this targets the mechanical filename-stem placeholders
+        without catching e.g. "FBC Trades" from "fbc_trades_email.txt".
+    """
+    if not value:
+        return False
+    v = str(value).strip()
+    low = v.lower()
+    if low == "test" or low.endswith(" test"):
+        return True
+    if "_" in v and source_filename:
+        stem = os.path.splitext(os.path.basename(str(source_filename)))[0]
+        toks = lambda s: {t for t in re.split(r"[^a-z0-9]+", s.lower()) if t}
+        vt, ft = toks(v), toks(stem)
+        if vt and vt <= ft:
+            return True
+    return False
+
+
 def _resolve_supplier_name(ai_name, payload) -> str:
     """Return the best available supplier name.
 
@@ -203,12 +232,16 @@ def _resolve_supplier_name(ai_name, payload) -> str:
       1. payload.supplier_name  — Make extracted this from email body / WhatsApp text
       2. ai_name                — AI extracted from attached file (PDF/Excel)
       3. "Not Found"            — sender info is NOT used (sender ≠ supplier)
+
+    A candidate that is really the source filename or a test marker is skipped
+    (see _is_placeholder_supplier) so a catalog filename never poses as a supplier.
     """
     _missing = [None, "", "Not Found"]
+    src = getattr(payload, 'source_filename', None)
     pname = getattr(payload, 'supplier_name', None)
-    if pname not in _missing:
+    if pname not in _missing and not _is_placeholder_supplier(pname, src):
         return str(pname)
-    if ai_name not in _missing:
+    if ai_name not in _missing and not _is_placeholder_supplier(ai_name, src):
         return str(ai_name)
     return "Not Found"
 
@@ -222,10 +255,17 @@ def _resolve_supplier_email(payload, ai_email=None) -> str:
       3. "Not Found"
     """
     _missing = [None, "", "Not Found"]
+
+    def _ok(e):
+        # Reject reserved test/documentation domains (RFC 2606/6761): a
+        # verification@loxo.test or test@loreal.example sender is not a supplier.
+        return e not in _missing and not re.search(r"\.(test|example|invalid|localhost)$",
+                                                    str(e).strip().lower())
+
     pemail = getattr(payload, 'supplier_email', None)
-    if pemail not in _missing:
+    if _ok(pemail):
         return str(pemail)
-    if ai_email not in _missing:
+    if _ok(ai_email):
         return str(ai_email)
     return "Not Found"
 

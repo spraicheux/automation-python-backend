@@ -17,10 +17,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
+from types import SimpleNamespace
 from workers.processor import (
     _parse_offer_date,
     _date_from_filename,
     _resolve_offer_date,
+    _is_placeholder_supplier,
+    _resolve_supplier_name,
+    _resolve_supplier_email,
     _normalize_moq_and_quantity,
     _safe_float,
     is_valid_offer,
@@ -115,6 +119,38 @@ class TestResolveOfferDate:
     def test_always_returns_a_date(self):
         # Never None — no row may show an age with no offer date
         assert _resolve_offer_date(None, "", self.RECV) == self.RECV
+
+
+# ─── supplier placeholder guard (a filename / test marker is not a supplier) ───
+
+class TestPlaceholderSupplier:
+    def test_filename_stem_placeholders_detected(self):
+        assert _is_placeholder_supplier("W39_Designer", "W39_Designer_Offer_23.09.xlsx")
+        assert _is_placeholder_supplier("STOCK_LIST_PERFUMES", "STOCK LIST PERFUMES 13.04.xlsx")
+        assert _is_placeholder_supplier("Cosmetics_18_06", "Cosmetics_Offer_18.06.xlsx")
+
+    def test_test_marker_detected(self):
+        assert _is_placeholder_supplier("L'Oreal Luxury Test", "LOREAL_LUX.xlsx")
+        assert _is_placeholder_supplier("Test", "anything.xlsx")
+
+    def test_real_supplier_not_flagged(self):
+        # Real names (spaces, not underscores) must never be rejected, even when
+        # the file is named after them.
+        assert not _is_placeholder_supplier("FBC Trades", "fbc_trades_email.txt")
+        assert not _is_placeholder_supplier("Balkan Luxury Supply Ltd.", "Cosmetics_Offer_09.06.2026.xlsx")
+
+    def test_resolver_skips_placeholder_to_not_found(self):
+        pl = SimpleNamespace(source_filename="W39_Designer_Offer_23.09.xlsx", supplier_name="W39_Designer")
+        assert _resolve_supplier_name(None, pl) == "Not Found"
+
+    def test_resolver_keeps_real_name(self):
+        pl = SimpleNamespace(source_filename="fbc_trades_email.txt", supplier_name="FBC Trades")
+        assert _resolve_supplier_name(None, pl) == "FBC Trades"
+
+    def test_email_rejects_reserved_test_domains(self):
+        assert _resolve_supplier_email(SimpleNamespace(supplier_email="verification@loxo.test")) == "Not Found"
+        assert _resolve_supplier_email(SimpleNamespace(supplier_email="test@loreal.example")) == "Not Found"
+        assert _resolve_supplier_email(SimpleNamespace(supplier_email="sales@balkan.com")) == "sales@balkan.com"
 
 
 # ─── _normalize_moq_and_quantity ──────────────────────────────────────────────
