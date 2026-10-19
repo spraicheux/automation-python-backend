@@ -2298,6 +2298,12 @@ def clean_product_data(product: dict) -> dict:
         logger.info(f"[clean_product_data] product_key was 'Not Found' — auto-generated: {product_key!r}")
         cleaned_product['product_key'] = product_key
 
+    # Strip customs (T1/T2) and refillable (RF/NRF) tokens from the key — those
+    # belong in custom_status / refillable_status, not the product identity key.
+    if cleaned_product.get('product_key') not in (None, "", "Not Found"):
+        from core.normalization import clean_product_key
+        cleaned_product['product_key'] = clean_product_key(cleaned_product['product_key'])
+
     # Convert any 0 values to None for numeric fields that shouldn't have 0 as a valid value
     numeric_fields_never_zero = [
         'cases_per_pallet', 'quantity_case', 'moq_cases',

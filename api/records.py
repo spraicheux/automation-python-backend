@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional, List
 from core.database import get_db
-from core.normalization import peer_group_id, is_peer_group_qualified
+from core.normalization import peer_group_id, peer_group_id_from_ean, is_peer_group_qualified
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -148,7 +148,11 @@ async def get_benchmarks(
         # `peer_group_id` (the dashboard looks up benchmarks[item.peer_group_id]),
         # which includes ean_code. Omitting it produced a different key and left
         # the All Offers "12M LOW" blank while Best Prices showed the history.
-        key = peer_group_id(
+        # EAN-primary key (matches models.offer_item.to_dict and Best Prices):
+        # same EAN + incoterm + location is ONE peer even if shade/range/name
+        # differ, so the All Offers "12M LOW" badge and Best Prices describe the
+        # SAME peer. Falls back to the attribute key when no valid EAN.
+        key = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location) or peer_group_id(
             r.brand, r.product_name,
             unit_volume_ml=r.unit_volume_ml,
             units_per_case=r.units_per_case,

@@ -23,7 +23,28 @@ from core.normalization import (
     peer_group_id,
     is_peer_group_qualified,
     depollute_identity,
+    clean_product_key,
 )
+
+
+class TestCleanProductKey:
+    """product_key must identify the product, not its trade terms — customs
+    (T1/T2) and refillable (RF/NRF) tokens belong in their own columns
+    (Samuel: "product_key still embeds _T2_")."""
+
+    def test_strips_customs_and_refill(self):
+        assert clean_product_key("JAGERMEISTER_RF_T2_700ML_6X70CL") == "JAGERMEISTER_700ML_6X70CL"
+        assert clean_product_key("JOHNNIE_WALKER_RED_LABEL_6X1L_RF_T2") == "JOHNNIE_WALKER_RED_LABEL_6X1L"
+        assert clean_product_key("HENNESSY_VS_1000ML_12X100CL_T1") == "HENNESSY_VS_1000ML_12X100CL"
+        assert clean_product_key("NRF_VODKA_1L") == "VODKA_1L"
+
+    def test_keeps_volume_pack_and_age_tokens(self):
+        assert clean_product_key("ABSOLUT_700ML_6X70CL") == "ABSOLUT_700ML_6X70CL"
+        assert clean_product_key("CHIVAS_REGAL_12YO") == "CHIVAS_REGAL_12YO"
+
+    def test_empty_safe(self):
+        assert clean_product_key("") == ""
+        assert clean_product_key(None) == ""
 
 
 class TestDepolluteIdentity:

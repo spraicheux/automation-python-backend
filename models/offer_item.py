@@ -127,7 +127,7 @@ class OfferItemDB(Base):
         import json
         from core.normalization import (
             product_family_id, sku_identity, ean_key, peer_group_id,
-            is_peer_group_qualified,
+            peer_group_id_from_ean, is_peer_group_qualified,
         )
         return {
             "uid": self.uid,
@@ -157,7 +157,16 @@ class OfferItemDB(Base):
                 range_name=self.range_name,
             ),
             "sku_ean": ean_key(self.ean_code),
-            "peer_group_id": peer_group_id(
+            # EAN-primary: when a valid EAN is present, two records with the
+            # same EAN + incoterm + location are ONE peer regardless of how
+            # each supplier formatted shade / range / name — matching Best
+            # Prices and Alerts. Falls back to the attribute key when no valid
+            # EAN. (This is the fix for the NARS cross-screen "12M LOW"
+            # inconsistency: shade "Fiji" vs range "Prism Veil" on the same
+            # EAN no longer split the peer.)
+            "peer_group_id": peer_group_id_from_ean(
+                self.ean_code, self.incoterm, self.location,
+            ) or peer_group_id(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,
                 units_per_case=self.units_per_case,

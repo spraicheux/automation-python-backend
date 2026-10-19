@@ -115,6 +115,23 @@ def _strip_category_prefix(text: str) -> str:
     return out
 
 
+def clean_product_key(key: str | None) -> str:
+    """Strip commercial/customs tokens from a product_key so the key identifies
+    the product, not its trade terms. Customs status (T1/T2) lives in
+    custom_status and refillable status (RF/NRF) in refillable_status, so those
+    tokens must not sit in the displayed product_key (Samuel: "product_key still
+    embeds _T2_"). Volume/pack tokens (700ML, 6X70CL) are product attributes and
+    are kept."""
+    if not key:
+        return key or ""
+    k = str(key)
+    # drop T1/T2 and RF/NRF wherever they appear as their own token
+    k = re.sub(r"(?i)(?<![A-Za-z0-9])(?:T[12]|N?RF)(?![A-Za-z0-9])", "_", k)
+    # collapse the separators left behind and trim
+    k = re.sub(r"_+", "_", k).strip("_")
+    return k
+
+
 def depollute_identity(brand: str | None, product_name: str | None):
     """Strip category descriptors from brand/name and replace a name that is
     only a category word with the brand, so one product keeps one identity.

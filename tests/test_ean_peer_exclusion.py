@@ -19,7 +19,30 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test.db")
 
-from core.normalization import ean_key, peer_group_id  # noqa: E402
+from core.normalization import ean_key, peer_group_id, peer_group_id_from_ean  # noqa: E402
+
+
+class TestSameEanMergesAcrossScreens:
+    """NARS cross-screen fix: two rows with the SAME valid EAN + incoterm +
+    location must form ONE peer even when shade/range/name differ, so the All
+    Offers "12M LOW" badge (benchmarks) and Best Prices describe the same peer.
+    Both to_dict and get_benchmarks now key via peer_group_id_from_ean first."""
+
+    def test_same_ean_differing_attributes_share_one_peer(self):
+        # NARS Prism Veil 2901234500060, EXW Rotterdam — one row has shade
+        # "Fiji", the other range "Prism Veil"; the EAN key ignores both.
+        a = peer_group_id_from_ean("2901234500060", "EXW", "Rotterdam")
+        b = peer_group_id_from_ean("2901234500060", "EXW", "Rotterdam")
+        assert a is not None and a == b
+
+    def test_no_valid_ean_falls_back_to_attribute_key(self):
+        assert peer_group_id_from_ean("", "EXW", "Rotterdam") is None
+        assert peer_group_id_from_ean("2901234500153", "EXW", "Rotterdam") is None  # invalid check digit
+
+    def test_different_location_still_splits(self):
+        # EAN-primary still respects incoterm/location — not a blind EAN merge.
+        assert (peer_group_id_from_ean("2901234500060", "EXW", "Rotterdam")
+                != peer_group_id_from_ean("2901234500060", "EXW", "Dubai"))
 
 
 class TestEanCheckDigit:
