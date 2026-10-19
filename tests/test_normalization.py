@@ -65,6 +65,13 @@ class TestDepolluteIdentity:
         assert depollute_identity("Hennessy", "VS") == ("Hennessy", "VS")
         assert depollute_identity("Wu Liang Ye", "Wu Liang Ye") == ("Wu Liang Ye", "Wu Liang Ye")
 
+    def test_blank_name_falls_back_to_brand(self):
+        # Single-product brands (Disaronno, Cointreau, Tia Maria …) whose name is
+        # blank / "Not Found" take the brand, so the UI never falls back to the key.
+        assert depollute_identity("Disaronno", "") == ("Disaronno", "Disaronno")
+        assert depollute_identity("Cointreau", None) == ("Cointreau", "Cointreau")
+        assert depollute_identity("Tia Maria", "Not Found") == ("Tia Maria", "Tia Maria")
+
     def test_all_three_variants_share_one_family(self):
         variants = [("BaijiuWu Liang Ye", "BaijiuWu Liang Ye"),
                     ("Wu Liang Ye", "Baijiu"),

@@ -135,15 +135,19 @@ def clean_product_key(key: str | None) -> str:
 def depollute_identity(brand: str | None, product_name: str | None):
     """Strip category descriptors from brand/name and replace a name that is
     only a category word with the brand, so one product keeps one identity.
-    Returns (brand, product_name); inputs that clean to empty are left as-is."""
+    A blank / "Not Found" product name falls back to the brand — many spirits
+    and perfumes are single-product brands (Disaronno, Cointreau, Tia Maria,
+    Licor 43, Paloma Picasso …) whose name IS the brand, and a blank name made
+    the UI fall back to the product_key. Returns (brand, product_name)."""
     b_in, p_in = (brand or ""), (product_name or "")
     b = _strip_category_prefix(b_in).strip()
     p = p_in
-    # A product name that is nothing but a category descriptor is not a name.
-    if _fold(p).strip() in _CATEGORY_DESCRIPTORS:
+    # A name that is blank, "Not Found", or only a category descriptor is not a
+    # usable product name → fall back to the brand.
+    if _fold(p).strip() in _CATEGORY_DESCRIPTORS or str(p).strip().lower() in ("", "not found"):
         p = b or b_in
     p = _strip_category_prefix(p).strip()
-    return (b or b_in or brand), (p or p_in or product_name)
+    return (b or b_in or brand), (p or b or p_in or product_name)
 
 
 def _normalize_location(s: str | None) -> str:
