@@ -127,6 +127,10 @@ async def get_benchmarks(
     today = datetime.utcnow().strftime('%Y-%m-%d')
     q = (db.query(OfferItemDB)
          .filter(OfferItemDB.price_per_unit_eur.isnot(None))
+         # Zero / unusable prices must NOT contribute to a benchmark — a €0.00
+         # row made the "12M LOW" show €0.00 and the delta +Infinity%
+         # (Tanqueray Rangpur). Match the Best Prices filter (price > 0).
+         .filter(OfferItemDB.price_per_unit_eur > 0)
          # Exclude offers whose valid_until has already passed.
          .filter(or_(OfferItemDB.valid_until.is_(None),
                      OfferItemDB.valid_until == '',

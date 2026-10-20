@@ -26,7 +26,8 @@ from core.database import Base  # noqa: E402
 from models.offer_item import OfferItemDB  # noqa: E402
 from models.source_file import SourceFileDB  # noqa: E402
 from api.records import get_best_prices, get_benchmarks, get_records  # noqa: E402
-from api.offers_write import create_offer, edit_offer, OfferCreate, OfferPatch  # noqa: E402
+from api.offers_write import create_offer, edit_offer, get_offer, OfferCreate, OfferPatch  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 _ = SourceFileDB  # keep import so create_all builds the FK target table
 
@@ -169,6 +170,52 @@ class TestServerSideFilters:
         db = _session(); self._rows(db)
         out = self._recs(db, custom_status="__none__")
         assert out["total"] == 150   # the T1/T2 rows excluded
+
+
+class TestExactOfferLookup:
+    """REQ 12 / P1 — the drawer must open the EXACT offer by uid (alerts and
+    benchmark links). GET /api/offers/{uid} returns one record, no dedup/scan."""
+
+    def test_get_exact_offer(self):
+        db = _session()
+        for uid, price in (("a", 10.0), ("b", 20.0), ("c", 30.0)):
+            db.add(OfferItemDB(uid=uid, job_id="t", brand="B", product_name="P",
+                               price_per_unit_eur=price, created_at=datetime.utcnow()))
+        db.commit()
+        assert get_offer("b", db=db)["uid"] == "b"
+        assert get_offer("c", db=db)["price_per_unit_eur"] == 30.0
+
+    def test_missing_offer_404(self):
+        db = _session()
+        try:
+            get_offer("nope", db=db)
+            assert False, "expected 404"
+        except HTTPException as e:
+            assert e.status_code == 404
+
+
+class TestBenchmarkExcludesZeroPrice:
+    """P1 — a €0.00 / unusable-price row must NOT drag the 12M LOW to 0 (which
+    produced +Infinity% on Tanqueray Rangpur)."""
+
+    def test_zero_price_not_in_benchmark(self):
+        db = _session()
+        # one real offer + one zero-price "unusable" row in the same peer
+        db.add(OfferItemDB(uid="real", job_id="t", brand="Tanqueray", product_name="Rangpur",
+                           unit_volume_ml=1000, units_per_case=6, incoterm="EXW", location="NL",
+                           ean_code="5000289021234", category_slug="wines_spirits",
+                           price_per_unit=18.0, price_per_unit_eur=18.0,
+                           created_at=datetime.utcnow() - timedelta(days=5)))
+        db.add(OfferItemDB(uid="zero", job_id="t", brand="Tanqueray", product_name="Rangpur",
+                           unit_volume_ml=1000, units_per_case=6, incoterm="EXW", location="NL",
+                           ean_code="5000289021234", category_slug="wines_spirits",
+                           price_per_unit=0.0, price_per_unit_eur=0.0,
+                           created_at=datetime.utcnow() - timedelta(days=5)))
+        db.commit()
+        bm = asyncio.run(get_benchmarks(window="12M", db=db))
+        vals = next(iter(bm["peers"].values()))
+        assert vals["low_eur"] == 18.0        # not 0.0
+        assert vals["samples"] == 1           # the zero-price row is excluded
 
 
 class TestSimilarRowsKeepDistinctIdentity:

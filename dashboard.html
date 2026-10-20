@@ -1794,22 +1794,19 @@
 
   async function openDrawerByUid(uid) {
     if (!uid) return;
+    // Exact lookup by uid — alerts and benchmark links MUST open the precise
+    // offer they name. The old code searched the deduped /api/records page by
+    // page: alert offers aren't in that page, so it lagged and opened the
+    // PREVIOUS drawer on sequential clicks. Fetch the exact record instead.
+    try {
+      const res = await fetch(`${API_BASE}/api/offers/${encodeURIComponent(uid)}`,
+        { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      if (res.ok) { openDrawer(await res.json()); return; }
+    } catch(_) {}
+    // Fallback: the loaded All Offers cache (still exact by uid).
     const cached = allRawItemsCache.find(x => x.uid === uid);
     if (cached) { openDrawer(cached); return; }
-    // Fall back to a targeted fetch — best-effort, records API doesn't have a by-uid endpoint,
-    // so we page through until we find it. Small dataset so this is acceptable.
-    try {
-      for (let skip = 0; skip < 5000; skip += 200) {
-        const res = await fetch(`${API_BASE}/api/records?skip=${skip}&limit=200`,
-          { headers: { 'Authorization': `Bearer ${currentToken}` } });
-        if (!res.ok) break;
-        const data = await res.json();
-        const hit = (data.records || []).find(x => x.uid === uid);
-        if (hit) { openDrawer(hit); return; }
-        if (!data.records || data.records.length < 200) break;
-      }
-    } catch(_) {}
-    alert('Could not find that historical offer in the current dataset.');
+    alert('Could not find that offer.');
   }
 
   function drawerBodyHtml(i) {

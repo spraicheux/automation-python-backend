@@ -295,6 +295,17 @@ def edit_offer(uid: str, payload: OfferPatch, db: Session = Depends(get_db)):
     return {"status": "ok", "uid": uid, "changed": [c[0] for c in changes]}
 
 
+@router.get("/offers/{uid}")
+def get_offer(uid: str, db: Session = Depends(get_db)):
+    """Return exactly one offer by uid (no dedup, no paging). Used by the UI to
+    open a drawer for a specific record — alerts and benchmark links must open
+    the EXACT offer they name, not a dedup representative or a lagged scan."""
+    row = db.query(OfferItemDB).filter(OfferItemDB.uid == uid).first()
+    if not row:
+        raise HTTPException(404, f"offer {uid} not found")
+    return row.to_dict()
+
+
 @router.get("/offers/{uid}/history")
 def offer_history(uid: str, db: Session = Depends(get_db)):
     """Return the correction history for one offer."""
