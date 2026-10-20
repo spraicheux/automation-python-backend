@@ -142,12 +142,20 @@ def depollute_identity(brand: str | None, product_name: str | None):
     b_in, p_in = (brand or ""), (product_name or "")
     b = _strip_category_prefix(b_in).strip()
     p = p_in
-    # A name that is blank, "Not Found", or only a category descriptor is not a
-    # usable product name → fall back to the brand.
-    if _fold(p).strip() in _CATEGORY_DESCRIPTORS or str(p).strip().lower() in ("", "not found"):
+    # A name that is blank, "Not Found", only a category descriptor, or only a
+    # pack/size token (e.g. "12x", "6x70cl", "12x1L" — the case prefix captured
+    # as the name) is not a usable product name → fall back to the brand.
+    if (_fold(p).strip() in _CATEGORY_DESCRIPTORS
+            or str(p).strip().lower() in ("", "not found")
+            or _PACK_TOKEN_RE.match(str(p))):
         p = b or b_in
     p = _strip_category_prefix(p).strip()
     return (b or b_in or brand), (p or b or p_in or product_name)
+
+
+# A product name that is nothing but a pack/size token: "12x", "6 x", "12x70cl",
+# "24x20cl", "6x1L". These are the case configuration, not a product name.
+_PACK_TOKEN_RE = re.compile(r"(?i)^\s*\d+\s*x\s*(\d+(\.\d+)?\s*(cl|ml|l|cls)?\s*)*$")
 
 
 def _normalize_location(s: str | None) -> str:

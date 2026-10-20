@@ -72,6 +72,16 @@ class TestDepolluteIdentity:
         assert depollute_identity("Cointreau", None) == ("Cointreau", "Cointreau")
         assert depollute_identity("Tia Maria", "Not Found") == ("Tia Maria", "Tia Maria")
 
+    def test_pack_token_name_falls_back_to_brand(self):
+        # A pack/size token mis-extracted as the name (Samuel: Jack Daniel's "12x")
+        # is not a product name — use the brand.
+        assert depollute_identity("Jack Daniel's", "12x") == ("Jack Daniel's", "Jack Daniel's")
+        assert depollute_identity("Jack Daniel's", "12x70cl") == ("Jack Daniel's", "Jack Daniel's")
+        assert depollute_identity("Baileys", "6x1L") == ("Baileys", "Baileys")
+        # real names that merely contain digits are untouched
+        assert depollute_identity("Jack Daniel's", "Old No.7") == ("Jack Daniel's", "Old No.7")
+        assert depollute_identity("Glenlivet", "12YO") == ("Glenlivet", "12YO")
+
     def test_all_three_variants_share_one_family(self):
         variants = [("BaijiuWu Liang Ye", "BaijiuWu Liang Ye"),
                     ("Wu Liang Ye", "Baijiu"),

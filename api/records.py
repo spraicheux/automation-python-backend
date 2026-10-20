@@ -227,6 +227,8 @@ async def get_records(
     category: Optional[str] = Query(None),
     sub_category: Optional[str] = Query(None),
     category_slug: Optional[str] = Query(None, description="wines_spirits | perfumes | cosmetics"),
+    custom_status: Optional[str] = Query(None, description="T1 | T2 | __none__ (no customs status)"),
+    supplier: Optional[str] = Query(None, description="exact supplier_name"),
     db: Session = Depends(get_db),
 ):
     # Same-file duplicate guard — only collapses TRUE extractor duplicates
@@ -304,6 +306,20 @@ async def get_records(
 
     if category_slug:
         subquery = subquery.filter(OfferItemDB.category_slug == category_slug.lower().strip())
+
+    # Customs status + supplier are SERVER-side filters so they apply to the
+    # whole dataset, not just the loaded page (fixes "T1/T2 filter returns
+    # nothing without a search" and "clearing category drops the supplier").
+    if custom_status:
+        cs = custom_status.strip()
+        if cs == "__none__":
+            subquery = subquery.filter(or_(OfferItemDB.custom_status.is_(None),
+                                           OfferItemDB.custom_status == ""))
+        else:
+            subquery = subquery.filter(OfferItemDB.custom_status == cs)
+
+    if supplier:
+        subquery = subquery.filter(OfferItemDB.supplier_name == supplier)
 
     subquery = subquery.subquery()
 

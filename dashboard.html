@@ -1246,6 +1246,11 @@
       if (filters.category) url += `&category=${encodeURIComponent(filters.category)}`;
       if (filters.sub_category) url += `&sub_category=${encodeURIComponent(filters.sub_category)}`;
       if (filters.category_slug) url += `&category_slug=${encodeURIComponent(filters.category_slug)}`;
+      // Customs status + supplier go to the SERVER so they filter the whole
+      // dataset, not just the loaded page (client-side filtering a partial page
+      // returned 0 when matching rows weren't in the first page).
+      if (customStatusFilter) url += `&custom_status=${encodeURIComponent(customStatusFilter)}`;
+      if (filters.supplier) url += `&supplier=${encodeURIComponent(filters.supplier)}`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
       const data = await res.json();
       const items = data.records || [];

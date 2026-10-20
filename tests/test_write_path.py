@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from core.database import Base  # noqa: E402
 from models.offer_item import OfferItemDB  # noqa: E402
 from models.source_file import SourceFileDB  # noqa: E402
-from api.records import get_best_prices, get_benchmarks  # noqa: E402
+from api.records import get_best_prices, get_benchmarks, get_records  # noqa: E402
 from api.offers_write import create_offer, edit_offer, OfferCreate, OfferPatch  # noqa: E402
 
 _ = SourceFileDB  # keep import so create_all builds the FK target table
@@ -125,6 +125,50 @@ class TestManualCreateEditPersistence:
         uid = create_offer(OfferCreate(product_name="X", brand="Y", price_per_unit=1.0), db=db)["uid"]
         out = edit_offer(uid, OfferPatch(fields={"not_a_real_column": "boom"}), db=db)
         assert out["changed"] == []
+
+
+class TestServerSideFilters:
+    """REQ: the customs-status and supplier filters must apply to the WHOLE
+    dataset server-side, not just the loaded page — the bug was that selecting
+    T1/T2 (or keeping a supplier when clearing the category) returned nothing
+    because matching rows were past the first page."""
+
+    def _rows(self, db):
+        # 150 no-status rows (fill the "first page"), then the T2/supplier rows
+        for n in range(150):
+            db.add(OfferItemDB(uid=f"n{n}", job_id="t", brand="Bulk", product_name=f"P{n}",
+                               price_per_unit_eur=10.0, supplier_name="MassSupplier",
+                               created_at=datetime.utcnow()))
+        db.add(OfferItemDB(uid="t2a", job_id="t", brand="Hennessy", product_name="VS",
+                           custom_status="T2", supplier_name="FBC Trades",
+                           price_per_unit_eur=40.0, created_at=datetime.utcnow() - timedelta(days=1)))
+        db.add(OfferItemDB(uid="t1a", job_id="t", brand="Glenlivet", product_name="12YO",
+                           custom_status="T1", supplier_name="FBC Trades",
+                           price_per_unit_eur=30.0, created_at=datetime.utcnow() - timedelta(days=2)))
+        db.commit()
+
+    def _recs(self, db, **kw):
+        base = dict(skip=0, limit=100, source_file_id=None, search=None, category=None,
+                    sub_category=None, category_slug=None, custom_status=None, supplier=None, db=db)
+        base.update(kw)
+        return asyncio.run(get_records(**base))
+
+    def test_t2_filter_alone_finds_deep_rows(self):
+        db = _session(); self._rows(db)
+        out = self._recs(db, custom_status="T2")
+        assert out["total"] == 1
+        assert out["records"][0]["uid"] == "t2a"
+
+    def test_supplier_filter_alone_finds_deep_rows(self):
+        db = _session(); self._rows(db)
+        out = self._recs(db, supplier="FBC Trades")
+        assert out["total"] == 2
+        assert {r["uid"] for r in out["records"]} == {"t2a", "t1a"}
+
+    def test_none_customs_filter(self):
+        db = _session(); self._rows(db)
+        out = self._recs(db, custom_status="__none__")
+        assert out["total"] == 150   # the T1/T2 rows excluded
 
 
 class TestSimilarRowsKeepDistinctIdentity:
