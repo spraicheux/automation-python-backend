@@ -1552,7 +1552,14 @@
         const qualified = bench.is_qualified !== false;
         const qualNote = qualified ? '' : ' · commercial terms incomplete (some rows missing incoterm/location)';
         const tip = `Prior ${benchmarkWindow} Low: €${bench.prior_low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${(bench.avg_eur || 0).toFixed(2)}${qualNote}`;
-        const clickable = bench.prior_low_uid && bench.prior_low_uid !== i.uid;
+        // Only navigate to the prior low when it is GENUINELY lower than this
+        // offer — otherwise an equal-priced peer (e.g. the same standing offer
+        // received twice from two source files) would present itself as this
+        // row's "historical low" and clicking it would open that other record,
+        // which looks like wrong-record navigation. No real saving → not a link.
+        const _curEur = (i.price_per_unit_eur != null) ? Number(i.price_per_unit_eur) : Infinity;
+        const clickable = bench.prior_low_uid && bench.prior_low_uid !== i.uid
+                          && bench.prior_low_eur < _curEur - 0.001;
         const lowNumber = qualified
           ? `€${bench.prior_low_eur.toFixed(2)}`
           : `€${bench.prior_low_eur.toFixed(2)}<span class="unverified-star" title="Comparison rests on incomplete commercial terms — see tooltip">*</span>`;

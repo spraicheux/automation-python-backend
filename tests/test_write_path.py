@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from core.database import Base  # noqa: E402
 from models.offer_item import OfferItemDB  # noqa: E402
 from models.source_file import SourceFileDB  # noqa: E402
-from api.records import get_best_prices  # noqa: E402
+from api.records import get_best_prices, get_benchmarks  # noqa: E402
 from api.offers_write import create_offer, edit_offer, OfferCreate, OfferPatch  # noqa: E402
 
 _ = SourceFileDB  # keep import so create_all builds the FK target table
@@ -125,3 +125,50 @@ class TestManualCreateEditPersistence:
         uid = create_offer(OfferCreate(product_name="X", brand="Y", price_per_unit=1.0), db=db)["uid"]
         out = edit_offer(uid, OfferPatch(fields={"not_a_real_column": "boom"}), db=db)
         assert out["changed"] == []
+
+
+class TestSimilarRowsKeepDistinctIdentity:
+    """Samuel's wrong-record navigation finding. Two near-identical offers (same
+    supplier/product/price/pack, different source file + date — e.g. the same
+    standing offer received twice) must each keep their OWN uid in the data the
+    UI binds to, and an equal-priced peer must NOT be presented as the other's
+    lower historical benchmark (which is what made the '12M LOW' link jump to
+    the other record and look like wrong-record navigation)."""
+
+    def _pair(self, db):
+        # same peer (EAN + incoterm + location), same price, two source files/dates
+        for uid, sfid, date in (("jw-pdf", "fileA", "2026-03-16"),
+                                ("jw-email", "fileB", "2026-03-24")):
+            db.add(OfferItemDB(
+                uid=uid, job_id="t", source_file_id=sfid,
+                brand="Johnnie Walker", product_name="Red Label",
+                unit_volume_ml=1000, units_per_case=6, incoterm="DAP",
+                location="Loendersloot", ean_code="5000267023656",
+                category_slug="wines_spirits",
+                price_per_unit=6.70, price_per_unit_eur=6.70, currency="EUR",
+                supplier_name="FBC Trades", quantity_case=1600, custom_status="T2",
+                offer_date=datetime.strptime(date, "%Y-%m-%d"), created_at=datetime.utcnow(),
+            ))
+        db.commit()
+
+    def test_both_rows_tracked_as_distinct_records(self):
+        db = _session()
+        self._pair(db)
+        # Both rows land in one peer, but as TWO distinct uids (low + second-low),
+        # never collapsed into one — so each All Offers row binds to its own record.
+        bm = asyncio.run(get_benchmarks(window="12M", db=db))
+        assert len(bm["peers"]) == 1
+        vals = next(iter(bm["peers"].values()))
+        assert vals["samples"] == 2
+        assert {vals["low_uid"], vals["second_low_uid"]} == {"jw-pdf", "jw-email"}
+        assert vals["low_uid"] != vals["second_low_uid"]
+
+    def test_equal_priced_peer_is_not_a_lower_benchmark(self):
+        db = _session()
+        self._pair(db)
+        bm = asyncio.run(get_benchmarks(window="12M", db=db))
+        vals = next(iter(bm["peers"].values()))
+        # low == second-low (both €6.70) → no genuine prior low below the current
+        # price, so the UI must not render a navigable '12M LOW' link to the twin.
+        assert vals["low_eur"] == 6.70
+        assert vals["second_low_eur"] == 6.70
