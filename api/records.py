@@ -373,8 +373,18 @@ async def get_best_prices(
     # two suppliers into separate 1-supplier groups and drop it from Best
     # Prices entirely (Samuel: YSL Midnight Halo). The real physical-SKU split
     # happens later via sku_identity, which carries the actual discriminators.
-    group_cols = [
+    # Product identity for the pre-filter: the EAN when present, else the
+    # product name. Suppliers format names inconsistently ("Angel Fantasm" vs
+    # "Angel Fantasm Tester"), which split the SAME product (same EAN) into two
+    # 1-supplier groups and dropped it from Best Prices (Samuel: Mugler EAN
+    # 3614274085518 showed only one of two suppliers). EAN-primary keeps them
+    # together; the fine split still happens downstream via sku_identity.
+    _prod_ident = func.coalesce(
+        func.nullif(OfferItemDB.ean_code, ''),
         func.lower(func.coalesce(OfferItemDB.product_name, '')),
+    )
+    group_cols = [
+        _prod_ident,
         func.coalesce(OfferItemDB.unit_volume_ml, 0),
         func.lower(func.coalesce(OfferItemDB.category, '')),
         func.lower(func.coalesce(OfferItemDB.brand, '')),
@@ -383,7 +393,7 @@ async def get_best_prices(
 
     multi_supplier_subq = (
         db.query(
-            func.lower(func.coalesce(OfferItemDB.product_name, '')).label("pn"),
+            _prod_ident.label("pn"),
             func.coalesce(OfferItemDB.unit_volume_ml, 0).label("vol"),
             func.lower(func.coalesce(OfferItemDB.category, '')).label("cat"),
             func.lower(func.coalesce(OfferItemDB.brand, '')).label("brand"),
@@ -405,7 +415,7 @@ async def get_best_prices(
         db.query(OfferItemDB)
         .join(
             multi_supplier_subq,
-            (func.lower(func.coalesce(OfferItemDB.product_name, '')) == multi_supplier_subq.c.pn) &
+            (_prod_ident == multi_supplier_subq.c.pn) &
             (func.coalesce(OfferItemDB.unit_volume_ml, 0) == multi_supplier_subq.c.vol) &
             (func.lower(func.coalesce(OfferItemDB.category, '')) == multi_supplier_subq.c.cat) &
             (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand) &

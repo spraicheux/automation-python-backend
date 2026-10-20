@@ -218,6 +218,31 @@ class TestBenchmarkExcludesZeroPrice:
         assert vals["samples"] == 1           # the zero-price row is excluded
 
 
+class TestBestPricesSameEanDifferentName:
+    """R-10/R-11/P1 — two suppliers of the SAME EAN must both appear in Best
+    Prices even when they format the product name differently (Mugler EAN
+    3614274085518: 'Angel Fantasm' vs 'Angel Fantasm Tester')."""
+
+    def test_same_ean_two_suppliers_grouped(self):
+        db = _session()
+        for uid, name, sup, gender in (
+            ("a", "Angel Fantasm Tester", "Balkan Luxury Supply Ltd.", "women"),
+            ("b", "Angel Fantasm", "L'Oréal Luxury", None)):
+            db.add(OfferItemDB(uid=uid, job_id="t", brand="Mugler", product_name=name,
+                               unit_volume_ml=100, units_per_case=1, incoterm="EXW", location="NL",
+                               ean_code="3614274085518", category="Perfumes", category_slug="perfumes",
+                               perfume_format="EDP", retail_state="tester", gender=gender,
+                               price_per_unit=43.0, price_per_unit_eur=43.0,
+                               supplier_name=sup, offer_date=datetime.utcnow() - timedelta(days=25),
+                               created_at=datetime.utcnow()))
+        db.commit()
+        groups = _bp(db)["groups"]
+        # one product group, and its peer shows BOTH suppliers
+        assert len(groups) == 1, groups
+        suppliers = {o["supplier_name"] for g in groups for p in g["peers"] for o in p["offers"]}
+        assert suppliers == {"Balkan Luxury Supply Ltd.", "L'Oréal Luxury"}
+
+
 class TestSimilarRowsKeepDistinctIdentity:
     """Samuel's wrong-record navigation finding. Two near-identical offers (same
     supplier/product/price/pack, different source file + date — e.g. the same
