@@ -41,4 +41,5 @@ jobs:
                  tests/test_backfill_idempotence.py \
                  tests/test_ean_peer_exclusion.py \
                  tests/test_alert_dedup.py \
+                 tests/test_write_path.py \
                  -v --tb=short
