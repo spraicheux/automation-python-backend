@@ -168,6 +168,11 @@ def list_alerts(
                 "size_ml": latest.unit_volume_ml,
                 "units_per_case": latest.units_per_case,
                 "incoterm": latest.incoterm,
+                # SKU discriminators so two look-alike cards (same brand/name,
+                # different EAN or retail state) are distinguishable at a glance
+                # (Samuel #12: Angel Fantasm €43 vs €51.50, different EANs).
+                "ean": latest.ean_code,
+                "retail_state": getattr(latest, "retail_state", None),
             },
             "current": {
                 "uid": latest.uid,

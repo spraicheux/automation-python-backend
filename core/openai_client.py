@@ -2435,6 +2435,31 @@ def clean_product_data(product: dict) -> dict:
     # drops a trailing digit. We can catch both cases deterministically
     # using the EAN check-digit algorithm and repair, then flag if
     # unfixable so the row isn't silently trusted.
+    # ── ABV sanity guard ────────────────────────────────────────────────
+    # Alcohol by volume cannot exceed 100% (pure ethanol), and no bottled
+    # spirit on a trading desk is above ~96% (Spirytus). Values like 423%
+    # (Absolut Elyx) or 90% (Sazerac Rye — a 90-PROOF, i.e. 45% ABV, mis-read)
+    # are extraction errors that poison peer matching and filters (Samuel P1).
+    #   > 100  → physically impossible → null it out + REVIEW.
+    #   80–100 → implausible for the product → keep the value but flag REVIEW
+    #            so it never sets a trusted best price (benchmark excludes it).
+    _abv = cleaned_product.get('alcohol_percent')
+    if isinstance(_abv, (int, float)) and _abv > 80:
+        flags = cleaned_product.get('error_flags') or []
+        if _abv > 100:
+            flag_text = (f"ABV {_abv}% is physically impossible (>100%) — "
+                         f"quarantined pending source reconciliation")
+            cleaned_product['alcohol_percent'] = None
+        else:
+            flag_text = (f"ABV {_abv}% is implausibly high — verify vs source "
+                         f"(possible proof/° mis-read); not a trusted value")
+        if flag_text not in flags:
+            flags.append(flag_text)
+        cleaned_product['error_flags'] = flags
+        cleaned_product['needs_manual_review'] = True
+        logger.warning(f"[clean_product_data] ABV {_abv!r} flagged implausible")
+    # ──────────────────────────────────────────────────────────────────
+
     raw_ean = cleaned_product.get('ean_code')
     if raw_ean and raw_ean != "Not Found":
         import re as _re_ean

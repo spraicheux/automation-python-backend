@@ -248,6 +248,8 @@
     .bp-best-banner { text-align: right; }
     .bp-best-banner .bp-best-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--green); font-weight: 700; }
     .bp-best-banner .bp-best-price { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 700; color: var(--green); margin-top: 2px; }
+    .headline-stale { font-size: 10px; font-weight: 700; letter-spacing: 0.3px; color: var(--amber); background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.3); border-radius: 8px; padding: 1px 6px; margin-left: 4px; cursor: help; }
+    .alert-disc { font-size: 10px; font-family: 'DM Mono', monospace; color: var(--text-dim); background: var(--pill); border-radius: 8px; padding: 1px 6px; }
     .bp-best-banner .bp-best-sup { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
     table.bp-offers { width: 100%; border-collapse: separate; border-spacing: 0; }
     table.bp-offers th { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 700; text-align: left; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border-soft); }
@@ -284,6 +286,7 @@
     }
     .cat-pill:hover { color: var(--text); border-color: var(--border-soft); }
     .cat-pill.active { background: var(--accent, #3b82f6); color: white; border-color: transparent; }
+    .cat-count { font-size: 10px; opacity: 0.65; font-variant-numeric: tabular-nums; margin-left: 2px; }
     /* Category-specific drawer fields — visually distinct so they read as "extra". */
     .drawer-cat-block { padding: 10px 12px; background: var(--surface); border-radius: 8px; margin-top: 8px; }
     .drawer-cat-block .h { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
@@ -440,14 +443,15 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <input id="global-search" placeholder="Search product, brand, expression (e.g. Don Julio Añejo)…" />
         </div>
-        <div class="search-hint" id="search-hint">Search brand, product, size (e.g. 100cl / 1L), EAN, T1 / T2.</div>
+        <div class="search-hint" id="search-hint">Search brand, product, size (100cl / 1L), pack (12x70cl), vintage (2025), EAN, reference, T1 / T2.</div>
       </div>
 
       <div class="cat-strip" role="tablist" aria-label="Category">
-        <button type="button" class="cat-pill active" data-slug="">All Categories</button>
-        <button type="button" class="cat-pill" data-slug="wines_spirits">Wines &amp; Spirits</button>
-        <button type="button" class="cat-pill" data-slug="perfumes">Perfumes</button>
-        <button type="button" class="cat-pill" data-slug="cosmetics">Cosmetics</button>
+        <button type="button" class="cat-pill active" data-slug="">All Categories <span class="cat-count" data-count-slug=""></span></button>
+        <button type="button" class="cat-pill" data-slug="wines_spirits">Wines &amp; Spirits <span class="cat-count" data-count-slug="wines_spirits"></span></button>
+        <button type="button" class="cat-pill" data-slug="perfumes">Perfumes <span class="cat-count" data-count-slug="perfumes"></span></button>
+        <button type="button" class="cat-pill" data-slug="cosmetics">Cosmetics <span class="cat-count" data-count-slug="cosmetics"></span></button>
+        <button type="button" class="cat-pill" data-slug="__none__" title="Offers outside the three trade categories (uncategorised at source)">Other <span class="cat-count" data-count-slug="__none__"></span></button>
       </div>
       <div class="filter-bar">
         <select id="filter-brand" class="filter-select"><option value="">All Brands</option></select>
@@ -782,9 +786,27 @@
     location.reload();
   }
 
+  // Populate the category-pill counts so the pills visibly reconcile to the
+  // All-Categories total (Samuel #04: 1,136 + 1,173 + 540 + 10 = 2,859, no
+  // unexplained gap). The "Other" pill carries the uncategorised remainder.
+  async function updateCatPillCounts() {
+    const slugs = ['', 'wines_spirits', 'perfumes', 'cosmetics', '__none__'];
+    await Promise.all(slugs.map(async (slug) => {
+      try {
+        const qs = slug ? ('?limit=1&category_slug=' + encodeURIComponent(slug)) : '?limit=1';
+        const r = await fetch(`${API_BASE}/api/records${qs}`, { headers: { 'Authorization': `Bearer ${currentToken}` } });
+        if (!r.ok) return;
+        const d = await r.json();
+        const el = document.querySelector(`.cat-count[data-count-slug="${slug}"]`);
+        if (el) el.textContent = `(${(d.total ?? 0).toLocaleString()})`;
+      } catch (e) { /* counts are best-effort cosmetic */ }
+    }));
+  }
+
   function initApp() {
     loadSources();
     loadBenchmarks().then(() => loadRecords(true));
+    updateCatPillCounts();
 
     document.getElementById('source-search').addEventListener('input', filterSourceList);
     document.getElementById('sidebar-toggle').addEventListener('click', () =>
@@ -984,7 +1006,7 @@
     return `<div class="alert-card" data-uid="${escapeAttr(a.current.uid)}">
       <div class="alert-icon ${iconCls}">${icon}</div>
       <div class="alert-body">
-        <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}</div>
+        <div class="alert-title">${escapeHtml(a.product.brand || '')} — ${escapeHtml(a.product.name || '')} ${a.product.size_ml ? `· ${a.product.size_ml}ml` : ''}${a.product.retail_state && a.product.retail_state !== 'retail' ? ` · <span class="alert-disc">${escapeHtml(a.product.retail_state)}</span>` : ''}${a.product.ean ? ` · <span class="alert-disc" title="EAN ${escapeAttr(a.product.ean)}">EAN …${escapeHtml(String(a.product.ean).slice(-4))}</span>` : ''}</div>
         <div class="alert-supplier-line"><strong>${escapeHtml(curSupplier)}</strong> now at <strong>${curPrice}</strong> · vs previous best peer: ${escapeHtml(prevSupplier)} ${prevPrice}${prevDate ? ` <span class="prev-trace">(offer ${prevDate}${prevSrc ? `, ${escapeHtml(String(prevSrc).slice(0,20))}${String(prevSrc).length>20?'…':''}` : ''})</span>` : ''}</div>
         <div class="alert-meta">${a.product.incoterm || '—'} · ${ageInfo ? ageInfo.text + (ageInfo.ago ? ' ago' : '') : ''}${a.current?.offer_date ? ` · offer ${String(a.current.offer_date).slice(0,10)}` : ''}${a.current?.source_filename ? ` · <span title="${escapeAttr(a.current.source_filename)}">${escapeHtml(String(a.current.source_filename).slice(0,24))}${String(a.current.source_filename).length > 24 ? '…' : ''}</span>` : ''} · click to open</div>
       </div>
@@ -1438,13 +1460,20 @@
     // the cheapest. Push it to the end regardless of sort direction.
     const priceKey = (val) => (val == null || val === 0) ? Infinity : val;
     const cmp = (a, b, dir=1) => (a < b ? -1 : a > b ? 1 : 0) * dir;
+    // A row flagged for manual review (anomalous/unverified price, e.g. the
+    // ALCODIS VSOP €3.33) must never LEAD a trusted "lowest price" ranking.
+    // Keep it visible (with its REVIEW badge) but sort it below every trusted
+    // row, regardless of its raw price (Samuel P1).
+    const reviewRank = (it) => it.needs_manual_review ? 1 : 0;
     switch (key) {
       case 'quality_desc':
         return [...items].sort((a,b) => qualityScore(b) - qualityScore(a));
       case 'price_per_unit_eur_asc':
-        return [...items].sort((a,b) => cmp(priceKey(a.price_per_unit_eur), priceKey(b.price_per_unit_eur), 1));
+        return [...items].sort((a,b) => reviewRank(a) - reviewRank(b)
+          || cmp(priceKey(a.price_per_unit_eur), priceKey(b.price_per_unit_eur), 1));
       case 'price_per_case_eur_asc':
-        return [...items].sort((a,b) => cmp(priceKey(a.price_per_case_eur), priceKey(b.price_per_case_eur), 1));
+        return [...items].sort((a,b) => reviewRank(a) - reviewRank(b)
+          || cmp(priceKey(a.price_per_case_eur), priceKey(b.price_per_case_eur), 1));
       case 'offer_date_desc':
         return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), -1));
       case 'offer_date_asc':
@@ -2226,9 +2255,17 @@
         <div class="bp-best-sup" title="${escapeAttr(eanList)}">Cross-peer headline suppressed until suppliers reconcile EANs. Per-peer trusted bests still shown below.</div>
       </div>`;
     } else if (nominalBest != null) {
+      // Freshness tag (Samuel #07): when the headline price comes from a
+      // months-old offer, mark it "historical" with its date so it never
+      // reads like a live quote while a newer offer sits in another peer.
+      const hDate = g.lowest_qualified_nominal_offer_date;
+      const hAge = g.headline_age_days;
+      const staleTag = g.headline_is_stale
+        ? `<span class="headline-stale" title="This nominal low comes from an offer ${hAge != null ? hAge + ' days old' : 'over 120 days old'}. A more recent offer may sit in another peer group below — this is a historical low, not a live quote.">· historical${hDate ? ' · as of ' + String(hDate).slice(0,10) : ''}</span>`
+        : '';
       headlineBanner = `<div class="bp-best-banner">
-        <div class="bp-best-label" title="Lowest €/bottle across peer groups whose commercial terms are fully known. Offers with unknown incoterm or location are intentionally EXCLUDED from this headline (they may sit at a lower nominal price but their terms can't be verified). Still not landed-cost normalised — this is a nominal figure, not a trading signal.">Lowest qualified nominal price</div>
-        <div class="bp-best-price">€${Number(nominalBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
+        <div class="bp-best-label" title="Lowest €/bottle across peer groups whose commercial terms are fully known. Offers with unknown incoterm or location are intentionally EXCLUDED from this headline (they may sit at a lower nominal price but their terms can't be verified). Still not landed-cost normalised — this is a nominal figure, not a trading signal.">Lowest qualified nominal price ${staleTag}</div>
+        <div class="bp-best-price"${g.headline_is_stale ? ' style="color: var(--text-dim);"' : ''}>€${Number(nominalBest).toFixed(2)} <span style="font-size:12px; color:var(--text-dim); font-weight:500;">/ bottle</span></div>
         <div class="bp-best-sup">${escapeHtml(nominalSupplier)} · ${nominalTerms} <span class="nominal-caveat" title="Not landed-cost normalised — EXW vs DAP are not directly comparable">·  nominal only</span></div>
       </div>`;
     } else {

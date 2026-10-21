@@ -48,6 +48,11 @@ def _term_match(term: str):
         _fold_col(OfferItemDB.brand).ilike(like),
         _fold_col(OfferItemDB.product_name).ilike(like),
         OfferItemDB.ean_code.ilike(f"%{term}%"),
+        # Both reference fields must be searchable — a supplier may populate
+        # product_reference (an internal/catalogue code like "40746") while
+        # leaving supplier_reference blank, and the trader searches the code
+        # they can see in the drawer (Samuel: reference 40746 returned 0).
+        OfferItemDB.product_reference.ilike(f"%{term}%"),
         OfferItemDB.supplier_reference.ilike(f"%{term}%"),
     )
 
@@ -72,24 +77,49 @@ def _token_to_ml(tok: str) -> Optional[float]:
         return float(m.group(1)) * 1000
     return _VOL_ALIAS.get(t)
 
+# Pack token: "12x70cl", "6x1L", "12x700ml", "12x0.7L" → (units_per_case, volume).
+# The "x" may be a plain x or the unicode multiplication sign.
+_PACK_RE = re.compile(r"(?i)^(\d+)\s*[x×]\s*(.+)$")
+# A bare 4-digit year token → a vintage constraint (wines/spirits), e.g.
+# "Moutai Feitian 2025". Stored in the vintage column, never the product name.
+_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
+
+
 def _parse_search_tokens(raw: str):
     """
     Break a free-text search string into structured constraints.
-    Returns (text_terms: list[str], volume_ml: float|None, customs: str|None).
+    Returns (text_terms, volume_ml, customs, units_per_case, vintage).
+
+    Recognises, in addition to plain volume (1L/100cl/1000ml) and T1/T2:
+      - pack tokens  "12x70cl" → units_per_case=12, volume_ml=700
+      - year tokens  "2025"    → vintage="2025"
+    so a trader can search exactly what the UI shows (Samuel: "12x1L",
+    "12x70cl", "Moutai Feitian 2025" all returned 0).
     """
     if not raw:
-        return [], None, None
-    text_terms, volume_ml, customs = [], None, None
+        return [], None, None, None, None
+    text_terms, volume_ml, customs, units_per_case, vintage = [], None, None, None, None
     for tok in raw.split():
         if tok.upper() in ("T1", "T2"):
             customs = tok.upper()
             continue
+        # Pack token "NxVOL" — split into case pack + unit volume.
+        m = _PACK_RE.match(tok)
+        if m:
+            ml = _token_to_ml(m.group(2))
+            if ml is not None:
+                units_per_case = int(m.group(1))
+                volume_ml = ml
+                continue
         ml = _token_to_ml(tok)
         if ml is not None:
             volume_ml = ml
             continue
+        if _YEAR_RE.match(tok):
+            vintage = tok
+            continue
         text_terms.append(tok)
-    return text_terms, volume_ml, customs
+    return text_terms, volume_ml, customs, units_per_case, vintage
 
 
 _WINDOW_DAYS = {"1M": 30, "3M": 90, "6M": 182, "12M": 365, "24M": 730, "ALL": None}
@@ -131,6 +161,13 @@ async def get_benchmarks(
          # row made the "12M LOW" show €0.00 and the delta +Infinity%
          # (Tanqueray Rangpur). Match the Best Prices filter (price > 0).
          .filter(OfferItemDB.price_per_unit_eur > 0)
+         # A row flagged for manual review (anomalous/needs source
+         # reconciliation) must NOT set a benchmark low — otherwise the
+         # ALCODIS VSOP €3.33 "not a trusted best price" row became the 12M
+         # LOW and poisoned the delta (Samuel P1). Exclude it from the
+         # benchmark entirely; it still shows in All Offers with its REVIEW
+         # badge.
+         .filter(OfferItemDB.needs_manual_review.isnot(True))
          # Exclude offers whose valid_until has already passed.
          .filter(or_(OfferItemDB.valid_until.is_(None),
                      OfferItemDB.valid_until == '',
@@ -286,10 +323,16 @@ async def get_records(
         subquery = subquery.filter(OfferItemDB.source_file_id == source_file_id)
 
     if search:
-        text_terms, volume_ml, customs = _parse_search_tokens(search)
+        text_terms, volume_ml, customs, units_per_case, vintage = _parse_search_tokens(search)
         # Volume token → exact ml match
         if volume_ml is not None:
             subquery = subquery.filter(OfferItemDB.unit_volume_ml == volume_ml)
+        # Pack token (the "12x" of "12x70cl") → exact case-pack match.
+        if units_per_case is not None:
+            subquery = subquery.filter(OfferItemDB.units_per_case == units_per_case)
+        # Year token → vintage match.
+        if vintage is not None:
+            subquery = subquery.filter(OfferItemDB.vintage == vintage)
         # Customs token (T1/T2) — match structured field OR product_name fallback
         # for rows where T1/T2 hasn't been backfilled into custom_status yet.
         if customs:
@@ -309,7 +352,15 @@ async def get_records(
         subquery = subquery.filter(OfferItemDB.sub_category.ilike(sub_category))
 
     if category_slug:
-        subquery = subquery.filter(OfferItemDB.category_slug == category_slug.lower().strip())
+        cslug = category_slug.lower().strip()
+        if cslug == "__none__":
+            # The "Other" pill: offers that fell outside the three trade
+            # categories (no category_slug). Makes the 10-offer gap between
+            # the pills and the total visible and reconcilable (Samuel #04).
+            subquery = subquery.filter(or_(OfferItemDB.category_slug.is_(None),
+                                           OfferItemDB.category_slug == ""))
+        else:
+            subquery = subquery.filter(OfferItemDB.category_slug == cslug)
 
     # Customs status + supplier are SERVER-side filters so they apply to the
     # whole dataset, not just the loaded page (fixes "T1/T2 filter returns
@@ -383,12 +434,19 @@ async def get_best_prices(
         func.nullif(OfferItemDB.ean_code, ''),
         func.lower(func.coalesce(OfferItemDB.product_name, '')),
     )
+    # Incoterm is DELIBERATELY NOT part of this pre-filter. Its only job is to
+    # pick out SKUs that have 2+ suppliers so the comparison is worth showing;
+    # the apples-to-apples separation (EXW €20 vs DAP €21) happens downstream
+    # in peer_group_id, which keys on incoterm + location. Including incoterm
+    # here dropped a genuine current offer whose incoterm had only one supplier
+    # (Samuel: Hennessy VS 1L — the current DAP/URD offer vanished while a
+    # 7-month-old EXW pair led the card). Now that supplier's offer enters the
+    # SKU and surfaces as its own DAP peer group alongside the EXW peer.
     group_cols = [
         _prod_ident,
         func.coalesce(OfferItemDB.unit_volume_ml, 0),
         func.lower(func.coalesce(OfferItemDB.category, '')),
         func.lower(func.coalesce(OfferItemDB.brand, '')),
-        func.upper(func.coalesce(OfferItemDB.incoterm, '')),
     ]
 
     multi_supplier_subq = (
@@ -397,7 +455,6 @@ async def get_best_prices(
             func.coalesce(OfferItemDB.unit_volume_ml, 0).label("vol"),
             func.lower(func.coalesce(OfferItemDB.category, '')).label("cat"),
             func.lower(func.coalesce(OfferItemDB.brand, '')).label("brand"),
-            func.upper(func.coalesce(OfferItemDB.incoterm, '')).label("inco"),
             func.count(func.distinct(
                 func.coalesce(OfferItemDB.supplier_name, OfferItemDB.sender_email, '')
             )).label("supplier_count")
@@ -418,8 +475,7 @@ async def get_best_prices(
             (_prod_ident == multi_supplier_subq.c.pn) &
             (func.coalesce(OfferItemDB.unit_volume_ml, 0) == multi_supplier_subq.c.vol) &
             (func.lower(func.coalesce(OfferItemDB.category, '')) == multi_supplier_subq.c.cat) &
-            (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand) &
-            (func.upper(func.coalesce(OfferItemDB.incoterm, '')) == multi_supplier_subq.c.inco)
+            (func.lower(func.coalesce(OfferItemDB.brand, '')) == multi_supplier_subq.c.brand)
         )
         # Zero / null EUR prices are not actionable and must not surface as
         # "€0.00" offers in Best Prices or its benchmark history (Samuel: the
@@ -429,9 +485,13 @@ async def get_best_prices(
     )
 
     if search:
-        text_terms, volume_ml, customs = _parse_search_tokens(search)
+        text_terms, volume_ml, customs, units_per_case, vintage = _parse_search_tokens(search)
         if volume_ml is not None:
             query = query.filter(OfferItemDB.unit_volume_ml == volume_ml)
+        if units_per_case is not None:
+            query = query.filter(OfferItemDB.units_per_case == units_per_case)
+        if vintage is not None:
+            query = query.filter(OfferItemDB.vintage == vintage)
         if customs:
             query = query.filter(or_(
                 OfferItemDB.custom_status == customs,
@@ -478,7 +538,8 @@ async def get_best_prices(
     #   - ≥ 2 distinct EANs   → ean_conflict=True; buyer sees Needs Review.
     from collections import defaultdict
     from core.normalization import (
-        sku_identity, ean_key, peer_group_id, is_peer_group_qualified,
+        sku_identity, ean_key, peer_group_id, peer_group_id_from_ean,
+        is_peer_group_qualified,
     )
 
     sku_groups = defaultdict(list)
@@ -582,9 +643,16 @@ async def get_best_prices(
         ean_conflict = len(known_eans) > 1
 
         # Sub-group by commercial peer for trusted-best-per-peer.
+        # EAN-primary, exactly like get_benchmarks: two rows with the same
+        # valid EAN + incoterm + location are ONE peer no matter how each
+        # supplier spelled the product name ("Angel Fantasm" vs "Angel
+        # Fantasm Tester"). Without this they split into two one-supplier
+        # peer groups even though the SKU card shows both suppliers (Samuel:
+        # Mugler EAN 3614274085518). Falls back to the attribute peer key
+        # when no valid EAN is present.
         peer_buckets = defaultdict(list)
         for r in rows_in:
-            pg = peer_group_id(
+            pg = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location) or peer_group_id(
                 r.brand, r.product_name,
                 unit_volume_ml=r.unit_volume_ml,
                 units_per_case=r.units_per_case,
@@ -608,6 +676,7 @@ async def get_best_prices(
         today_str = datetime.utcnow().strftime('%Y-%m-%d')
         lowest_qualified_nominal_price = None
         lowest_qualified_nominal_peer = None
+        lowest_qualified_nominal_date = None
         for pg_key, pg_rows in peer_buckets.items():
             pg_sorted = sorted(pg_rows, key=lambda r: r.price_per_unit_eur or float('inf'))
             head = pg_sorted[0]
@@ -643,8 +712,13 @@ async def get_best_prices(
                     d['units_per_case'] = None
                 return d
             offers_with_flag = [_offer_dict(r) for r in pg_sorted]
-            # Best price: prefer non-expired offers for the headline
-            active_rows = [r for r in pg_sorted if not _is_expired(r)]
+            # Best price: prefer non-expired AND non-review offers for the
+            # trusted headline. A needs_manual_review row (e.g. the ALCODIS
+            # VSOP €3.33 anomaly) must never become the trusted best — it
+            # still renders in the offer list with its REVIEW badge, it just
+            # cannot set the peer's best_price_eur or the SKU headline.
+            active_rows = [r for r in pg_sorted
+                           if not _is_expired(r) and not r.needs_manual_review]
             best_row = active_rows[0] if active_rows else pg_sorted[0]
             entry = {
                 "peer_group_id": pg_key,
@@ -659,11 +733,12 @@ async def get_best_prices(
                 "offers": offers_with_flag,
             }
             peers.append(entry)
-            # Headline uses active (non-expired) offers only
+            # Headline uses active (non-expired, non-review) offers only
             if qualified and best_row.price_per_unit_eur is not None and active_rows:
                 if lowest_qualified_nominal_price is None or best_row.price_per_unit_eur < lowest_qualified_nominal_price:
                     lowest_qualified_nominal_price = best_row.price_per_unit_eur
                     lowest_qualified_nominal_peer = pg_key
+                    lowest_qualified_nominal_date = best_row.offer_date
 
         # Sort peers: qualified first, then by best price ascending.
         peers.sort(key=lambda p: (not p["is_qualified"],
@@ -692,6 +767,24 @@ async def get_best_prices(
         if ean_attr_conflicts:
             lowest_qualified_nominal_price = None
             lowest_qualified_nominal_peer = None
+            lowest_qualified_nominal_date = None
+
+        # Freshness of the headline. A "lowest nominal" drawn from a months-old
+        # offer must not read like a live quote (Samuel: Hennessy VS headline
+        # was €24.77 from 7-month-old EXW offers while the current DAP offer
+        # sat in its own peer). Expose the headline offer's date and a stale
+        # flag (> 120 days) so the UI can mark it "historical".
+        headline_age_days = None
+        headline_is_stale = False
+        if lowest_qualified_nominal_date:
+            try:
+                _d = lowest_qualified_nominal_date
+                if isinstance(_d, str):
+                    _d = datetime.fromisoformat(_d.replace('Z', '')[:19]) if 'T' in _d else datetime.strptime(_d[:10], '%Y-%m-%d')
+                headline_age_days = (datetime.utcnow() - _d).days
+                headline_is_stale = headline_age_days is not None and headline_age_days > 120
+            except (ValueError, TypeError):
+                headline_age_days = None
 
         grouped_list.append({
             "sku_identity": sku_key,
@@ -712,6 +805,15 @@ async def get_best_prices(
             # conflict, OR a same-EAN attribute conflict is unresolved.
             "lowest_qualified_nominal_price_eur": lowest_qualified_nominal_price,
             "lowest_qualified_nominal_peer_id": lowest_qualified_nominal_peer,
+            # Headline freshness (Samuel #07): date the headline price comes
+            # from, its age in days, and whether it is stale (> 120 days). The
+            # dashboard shows an "as of <date> · historical" tag when stale.
+            "lowest_qualified_nominal_offer_date": (
+                lowest_qualified_nominal_date.isoformat()
+                if hasattr(lowest_qualified_nominal_date, 'isoformat')
+                else lowest_qualified_nominal_date),
+            "headline_age_days": headline_age_days,
+            "headline_is_stale": headline_is_stale,
             "peers": peers,
         })
 
