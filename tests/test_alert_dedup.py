@@ -82,3 +82,57 @@ class TestAlertDedupAndReplay:
         _offer(db, "b", "SupplierB", 90.0, days_ago=1)
         res = list_alerts(days=30, limit=50, db=db)
         assert "source_filename" in res["alerts"][0]["previous_best"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Round-15 (Samuel 2026-10-22, item 3): a row whose offer_date was set to the
+# ingest timestamp (received-date fallback — no document date extracted) must
+# NOT fire alerts. Verified-document rows (midnight offer_date, distinct from
+# received) still fire normally.
+# ─────────────────────────────────────────────────────────────────────────────
+from datetime import datetime, timedelta
+import asyncio
+from api.alerts import list_alerts as _list_alerts
+import pytest
+
+
+def _mk(uid, od, dr, price, sup, upc=12, cur="EUR", ean="5901041000956"):
+    return OfferItemDB(
+        uid=uid, job_id="t", brand="Belvedere", product_name="Pure Vodka",
+        unit_volume_ml=700, units_per_case=upc, alcohol_percent=40.0,
+        incoterm="EXW", location="Rotterdam", ean_code=ean,
+        category_slug="wines_spirits",
+        price_per_unit=price, price_per_unit_eur=price, currency=cur,
+        supplier_name=sup, offer_date=od, date_received=dr,
+        created_at=datetime.utcnow(),
+    )
+
+
+class TestAlertFallbackDateGuard:
+    def test_received_date_fallback_row_does_not_fire(self):
+        db = _session()
+        now = datetime.utcnow()
+        # Prior real offer (midnight = document-dated), well-priced
+        db.add(_mk("prior", datetime(2026, 9, 1, 0, 0, 0),
+                    datetime(2026, 9, 1, 0, 0, 0), 20.0, "A"))
+        # Current row: offer_date == date_received to the microsecond,
+        # non-midnight time → fallback. Must NOT trigger an alert.
+        db.add(_mk("fallback_row", now, now, 10.0, "B"))
+        db.commit()
+        alerts = _list_alerts(days=30, limit=50, db=db)["alerts"]
+        assert all(a["current"]["uid"] != "fallback_row" for a in alerts), \
+            "a received-date-fallback row must not fire alerts"
+
+    def test_real_document_date_still_fires(self):
+        db = _session()
+        # Prior higher price, document-dated
+        db.add(_mk("prior", datetime(2026, 9, 1, 0, 0, 0),
+                    datetime(2026, 9, 1, 0, 0, 0), 20.0, "A"))
+        # Current: midnight offer_date, received 2 days later → NOT fallback
+        od = datetime(2026, 9, 20, 0, 0, 0)
+        dr = datetime(2026, 9, 22, 10, 15, 30)
+        db.add(_mk("doc_dated", od, dr, 10.0, "B"))
+        db.commit()
+        alerts = _list_alerts(days=120, limit=50, db=db)["alerts"]
+        assert any(a["current"]["uid"] == "doc_dated" for a in alerts), \
+            "a document-dated new best must still fire"

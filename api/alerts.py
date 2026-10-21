@@ -104,6 +104,17 @@ def list_alerts(
         # offer is genuinely fresh — skip it (conservative, safe).
         if not latest.offer_date or latest.offer_date < cutoff:
             continue
+        # Received-date fallback guard: ingest once stored offer_date =
+        # datetime.utcnow() when the extractor returned no document date.
+        # Those rows carry offer_date == date_received to the microsecond and
+        # a non-midnight time component. They are NOT a verified commercial
+        # offer date, so they must not fire 'new best price' / freshness
+        # alerts. Detection is deterministic from stored data (no new field):
+        od = latest.offer_date
+        dr = latest.date_received
+        if dr is not None and od == dr and (
+                od.hour or od.minute or od.second or od.microsecond):
+            continue
 
         prior = rows[:-1]
         best_prior = min(prior, key=lambda x: x.price_per_unit_eur or float("inf"))
