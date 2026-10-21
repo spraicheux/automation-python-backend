@@ -193,7 +193,7 @@ async def get_benchmarks(
         # same EAN + incoterm + location is ONE peer even if shade/range/name
         # differ, so the All Offers "12M LOW" badge and Best Prices describe the
         # SAME peer. Falls back to the attribute key when no valid EAN.
-        key = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location) or peer_group_id(
+        key = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status) or peer_group_id(
             r.brand, r.product_name,
             unit_volume_ml=r.unit_volume_ml,
             units_per_case=r.units_per_case,
@@ -210,6 +210,7 @@ async def get_benchmarks(
             product_type=getattr(r, 'product_type', None),
             size_weight_g=getattr(r, 'size_weight_g', None),
             range_name=getattr(r, 'range_name', None),
+            custom_status=getattr(r, 'custom_status', None),
         )
         entry = peers.setdefault(key, {"samples": [], "all_qualified": True})
         entry["samples"].append((r.price_per_unit_eur, r.uid))
@@ -652,13 +653,13 @@ async def get_best_prices(
         # when no valid EAN is present.
         peer_buckets = defaultdict(list)
         for r in rows_in:
-            pg = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location) or peer_group_id(
+            pg = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status) or peer_group_id(
                 r.brand, r.product_name,
                 unit_volume_ml=r.unit_volume_ml,
                 units_per_case=r.units_per_case,
                 incoterm=r.incoterm, location=r.location,
                 alcohol_percent=r.alcohol_percent, vintage=r.vintage,
-                ean_code=r.ean_code,
+                ean_code=r.ean_code, custom_status=r.custom_status,
             )
             peer_buckets[pg].append(r)
 

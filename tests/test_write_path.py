@@ -483,3 +483,45 @@ class TestAbvSanityGuard:
                                  "alcohol_percent": 40})
         assert ok["alcohol_percent"] == 40
         assert ok["needs_manual_review"] is False
+
+
+class TestCustomsStatusPeerSplit:
+    """Samuel R-02/R-11 — a T1 (in-bond) and a T2 (duty-paid) offer of the SAME
+    EAN are materially different cost bases and must NOT share a peer group,
+    while two unspecified-status rows still peer together."""
+
+    def _common(self):
+        return dict(brand="Hennessy", product_name="VS", unit_volume_ml=700,
+                    units_per_case=6, alcohol_percent=40.0, ean_code="5901041000956",
+                    incoterm="EXW", location="Rotterdam", category="Wines & Spirits",
+                    category_slug="wines_spirits")
+
+    def test_t1_and_t2_same_ean_do_not_group(self):
+        from core.normalization import peer_group_id_from_ean
+        ean = "3614274085518"  # GS1-valid
+        assert peer_group_id_from_ean(ean, "EXW", "Rotterdam", "T1") \
+            != peer_group_id_from_ean(ean, "EXW", "Rotterdam", "T2")
+        # unspecified folds to the same key regardless of None vs ""
+        assert peer_group_id_from_ean(ean, "EXW", "Rotterdam", None) \
+            == peer_group_id_from_ean(ean, "EXW", "Rotterdam", "")
+
+    def test_best_prices_splits_t1_from_t2(self):
+        db = _session()
+        _rec(db, uid="t1", custom_status="T1", price_per_unit_eur=25.0,
+             supplier_name="A", **self._common())
+        _rec(db, uid="t2", custom_status="T2", price_per_unit_eur=26.0,
+             supplier_name="B", **self._common())
+        groups = _bp(db)["groups"]
+        assert len(groups) == 1                      # one physical SKU card
+        peers = groups[0]["peers"]
+        assert len(peers) == 2                       # but T1 and T2 are separate peers
+        assert all(p["supplier_count"] == 1 for p in peers)
+
+    def test_same_status_still_groups(self):
+        db = _session()
+        _rec(db, uid="a", custom_status="T2", price_per_unit_eur=25.0,
+             supplier_name="A", **self._common())
+        _rec(db, uid="b", custom_status="T2", price_per_unit_eur=26.0,
+             supplier_name="B", **self._common())
+        peers = _bp(db)["groups"][0]["peers"]
+        assert len(peers) == 1 and peers[0]["supplier_count"] == 2

@@ -62,7 +62,7 @@ def list_alerts(
         # not treat as comparable. In particular perfume/cosmetics discriminators
         # (format, retail state, gender, shade, product type, size, range) and the
         # category slug keep EDP vs EDT (e.g. YSL Midnight Halo) in separate peers.
-        k = (peer_group_id_from_ean(r.ean_code, r.incoterm, r.location)
+        k = (peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status)
              or peer_group_id(
                  r.brand, r.product_name,
                  unit_volume_ml=r.unit_volume_ml,
@@ -79,6 +79,7 @@ def list_alerts(
                  product_type=getattr(r, 'product_type', None),
                  size_weight_g=getattr(r, 'size_weight_g', None),
                  range_name=getattr(r, 'range_name', None),
+                 custom_status=getattr(r, 'custom_status', None),
              ))
         by_key[k].append(r)
 

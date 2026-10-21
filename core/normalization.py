@@ -357,6 +357,7 @@ def peer_group_id(
     product_type: str | None = None,
     size_weight_g: float | int | None = None,
     range_name: str | None = None,
+    custom_status: str | None = None,   # T1 (in-bond) vs T2 (duty-paid)
 ) -> str:
     """
     LEVEL C — COMMERCIAL peer-group identity. Answers: "are these two
@@ -410,6 +411,12 @@ def peer_group_id(
         ean_key(ean_code),
         _norm_incoterm(incoterm),
         _normalize_location(location),
+        # Customs status is a material commercial discriminator: a T1 (in-bond,
+        # no duty) offer is not the same cost basis as a T2 (duty-paid) offer,
+        # so they must NOT share a peer group even with an identical EAN. An
+        # unspecified status folds to "" and still peers with another
+        # unspecified row (the known-vs-known split is the one that matters).
+        _norm_text(custom_status),
     ])
 
 
@@ -417,18 +424,22 @@ def peer_group_id_from_ean(
     ean_code: str | None,
     incoterm: str | None = None,
     location: str | None = None,
+    custom_status: str | None = None,
 ) -> str | None:
     """
     EAN-primary peer group key. When a valid EAN is present, two records
-    with the same EAN, incoterm, and delivery location are the same peer
-    regardless of how each supplier formatted the product name. Returns
-    None when no valid EAN is provided — callers fall back to the full
-    attribute-based peer_group_id.
+    with the same EAN, incoterm, delivery location AND customs status are the
+    same peer regardless of how each supplier formatted the product name.
+    Customs status is included so a T1 (in-bond) offer is never grouped with a
+    T2 (duty-paid) offer of the same EAN — an unspecified status folds to ""
+    and still peers with another unspecified row. Returns None when no valid
+    EAN is provided — callers fall back to the attribute-based peer_group_id.
     """
     ean = ean_key(ean_code)
     if not ean:
         return None
-    return f"ean:{ean}|{_norm_incoterm(incoterm)}|{_normalize_location(location)}"
+    cs = _norm_text(custom_status)
+    return f"ean:{ean}|{_norm_incoterm(incoterm)}|{_normalize_location(location)}|{cs}"
 
 
 # ── Backward-compat shim ────────────────────────────────────────────────────
