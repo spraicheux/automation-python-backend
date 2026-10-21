@@ -95,3 +95,38 @@ class TestLoosePackCasePrice:
     def test_garbage_treated_as_loose(self):
         # Unparseable units_per_case -> treat as no case config (loose).
         assert _is_loose_pack("not-a-number") is True
+
+
+class TestBackfillPreservesRawProductData:
+    """Samuel point 6: an explicit test that the customs-status backfill
+    preserves the ORIGINAL product_name/brand in *_raw, strips the token from
+    the working field, and is idempotent (a second run does not re-edit)."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401 (FK target)
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        return sessionmaker(bind=eng)(), OfferItemDB
+
+    def test_raw_preserved_and_idempotent(self):
+        from api.admin import retest_backfill_customs_status
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(uid="r1", job_id="t", product_name="Hennessy VSOP T2",
+                           brand="Hennessy", custom_status=None))
+        db.commit()
+
+        retest_backfill_customs_status(apply=True, limit=100000, db=db)
+        row = db.query(OfferItemDB).filter_by(uid="r1").first()
+        assert row.product_name == "Hennessy VSOP"          # token stripped
+        assert row.product_name_raw == "Hennessy VSOP T2"   # ORIGINAL preserved
+        assert row.custom_status == "T2"                    # extracted to structured field
+
+        # Second run is a no-op: raw not overwritten, working field unchanged.
+        retest_backfill_customs_status(apply=True, limit=100000, db=db)
+        row2 = db.query(OfferItemDB).filter_by(uid="r1").first()
+        assert row2.product_name == "Hennessy VSOP"
+        assert row2.product_name_raw == "Hennessy VSOP T2"
