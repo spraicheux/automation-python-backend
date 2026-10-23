@@ -1622,12 +1622,23 @@
     const incoterm = i.incoterm && i.incoterm !== 'Not Found' ? `<span class="pill">${escapeHtml(i.incoterm)}</span>` : nullCell();
     const loc = i.location && i.location !== 'Not Found' ? escapeHtml(i.location) : nullCell();
     const _hasOfferDate = !!i.offer_date;
+    // Received-date fallback detection: offer_date was set to the ingest timestamp
+    // because the extractor found no document date. Signal = offer_date equals
+    // date_received to the microsecond AND the time is non-midnight. These rows
+    // are also excluded from alert freshness (api/alerts.list_alerts).
+    const _od = i.offer_date, _dr = i.date_received;
+    const _isFallbackDate = !!_od && !!_dr && String(_od) === String(_dr)
+      && /T\d{2}:\d{2}:\d{2}/.test(String(_od)) && !/T00:00:00(\.0+)?$/.test(String(_od));
     const ageInfo = formatAge(i.offer_date || i.created_at);
     const _ageTitle = ageInfo
-      ? (_hasOfferDate ? ageInfo.title : `Age based on received date (offer date unavailable). ${ageInfo.title.replace('Offer date:', 'Received:')}`)
+      ? (_isFallbackDate
+          ? `Date provenance: RECEIVED-DATE FALLBACK (extractor found no document date; offer_date was set to the ingest timestamp). Excluded from alert freshness. ${ageInfo.title}`
+          : (_hasOfferDate ? ageInfo.title : `Age based on received date (offer date unavailable). ${ageInfo.title.replace('Offer date:', 'Received:')}`))
       : '';
+    const _ageMarker = !_hasOfferDate ? '*' : (_isFallbackDate ? '~' : '');
+    const _ageStyle = (!_hasOfferDate || _isFallbackDate) ? 'opacity:0.6;font-style:italic;' : '';
     const ageHtml = ageInfo
-      ? `<span title="${escapeAttr(_ageTitle)}" style="${_hasOfferDate ? '' : 'opacity:0.6;font-style:italic;'}">${escapeHtml(ageInfo.text)}${_hasOfferDate ? '' : '*'}</span>`
+      ? `<span title="${escapeAttr(_ageTitle)}" style="${_ageStyle}">${escapeHtml(ageInfo.text)}${_ageMarker}</span>`
       : nullCell();
     const ageCls = ageInfo ? (ageInfo.cls || '') : '';
     const flags = classifyFlags(i.error_flags || []);
