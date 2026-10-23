@@ -181,6 +181,14 @@ def is_valid_offer(offer_dict: dict) -> bool:
     unit_is_empty = price_unit is None or price_unit == 0
     case_is_empty = price_case is None or price_case == 0
     if unit_is_empty and case_is_empty:
+        # Samuel case-school B31: an explicitly stated €0.00 is a signal to
+        # retain + REVIEW, not drop. clean_product_data tags such rows with
+        # the "Zero price retained" flag; keep them so the trader can see
+        # them (benchmarks and Best Prices already exclude zero prices).
+        flags = offer_dict.get('error_flags') or []
+        if isinstance(flags, list) and any(
+                isinstance(f, str) and 'Zero price retained' in f for f in flags):
+            return True
         logger.debug(f"Offer {name} rejected: No price data found.")
         return False
 
