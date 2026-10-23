@@ -525,3 +525,45 @@ class TestCustomsStatusPeerSplit:
              supplier_name="B", **self._common())
         peers = _bp(db)["groups"][0]["peers"]
         assert len(peers) == 1 and peers[0]["supplier_count"] == 2
+
+
+class TestEanRepairDoesNotInventData:
+    """Samuel case-school B15: an invalid 13-digit EAN whose first 12 digits
+    happen to form a check-valid UPC-A must NOT be silently repaired to the
+    shorter code (would invent a different product). Must be nulled + REVIEW."""
+
+    def test_invalid_13digit_not_repaired_to_upca(self):
+        from core.openai_client import clean_product_data, _repair_ean
+        # Samuel's test code: 13 digits, bad check, first 12 happen to be a
+        # valid UPC-A (290123450015). The old repair-trim would accept it.
+        repaired, _ = _repair_ean("2901234500153")
+        assert repaired is None, "invalid 13-digit EAN must not be shortened to a UPC-A"
+        r = clean_product_data({"brand": "QA", "product_name": "X",
+                                "ean_code": "2901234500153", "price_per_unit": 1.0,
+                                "currency": "EUR"})
+        assert r["ean_code"] is None
+        assert r["needs_manual_review"] is True
+        assert any("ean_code invalid" in f for f in r["error_flags"])
+
+
+class TestZeroPriceRetained:
+    """Samuel case-school B31: a stated €0.00 is a signal to retain + REVIEW,
+    not drop silently. (The schema-field loop coerces 0→None, so the guard
+    must detect zero on the RAW input dict and tag the row explicitly.)"""
+
+    def test_zero_price_kept_and_flagged(self):
+        from core.openai_client import clean_product_data
+        r = clean_product_data({"brand": "QA Zero", "product_name": "QA Zero Price",
+                                "unit_volume_ml": 700, "units_per_case": 6,
+                                "price_per_unit": 0, "currency": "EUR"})
+        assert r["price_per_unit"] == 0
+        assert r["needs_manual_review"] is True
+        assert any("Zero price retained" in f for f in r["error_flags"])
+
+    def test_non_zero_price_unaffected(self):
+        from core.openai_client import clean_product_data
+        r = clean_product_data({"brand": "Hennessy", "product_name": "VS",
+                                "unit_volume_ml": 1000, "units_per_case": 12,
+                                "price_per_unit": 24.77, "currency": "EUR"})
+        assert r["price_per_unit"] == 24.77
+        assert r["needs_manual_review"] is False

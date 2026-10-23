@@ -2186,6 +2186,14 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
 
 def clean_product_data(product: dict) -> dict:
     """Clean up product data to ensure it matches schema exactly"""
+    # Zero-price retention tag (Samuel case-school B31). The schema-field loop
+    # below coerces 0 → None, so a genuinely-stated €0.00 would be
+    # indistinguishable from "price not stated". Detect it BEFORE the loop
+    # and leave a marker on the input so the ingest keeps the row with
+    # needs_manual_review = true (benchmarks and Best Prices already exclude
+    # zero/null prices downstream).
+    _raw_ppu = product.get('price_per_unit')
+    _raw_zero_price = _raw_ppu in (0, 0.0, "0", "0.0", "0.00")
     logger.info(f"[clean_product_data] ===== START =====")
     logger.info(f"[clean_product_data] Input product keys: {list(product.keys())}")
     logger.info(f"[clean_product_data] Input: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}, price_per_unit={product.get('price_per_unit')!r}")
@@ -2460,6 +2468,18 @@ def clean_product_data(product: dict) -> dict:
         logger.warning(f"[clean_product_data] ABV {_abv!r} flagged implausible")
     # ──────────────────────────────────────────────────────────────────
 
+    # Zero-price retention: see guard at the top of clean_product_data.
+    if _raw_zero_price:
+        flags = cleaned_product.get('error_flags') or []
+        _msg = "Zero price retained — unusable for trading until confirmed; excluded from Best Prices/benchmarks"
+        if _msg not in flags:
+            flags.append(_msg)
+        cleaned_product['error_flags'] = flags
+        cleaned_product['needs_manual_review'] = True
+        # Keep the explicit 0 so downstream can see "stated zero" vs "unknown"
+        if cleaned_product.get('price_per_unit') is None:
+            cleaned_product['price_per_unit'] = 0
+
     raw_ean = cleaned_product.get('ean_code')
     if raw_ean and raw_ean != "Not Found":
         import re as _re_ean
@@ -2532,11 +2552,18 @@ def _repair_ean(digits: str) -> tuple[str | None, str]:
         return None, "empty"
     if len(digits) in (8, 12, 13, 14) and _ean_check_digit_ok(digits):
         return digits, "valid as-is"
-    # Case: trailing digit was appended (13→12 or 9→8)
-    if len(digits) in (13, 9):
+    # Case: trailing digit was appended (13→12 or 9→8).
+    # Samuel case-school B15: an invalid-check-digit 13-digit code
+    # (2901234500153) happened to produce a check-valid UPC-A when trimmed to
+    # 12 digits (290123450015). That is NOT a safe repair — the source
+    # presented a 13-digit code, not a UPC-A, so trimming invents data.
+    # Only trim when the 9→8 path (clearly concatenated from a 9-digit source
+    # that is already outside GS1 lengths — the LLM mis-concat case). For
+    # 13→12 we leave the repair-trim OFF; the code is nulled below.
+    if len(digits) == 9:
         trimmed = digits[:-1]
-        if len(trimmed) in (12, 8) and _ean_check_digit_ok(trimmed):
-            return trimmed, "trailing digit concatenated from next column"
+        if len(trimmed) == 8 and _ean_check_digit_ok(trimmed):
+            return trimmed, "trailing digit concatenated from next column (EAN-8)"
     # Case: leading digit was dropped (11 → 12 with leading zero)
     if len(digits) == 11:
         padded = "0" + digits
