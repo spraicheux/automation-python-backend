@@ -116,7 +116,23 @@ def list_alerts(
                 od.hour or od.minute or od.second or od.microsecond):
             continue
 
-        prior = rows[:-1]
+        # Same-batch guard: a supplier can list the same SKU twice at
+        # different prices in a single file (Samuel: Dior J'Adore €89 vs €96,
+        # Balkan Luxury, both W39, same offer date). Those are the same
+        # commercial batch, not a trading event — the "previous best peer"
+        # must come from a DIFFERENT supplier OR a DIFFERENT offer date
+        # (older-than-current). Rows with the same supplier and same date
+        # are same-batch duplicates and excluded from the prior-set.
+        _latest_sup = (latest.supplier_name or "").strip().lower()
+        _latest_date = latest.offer_date
+        prior = [
+            r for r in rows[:-1]
+            if ((r.supplier_name or "").strip().lower() != _latest_sup)
+            or (r.offer_date is not None and _latest_date is not None
+                and r.offer_date < _latest_date)
+        ]
+        if not prior:
+            continue
         best_prior = min(prior, key=lambda x: x.price_per_unit_eur or float("inf"))
         best_prior_price = best_prior.price_per_unit_eur or float("inf")
         cur_price = latest.price_per_unit_eur

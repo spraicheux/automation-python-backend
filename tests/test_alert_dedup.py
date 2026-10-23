@@ -136,3 +136,40 @@ class TestAlertFallbackDateGuard:
         alerts = _list_alerts(days=120, limit=50, db=db)["alerts"]
         assert any(a["current"]["uid"] == "doc_dated" for a in alerts), \
             "a document-dated new best must still fire"
+
+
+class TestAlertSameBatchGuard:
+    """Samuel Dior case: same supplier listing the same SKU at two prices in
+    the SAME file + same offer date must not fire a 'new best price' alert —
+    those are same-batch duplicates, not a trading event."""
+
+    def _dior(self, uid, price):
+        return OfferItemDB(
+            uid=uid, job_id="t", brand="Dior", product_name="J Adore L Or EDP",
+            unit_volume_ml=50, units_per_case=1, ean_code="3348901664653",
+            incoterm="EXW", location="Nl", category_slug="perfumes",
+            price_per_unit=price, price_per_unit_eur=price, currency="EUR",
+            supplier_name="Balkan Luxury Supply Ltd.",
+            offer_date=datetime(2026, 9, 23, 0, 0, 0),
+            date_received=datetime(2026, 9, 23, 0, 0, 0),
+            source_filename="W39_Designer_Offer_23.09.xlsx",
+            created_at=datetime.utcnow(),
+        )
+
+    def test_same_supplier_same_date_does_not_fire(self):
+        db = _session()
+        db.add(self._dior("d_96", 96))
+        db.add(self._dior("d_89", 89))
+        db.commit()
+        alerts = _list_alerts(days=120, limit=50, db=db)["alerts"]
+        dior = [a for a in alerts if (a["product"]["brand"] or "").lower() == "dior"]
+        assert dior == [], f"same-batch same-supplier pair must not fire; got {dior}"
+
+    def test_different_supplier_still_fires(self):
+        db = _session()
+        a = self._dior("a_96", 96); a.supplier_name = "Supplier A"
+        b = self._dior("b_89", 89); b.supplier_name = "Supplier B"
+        db.add(a); db.add(b); db.commit()
+        alerts = _list_alerts(days=120, limit=50, db=db)["alerts"]
+        dior = [x for x in alerts if (x["product"]["brand"] or "").lower() == "dior"]
+        assert len(dior) >= 1, "a different-supplier undercut must still fire"
