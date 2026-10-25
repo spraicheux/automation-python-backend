@@ -1642,6 +1642,14 @@
       : nullCell();
     const ageCls = ageInfo ? (ageInfo.cls || '') : '';
     const flags = classifyFlags(i.error_flags || []);
+    // Cross-category EAN conflict surfaced by /api/records as an informational
+    // array of distinct category_slugs sharing this EAN across the DB. A valid
+    // GS1 EAN identifies one physical product, so the same EAN appearing under
+    // Perfumes AND Cosmetics (Samuel R-11 Paco Rabanne) is a classification
+    // inconsistency between source ingestions worth flagging in the drawer.
+    if (Array.isArray(i.cross_category_ean_conflict) && i.cross_category_ean_conflict.length > 1) {
+      flags.needs.push(`Cross-category EAN conflict — same EAN classified across ${i.cross_category_ean_conflict.join(' + ')}`);
+    }
     const hasNeeds = i.needs_manual_review || flags.needs.length > 0;
     const hasInfo = flags.info.length > 0;
 

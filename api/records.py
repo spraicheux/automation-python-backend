@@ -390,11 +390,35 @@ async def get_records(
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
 
+    # Cross-category EAN conflict detection (Samuel 2026-10-25). A valid GS1
+    # EAN identifies a single physical product, so the same EAN appearing in
+    # two or more `category_slug` values across the DB is a classification
+    # inconsistency between source ingestions, not a different product.
+    # Build the EAN → distinct-categories map ONCE across the whole table and
+    # tag every row whose EAN is multi-category with a read-only flag. The
+    # flag is informational only (dashboard surfaces it); no stored field,
+    # no production data change. Scoped to EANs that pass GS1 validation.
+    from core.normalization import ean_key
+    from collections import defaultdict
+    _ean_cats = defaultdict(set)
+    for (ean, cat) in db.query(OfferItemDB.ean_code, OfferItemDB.category_slug).all():
+        ek = ean_key(ean)
+        if ek and cat:
+            _ean_cats[ek].add(cat)
+    _conflicts = {e: sorted(cs) for e, cs in _ean_cats.items() if len(cs) > 1}
+
+    records = []
+    for row in rows:
+        d = row.to_dict()
+        ek = ean_key(row.ean_code) if row.ean_code else ""
+        if ek and ek in _conflicts:
+            d["cross_category_ean_conflict"] = _conflicts[ek]
+        records.append(d)
     return {
         "total": total,
         "skip": skip,
         "limit": limit,
-        "records": [row.to_dict() for row in rows],
+        "records": records,
     }
 
 

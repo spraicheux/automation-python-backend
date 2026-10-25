@@ -567,3 +567,33 @@ class TestZeroPriceRetained:
                                 "price_per_unit": 24.77, "currency": "EUR"})
         assert r["price_per_unit"] == 24.77
         assert r["needs_manual_review"] is False
+
+
+class TestCrossCategoryEanConflict:
+    """Samuel 2026-10-25: Paco Rabanne EAN 3349668515714 is classified as
+    both Perfumes (W39) and Cosmetics (Cosmetics_Offer…). get_records now
+    tags any row whose valid EAN appears in multiple category_slugs with a
+    `cross_category_ean_conflict` list so the UI can surface it."""
+
+    def test_cross_category_ean_flagged(self):
+        db = _session()
+        ean = "3349668515714"  # GS1-valid in prod
+        _rec(db, uid="p1", brand="Paco Rabanne", product_name="Invictus ASL",
+             unit_volume_ml=100, ean_code=ean, category="Perfumes",
+             category_slug="perfumes", price_per_unit_eur=27.5,
+             supplier_name="Balkan Luxury Supply Ltd.")
+        _rec(db, uid="p2", brand="Paco Rabanne", product_name="Invictus (M) ASL",
+             unit_volume_ml=100, ean_code=ean, category="Cosmetics",
+             category_slug="cosmetics", price_per_unit_eur=28.9,
+             supplier_name="Balkan Luxury Supply Ltd.")
+        _rec(db, uid="other", brand="Hennessy", product_name="VS",
+             unit_volume_ml=1000, ean_code="3614274085518",
+             category="Wines & Spirits", category_slug="wines_spirits",
+             price_per_unit_eur=24.77, supplier_name="FBC Trades")
+        r = _records(db)
+        by_uid = {x["uid"]: x for x in r["records"]}
+        assert "cross_category_ean_conflict" in by_uid["p1"]
+        assert sorted(by_uid["p1"]["cross_category_ean_conflict"]) == ["cosmetics", "perfumes"]
+        assert "cross_category_ean_conflict" in by_uid["p2"]
+        # unrelated row with its own EAN is NOT flagged
+        assert "cross_category_ean_conflict" not in by_uid["other"]
