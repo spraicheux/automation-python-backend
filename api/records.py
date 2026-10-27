@@ -100,6 +100,9 @@ _PACK_RE = re.compile(r"(?i)^(\d+)\s*[x×]\s*(.+)$")
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 
 
+_EAN_PREFIX_RE = re.compile(r"^\s*(?:ean|gtin|barcode|code)\s*[:\-]?\s*", re.IGNORECASE)
+
+
 def _parse_search_tokens(raw: str):
     """
     Break a free-text search string into structured constraints.
@@ -108,11 +111,18 @@ def _parse_search_tokens(raw: str):
     Recognises, in addition to plain volume (1L/100cl/1000ml) and T1/T2:
       - pack tokens  "12x70cl" → units_per_case=12, volume_ml=700
       - year tokens  "2025"    → vintage="2025"
+      - EAN/GTIN label prefix  "EAN 3349668515714" → "3349668515714"
+        (Samuel 2026-10-27 — pasting "EAN 3349668515714" with the label
+        used the "EAN" token as an AND-filter and killed the match.)
     so a trader can search exactly what the UI shows (Samuel: "12x1L",
     "12x70cl", "Moutai Feitian 2025" all returned 0).
     """
     if not raw:
         return [], None, None, None, None
+    # Strip leading EAN/GTIN label (any case, with or without colon/dash) so
+    # "EAN 3349668515714" and "GTIN: 3349668515714" both reduce to the bare
+    # digits before tokenisation.
+    raw = _EAN_PREFIX_RE.sub("", raw)
     text_terms, volume_ml, customs, units_per_case, vintage = [], None, None, None, None
     for tok in raw.split():
         if tok.upper() in ("T1", "T2"):

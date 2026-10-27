@@ -425,6 +425,22 @@ class TestSearchTokens:
         # or every 2-digit code would scan the whole table.
         assert _records(db, search="1234")["total"] == 0
 
+    def test_ean_search_accepts_label_prefix(self):
+        """Samuel 2026-10-28 retest: traders paste "EAN 3349668515714" with
+        the label still attached. Before this fix "EAN" became an AND-filter
+        text term that no row matched, so the search returned 0. Strip the
+        leading EAN/GTIN/Barcode label before tokenising so any of these
+        pasted formats find the row."""
+        db = _session()
+        _rec(db, uid="pr-labelled", brand="Paco Rabanne", product_name="Invictus",
+             unit_volume_ml=100, ean_code="3349668515714",
+             category_slug="perfumes", price_per_unit_eur=79)
+        for q in ("EAN 3349668515714", "ean 3349668515714",
+                  "EAN: 3349668515714", "GTIN 3349668515714",
+                  "Barcode: 3349668515714", "3349668515714"):
+            r = _records(db, search=q)
+            assert r["total"] == 1 and r["records"][0]["uid"] == "pr-labelled", q
+
 
 class TestBestPricesSameEanPeer:
     """REQ 11 — same valid EAN + terms = ONE peer group, both suppliers."""
