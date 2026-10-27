@@ -44,7 +44,16 @@ def _fold_col(col):
 
 def _term_match(term: str):
     like = f"%{_ascii_fold(term)}%"
-    return or_(
+    # EAN normalisation: a trader pastes "3349668515714" from the drawer,
+    # but the extractor may have stored the raw supplier string as
+    # "3 349668 515714", "EAN 3349668515714", "3.349668.515714", etc.
+    # Strip non-digits from BOTH sides so the formats fold together
+    # (Samuel 2026-10-27 — Paco Rabanne EAN 3349668515714 returned 0).
+    term_digits = re.sub(r"\D+", "", term)
+    ean_normalized = func.regexp_replace(
+        func.coalesce(OfferItemDB.ean_code, ""), r"\D", "", "g"
+    )
+    clauses = [
         _fold_col(OfferItemDB.brand).ilike(like),
         _fold_col(OfferItemDB.product_name).ilike(like),
         OfferItemDB.ean_code.ilike(f"%{term}%"),
@@ -54,7 +63,13 @@ def _term_match(term: str):
         # they can see in the drawer (Samuel: reference 40746 returned 0).
         OfferItemDB.product_reference.ilike(f"%{term}%"),
         OfferItemDB.supplier_reference.ilike(f"%{term}%"),
-    )
+    ]
+    # Only add the EAN-digits match when the input looks like an EAN
+    # (≥8 digits after stripping) so we don't do an expensive regex on
+    # every 2-letter search term.
+    if len(term_digits) >= 8:
+        clauses.append(ean_normalized.ilike(f"%{term_digits}%"))
+    return or_(*clauses)
 
 
 # ── Volume-alias normalisation ──────────────────────────────────────────────

@@ -43,12 +43,19 @@ def _session():
 
     @event.listens_for(eng, "connect")
     def _register_translate(dbapi_conn, _rec):  # noqa: ANN001
+        import re as _re
         def _translate(s, frm, to):
             if s is None:
                 return None
             return "".join((to[frm.index(c)] if frm.index(c) < len(to) else "")
                             if c in frm else c for c in s)
+        def _regexp_replace(s, pat, repl, _flags=""):
+            if s is None:
+                return None
+            # Postgres regexp_replace with 'g' flag → re.sub (unlimited).
+            return _re.sub(pat, repl, str(s))
         dbapi_conn.create_function("translate", 3, _translate)
+        dbapi_conn.create_function("regexp_replace", 4, _regexp_replace)
 
     Base.metadata.create_all(eng)          # builds every table, incl. offer_corrections
     return sessionmaker(bind=eng)()
@@ -362,6 +369,61 @@ class TestSearchTokens:
              unit_volume_ml=500, vintage="2024", price_per_unit_eur=140)
         r = _records(db, search="Moutai Feitian 2025")
         assert r["total"] == 1 and r["records"][0]["uid"] == "mo25"
+
+    def test_duplicated_rows_snap_to_same_per_unit_price(self):
+        """Samuel 2026-10-27: two Jameson rows on the same source file,
+        both carrying the Rule-6 "multiple incoterms detected — row
+        duplicated" flag, with the SAME €46.53/case but €7.75 vs €7.76 per
+        bottle. Rule 6 says sibling rows must be identical except for
+        incoterm/location — so snap price_per_unit = price_per_case /
+        units_per_case before persistence to kill the display drift."""
+        from workers.processor import _snap_duplicated_row_per_unit
+        a = {"price_per_case": 46.53, "units_per_case": 6,
+             "price_per_unit": 7.754,
+             "error_flags": ["multiple incoterms detected — row duplicated"]}
+        b = {"price_per_case": 46.53, "units_per_case": 6,
+             "price_per_unit": 7.756,
+             "error_flags": ["multiple incoterms detected — row duplicated"]}
+        _snap_duplicated_row_per_unit(a)
+        _snap_duplicated_row_per_unit(b)
+        assert a["price_per_unit"] == b["price_per_unit"] == round(46.53 / 6, 4)
+        # Row WITHOUT the duplicate flag is left alone (we don't want to
+        # silently rewrite prices on rows the extractor didn't mark as split).
+        c = {"price_per_case": 46.53, "units_per_case": 6,
+             "price_per_unit": 7.90,  # legitimate per-unit list price
+             "error_flags": ["supplier_name not found"]}
+        _snap_duplicated_row_per_unit(c)
+        assert c["price_per_unit"] == 7.90
+
+    def test_ean_search_matches_when_stored_has_spaces(self):
+        """Samuel 2026-10-27: Paco Rabanne EAN 3349668515714 was visible in
+        the drawer/alert but the search returned 0. Root cause: the stored
+        ean_code sometimes carries spaces or an 'EAN ' prefix the way the
+        supplier wrote it, so a bare-digits trader paste didn't ilike-match.
+        Fix: strip non-digits on both sides when the term looks like an EAN."""
+        db = _session()
+        # Stored with spaces (how a supplier might format it on the source line).
+        _rec(db, uid="pr-spaces", brand="Paco Rabanne", product_name="1 Million",
+             unit_volume_ml=100, ean_code="3 349668 515714",
+             category_slug="perfumes", price_per_unit_eur=89)
+        # Stored with an "EAN " prefix.
+        _rec(db, uid="pr-prefix", brand="Paco Rabanne", product_name="Invictus",
+             unit_volume_ml=100, ean_code="EAN 3349668579716",
+             category_slug="perfumes", price_per_unit_eur=79)
+        # Bare digits (control — must still match).
+        _rec(db, uid="pr-bare",   brand="Paco Rabanne", product_name="Pure XS",
+             unit_volume_ml=100, ean_code="3349668572014",
+             category_slug="perfumes", price_per_unit_eur=74)
+        # Every one of these finds exactly the right row.
+        r1 = _records(db, search="3349668515714")
+        assert r1["total"] == 1 and r1["records"][0]["uid"] == "pr-spaces"
+        r2 = _records(db, search="3349668579716")
+        assert r2["total"] == 1 and r2["records"][0]["uid"] == "pr-prefix"
+        r3 = _records(db, search="3349668572014")
+        assert r3["total"] == 1 and r3["records"][0]["uid"] == "pr-bare"
+        # A short digit sequence (< 8 digits) must NOT trigger the EAN path,
+        # or every 2-digit code would scan the whole table.
+        assert _records(db, search="1234")["total"] == 0
 
 
 class TestBestPricesSameEanPeer:
