@@ -1696,13 +1696,13 @@
     const abv = i.alcohol_percent != null ? `${Number(i.alcohol_percent).toFixed(1)}%` : nullCell();
     const sup = supplierCell(i);
     const qty = formatQuantity(i);
-    const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : nullCell();
+    const puEur = fmtEur2(i.price_per_unit_eur);
     // R-14 (retest): a loose pack (no units_per_case or UPC=1) has no case
     // price even if raw data showed one. Show "N/A (loose)" so the buyer
     // can't misread per-bottle as per-case.
     const _loose = !i.units_per_case || i.units_per_case <= 1;
     const pcEur = i.price_per_case_eur != null
-      ? `€${Number(i.price_per_case_eur).toFixed(2)}`
+      ? fmtEur2(i.price_per_case_eur)
       : (_loose ? `<span class="null-cell" title="Loose pack — case price does not apply">N/A</span>` : nullCell());
 
     // Historical benchmark cell — shows the PRIOR low (excluding this offer)
@@ -1874,6 +1874,25 @@
   }
   function nullCell() { return `<span class="null-cell">—</span>`; }
 
+  // Half-up rounding to 2 decimals. Native Number.toFixed() uses IEEE-754
+  // which quietly floors values like 7.755 to "7.75" (the float is actually
+  // 7.754999…). The Number.EPSILON correction snaps the half-way point so
+  // half-up applies consistently (Samuel 2026-10-27 — stored 7.755 was
+  // displayed as €7.75 instead of €7.76).
+  function round2HalfUp(x) {
+    if (x == null || isNaN(x)) return null;
+    const n = Number(x);
+    return Math.round((n + Number.EPSILON) * 100) / 100;
+  }
+  function fmtEur2(x) {
+    const r = round2HalfUp(x);
+    return r == null ? nullCell() : `€${r.toFixed(2)}`;
+  }
+  function fmtEur2Str(x) {
+    const r = round2HalfUp(x);
+    return r == null ? '—' : `€${r.toFixed(2)}`;
+  }
+
   // Short-slug for the display unit next to the numeric quantity.
   // The extractor (and the deterministic post-processor for the
   // "Total Price" mis-mapping) emits: cases | bottles | pallets | pieces |
@@ -2004,10 +2023,10 @@
 
   function drawerBodyHtml(i) {
     const flags = classifyFlags(i.error_flags || []);
-    const puEur = i.price_per_unit_eur != null ? `€${Number(i.price_per_unit_eur).toFixed(2)}` : '—';
-    const pcEur = i.price_per_case_eur != null ? `€${Number(i.price_per_case_eur).toFixed(2)}` : '—';
-    const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${Number(i.price_per_unit).toFixed(2)}` : null;
-    const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${Number(i.price_per_case).toFixed(2)}` : null;
+    const puEur = fmtEur2Str(i.price_per_unit_eur);
+    const pcEur = fmtEur2Str(i.price_per_case_eur);
+    const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${round2HalfUp(i.price_per_unit)?.toFixed(2) ?? '—'}` : null;
+    const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${round2HalfUp(i.price_per_case)?.toFixed(2) ?? '—'}` : null;
     const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
 
     return `
