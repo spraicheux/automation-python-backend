@@ -1874,23 +1874,23 @@
   }
   function nullCell() { return `<span class="null-cell">—</span>`; }
 
-  // Half-up rounding to 2 decimals. Native Number.toFixed() uses IEEE-754
-  // which quietly floors values like 7.755 to "7.75" (the float is actually
-  // 7.754999…). The Number.EPSILON correction snaps the half-way point so
-  // half-up applies consistently (Samuel 2026-10-27 — stored 7.755 was
-  // displayed as €7.75 instead of €7.76).
-  function round2HalfUp(x) {
+  // Price formatting rule (Samuel 2026-10-27): display the stored value
+  // verbatim with no silent rounding — so a stored price_per_unit of
+  // 7.755 (= €46.53 / 6) renders as "€7.755", not "€7.76" (half-up) and
+  // not "€7.75" (toFixed-floor). Native Number.toString() leaks IEEE-754
+  // noise ("7.754999…"), so round to 4 decimals (storage precision) and
+  // strip trailing zeros via parseFloat — "€7.755" / "€46.53" / "€7.5".
+  function fmtPriceRaw(x) {
     if (x == null || isNaN(x)) return null;
-    const n = Number(x);
-    return Math.round((n + Number.EPSILON) * 100) / 100;
+    return parseFloat(Number(x).toFixed(4)).toString();
   }
   function fmtEur2(x) {
-    const r = round2HalfUp(x);
-    return r == null ? nullCell() : `€${r.toFixed(2)}`;
+    const s = fmtPriceRaw(x);
+    return s == null ? nullCell() : `€${s}`;
   }
   function fmtEur2Str(x) {
-    const r = round2HalfUp(x);
-    return r == null ? '—' : `€${r.toFixed(2)}`;
+    const s = fmtPriceRaw(x);
+    return s == null ? '—' : `€${s}`;
   }
 
   // Short-slug for the display unit next to the numeric quantity.
@@ -2025,8 +2025,8 @@
     const flags = classifyFlags(i.error_flags || []);
     const puEur = fmtEur2Str(i.price_per_unit_eur);
     const pcEur = fmtEur2Str(i.price_per_case_eur);
-    const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${round2HalfUp(i.price_per_unit)?.toFixed(2) ?? '—'}` : null;
-    const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${round2HalfUp(i.price_per_case)?.toFixed(2) ?? '—'}` : null;
+    const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_unit) ?? '—'}` : null;
+    const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_case) ?? '—'}` : null;
     const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
 
     return `
