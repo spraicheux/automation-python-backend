@@ -255,6 +255,13 @@ def get_excel_client() -> ExcelClient:
 
 
 def write_offer_row(offer_dict: Dict[str, Any]) -> bool:
+    # Isolated-staging guard: when the environment flag is set the OneDrive /
+    # Graph write is bypassed entirely. Used by the throwaway staging stack
+    # so a UI acceptance test cannot push a fixture row to the production
+    # Excel sink; the DB write path still runs as normal.
+    if os.getenv("LOXO_DISABLE_EXCEL_WRITE") == "1":
+        logger.info("write_offer_row: bypassed (LOXO_DISABLE_EXCEL_WRITE=1 — isolated staging)")
+        return True
     try:
         get_excel_client().add_row(offer_dict)
         return True

@@ -71,6 +71,10 @@ class OfferItem(BaseModel):
     product_type: Optional[str] = None
     shade: Optional[str] = None
     size_weight_g: Optional[float] = None
+    # Phase 3 M2 — pre-cleanup originals when customs/noise tokens
+    # are stripped from brand/product_name at ingest time.
+    brand_raw: Optional[str] = None
+    product_name_raw: Optional[str] = None
 
 class OfferResponse(BaseModel):
     data: List[OfferItem]

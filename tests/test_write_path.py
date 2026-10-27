@@ -597,3 +597,84 @@ class TestCrossCategoryEanConflict:
         assert "cross_category_ean_conflict" in by_uid["p2"]
         # unrelated row with its own EAN is NOT flagged
         assert "cross_category_ean_conflict" not in by_uid["other"]
+
+
+class TestIngestCustomsBackfill:
+    """Samuel 2026-10-26 case-school real-pipeline run: fixture rows B08,
+    B11, B12 and B32 carry T1/T2 inside the raw description and the GPT-4o
+    extraction left them in brand or product_name with custom_status blank.
+    workers.processor._backfill_customs_from_text closes that gap at ingest
+    time (same logic as api.admin.retest_backfill_customs_status). The
+    token is extracted to custom_status, stripped from brand/product_name,
+    and the pre-strip values are preserved in brand_raw / product_name_raw."""
+
+    def test_token_in_product_name_extracted_at_ingest(self):
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Hennessy",
+            "product_name": "VS 0.7L T2 12x0.7L",
+            "custom_status": None,
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T2"
+        assert "T2" not in safe_data["product_name"]
+        assert safe_data["product_name_raw"] == "VS 0.7L T2 12x0.7L"
+        assert safe_data.get("brand_raw") is None
+
+    def test_token_in_brand_extracted_at_ingest(self):
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Campari T2",
+            "product_name": "Bitter 100cl",
+            "custom_status": None,
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T2"
+        assert safe_data["brand"] == "Campari"
+        assert safe_data["brand_raw"] == "Campari T2"
+
+    def test_t1_recognised_separately_from_t2(self):
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Moutai",
+            "product_name": "Feitian 2025 500ml 53% 6x500ml T1 Caja",
+            "custom_status": None,
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T1"
+        assert "T1" not in safe_data["product_name"]
+
+    def test_already_populated_status_is_not_overwritten(self):
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Bacardi",
+            "product_name": "Carta Oro 1L T1",
+            "custom_status": "T2",   # explicitly set elsewhere; must not change
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T2"
+        # Also must not strip the token in that case — the original value stays.
+        assert safe_data["product_name"] == "Carta Oro 1L T1"
+
+    def test_no_token_leaves_fields_untouched(self):
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Belvedere",
+            "product_name": "Pure 700ml",
+            "custom_status": None,
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] is None
+        assert safe_data["brand"] == "Belvedere"
+        assert safe_data["product_name"] == "Pure 700ml"
+        assert "brand_raw" not in safe_data or safe_data["brand_raw"] is None
+        assert "product_name_raw" not in safe_data or safe_data["product_name_raw"] is None
+
+    def test_not_a_t1t2_lookalike(self):
+        """'T200' / 'T1000' / 'ST1' / '2T1' must NOT be mistaken for a token."""
+        from workers.processor import _backfill_customs_from_text
+        for name in ("Model T200", "T1000 Terminator", "Sabre ST1", "2T1 Mixer"):
+            safe_data = {"brand": "", "product_name": name, "custom_status": None}
+            _backfill_customs_from_text(safe_data)
+            assert safe_data["custom_status"] is None, name
+            assert safe_data["product_name"] == name, name

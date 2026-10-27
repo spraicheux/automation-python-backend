@@ -17,6 +17,7 @@ from core.database import get_session_factory
 from core.normalization import depollute_identity
 from models.offer_item import OfferItemDB
 from models.source_file import SourceFileDB
+from api.admin import _extract_customs_token, _strip_customs_token, _T1T2_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +80,10 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 source_file_id=source_file.id,
                 job_id=job_id,
                 product_name=offer_dict.get("product_name"),
+                product_name_raw=offer_dict.get("product_name_raw"),
                 product_key=offer_dict.get("product_key"),
                 brand=offer_dict.get("brand"),
+                brand_raw=offer_dict.get("brand_raw"),
                 category=offer_dict.get("category"),
                 sub_category=offer_dict.get("sub_category"),
                 packaging=offer_dict.get("packaging"),
@@ -162,6 +165,32 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
             db.close()
     except Exception as e:
         logger.error(f"DB: save_offer_to_db error for job {job_id}: {e}")
+
+
+def _backfill_customs_from_text(safe_data: dict) -> None:
+    """Phase 3 M2 — when GPT-4o leaves custom_status empty but the brand or
+    product_name still carries an isolated T1/T2 token (fixture rows B08/B11/
+    B12/B32), extract the token into custom_status at ingest time instead of
+    relying on the /admin/retest-backfill-customs-status endpoint to catch
+    it after the fact. Strips the token from brand/product_name and
+    preserves the pre-strip value in brand_raw/product_name_raw so the
+    original form is auditable. Mirrors api.admin.retest_backfill_customs_status."""
+    if safe_data.get("custom_status"):
+        return
+    brand = safe_data.get("brand") or ""
+    name = safe_data.get("product_name") or ""
+    token = _extract_customs_token(brand) or _extract_customs_token(name)
+    if not token:
+        return
+    safe_data["custom_status"] = token
+    if brand and _T1T2_PATTERN.search(brand):
+        if not safe_data.get("brand_raw"):
+            safe_data["brand_raw"] = brand
+        safe_data["brand"] = _strip_customs_token(brand)
+    if name and _T1T2_PATTERN.search(name):
+        if not safe_data.get("product_name_raw"):
+            safe_data["product_name_raw"] = name
+        safe_data["product_name"] = _strip_customs_token(name)
 
 
 def is_valid_offer(offer_dict: dict) -> bool:
@@ -923,6 +952,15 @@ async def process_offer(payload, job_id: str):
                     # Apply OfferItem defaults (convert "Not Found" to None or the proper default)
                     safe_data = _apply_offer_defaults(safe_data)
 
+                    # ── Phase 3 M2 — customs_status fallback from raw text ─
+                    # Case-school rows B08/B11/B12/B32 carry T1/T2 inside the
+                    # raw description. GPT-4o sometimes leaves custom_status
+                    # empty and the token sitting in brand or product_name.
+                    # Extract it at ingest time (same logic as the admin
+                    # backfill endpoint) so the structured column is populated
+                    # on the row's first write.
+                    _backfill_customs_from_text(safe_data)
+
                     # ── Currency normalisation & EUR conversion ──────────────
                     safe_data = _normalize_currency_and_prices(safe_data)
 
@@ -961,8 +999,10 @@ async def process_offer(payload, job_id: str):
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
                         product_name=safe_data['product_name'],
+                        product_name_raw=safe_data.get('product_name_raw'),
                         product_key=safe_data['product_key'],
                         brand=safe_data['brand'],
+                        brand_raw=safe_data.get('brand_raw'),
                         category=safe_data['category'],
                         sub_category=safe_data['sub_category'],
                         packaging=safe_data['packaging'],
@@ -1151,6 +1191,10 @@ async def process_offer(payload, job_id: str):
 
                 safe_data = _apply_offer_defaults(safe_data)
 
+                # ── Phase 3 M2 — customs_status fallback from raw text ─
+                # Mirrors the batch path above; see note there.
+                _backfill_customs_from_text(safe_data)
+
                 safe_data = _normalize_currency_and_prices(safe_data)
 
                 _sup_name  = safe_data.get('supplier_name')
@@ -1159,8 +1203,10 @@ async def process_offer(payload, job_id: str):
                 offer = OfferItem(
                     uid=uid,
                     product_name=safe_data['product_name'],
+                    product_name_raw=safe_data.get('product_name_raw'),
                     product_key=safe_data['product_key'],
                     brand=safe_data['brand'],
+                    brand_raw=safe_data.get('brand_raw'),
                     category=safe_data['category'],
                     sub_category=safe_data['sub_category'],
                     packaging=safe_data['packaging'],
