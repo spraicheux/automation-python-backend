@@ -168,18 +168,37 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
 
 
 def _backfill_customs_from_text(safe_data: dict) -> None:
-    """Phase 3 M2 — when GPT-4o leaves custom_status empty but the brand or
-    product_name still carries an isolated T1/T2 token (fixture rows B08/B11/
-    B12/B32), extract the token into custom_status at ingest time instead of
-    relying on the /admin/retest-backfill-customs-status endpoint to catch
-    it after the fact. Strips the token from brand/product_name and
-    preserves the pre-strip value in brand_raw/product_name_raw so the
-    original form is auditable. Mirrors api.admin.retest_backfill_customs_status."""
+    """Phase 3 M2 — populate custom_status at ingest time when GPT-4o left
+    it blank but the T1/T2 token is recoverable from text we still have.
+
+    Three sources, in order:
+      1. safe_data['brand']         — token leaked out of the structured
+                                      column into the brand field.
+      2. safe_data['product_name']  — same, but in the name field.
+      3. safe_data['_raw_row_text'] — the raw source-row text that
+                                      produced this product, threaded in by
+                                      core.openai_client.extract_from_file.
+                                      This closes the case-school
+                                      B01/B02/B04/B06/B08/B11/B12/B32
+                                      rows where GPT-4o cleanly stripped
+                                      the T-token from product_name
+                                      without echoing it into custom_status.
+
+    When the token is found in brand/product_name, those fields are
+    stripped and the pre-strip value is preserved in brand_raw /
+    product_name_raw. The raw-row-text source is never written back —
+    it's just an extraction lookup, since the raw row has lots of other
+    non-brand content that we don't want in the stored fields.
+
+    Mirrors api.admin.retest_backfill_customs_status."""
     if safe_data.get("custom_status"):
         return
     brand = safe_data.get("brand") or ""
     name = safe_data.get("product_name") or ""
-    token = _extract_customs_token(brand) or _extract_customs_token(name)
+    raw  = safe_data.get("_raw_row_text") or ""
+    token = (_extract_customs_token(brand)
+             or _extract_customs_token(name)
+             or _extract_customs_token(raw))
     if not token:
         return
     safe_data["custom_status"] = token
@@ -873,6 +892,13 @@ async def process_offer(payload, job_id: str):
                         'product_name': _dp_name or "Not Found",
                         'product_key': merged_data.get('product_key') or "Not Found",
                         'brand': _dp_brand or "Not Found",
+                        # Phase 3 M2 — raw source-row text threaded through from
+                        # core.openai_client.extract_from_file so the customs
+                        # backfill (see _backfill_customs_from_text) has a
+                        # third fallback when GPT-4o cleaned the token out
+                        # of brand/product_name without populating
+                        # custom_status.
+                        '_raw_row_text': merged_data.get('_raw_row_text'),
                         'range_name': merged_data.get('range_name'),
                         'category': merged_data.get('category'),
                         'sub_category': merged_data.get('sub_category'),
@@ -1127,6 +1153,8 @@ async def process_offer(payload, job_id: str):
                     'product_name': _dp_name or "Not Found",
                     'product_key': extracted_data.get('product_key') or "Not Found",
                     'brand': _dp_brand or "Not Found",
+                    # Phase 3 M2 — raw source-row text (see batch-path note above).
+                    '_raw_row_text': extracted_data.get('_raw_row_text'),
                     'category': extracted_data.get('category'),
                     'sub_category': extracted_data.get('sub_category'),
                     'packaging': extracted_data.get('packaging') or "Bottle",

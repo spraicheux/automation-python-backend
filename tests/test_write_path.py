@@ -678,3 +678,40 @@ class TestIngestCustomsBackfill:
             _backfill_customs_from_text(safe_data)
             assert safe_data["custom_status"] is None, name
             assert safe_data["product_name"] == name, name
+
+    def test_token_in_raw_row_text_only(self):
+        """Case-school B01/B02/B04/B06/B08/B11/B12/B32: GPT-4o cleanly
+        strips the T-token from product_name before returning, so neither
+        brand nor product_name carries it anymore. The raw source-row text
+        threaded through from core.openai_client.extract_from_file still
+        has it — the fallback must pull it from there."""
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Hennessy",
+            "product_name": "VS",   # GPT-4o cleaned it out of here
+            "custom_status": None,
+            "_raw_row_text": "Supplier Reference=HEN-QA-1001 | Source Description (raw)=Hennessy VS 1L T2 12 x 1L",
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T2"
+        # The raw-row-text source does NOT get written back to any stored
+        # field — brand and product_name stay as GPT-4o cleaned them.
+        assert safe_data["brand"] == "Hennessy"
+        assert safe_data["product_name"] == "VS"
+        # No *_raw preservation when the token wasn't in brand/name.
+        assert safe_data.get("brand_raw") is None
+        assert safe_data.get("product_name_raw") is None
+
+    def test_raw_row_text_not_consulted_when_already_set(self):
+        """custom_status already populated by GPT-4o or an earlier pass
+        must not be overwritten even when the raw row still carries a
+        different token."""
+        from workers.processor import _backfill_customs_from_text
+        safe_data = {
+            "brand": "Bacardi",
+            "product_name": "Carta Oro",
+            "custom_status": "T1",
+            "_raw_row_text": "Source Description (raw)=Bacardi Carta Oro 1L T2 6 x 1L",
+        }
+        _backfill_customs_from_text(safe_data)
+        assert safe_data["custom_status"] == "T1"

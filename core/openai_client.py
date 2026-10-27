@@ -1446,6 +1446,124 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                     logger.info(f"[extract_from_file]   gift_box        = {cleaned_product.get('gift_box')!r}")
                                     cleaned_batch_products.append(cleaned_product)
 
+                                # Phase 3 M2 — thread the raw source-row text onto each
+                                # returned product. Positional pairing only works when
+                                # GPT-4o returns exactly N products in order, which
+                                # it does NOT reliably do on long batches (it drops
+                                # rows under "no synthetic padding"), so we also try
+                                # content-based pairing on supplier_reference /
+                                # product_reference / EAN first and fall back to
+                                # position only when nothing else matches. The
+                                # downstream customs backfill (_backfill_customs_from_text
+                                # in workers/processor.py) reads _raw_row_text when
+                                # brand/product_name no longer carries the T-token
+                                # after GPT-4o cleaned the name.
+                                def _row_text(_r):
+                                    return " | ".join(f"{k}={v}" for k, v in _r.items() if v)
+                                def _norm(_v):
+                                    return str(_v or "").strip().lower()
+                                _taken = set()
+                                for _bi, _bp in enumerate(cleaned_batch_products):
+                                    _match_idx = None
+                                    # 1) by supplier / product reference
+                                    for _k in ("supplier_reference", "product_reference"):
+                                        _bv = _norm(_bp.get(_k))
+                                        if not _bv or _bv == "not found":
+                                            continue
+                                        for _ri, _r in enumerate(data_rows):
+                                            if _ri in _taken: continue
+                                            for _c in ("Supplier Reference", "Product Reference",
+                                                       "SKU", "Reference"):
+                                                if _norm(_r.get(_c)) == _bv:
+                                                    _match_idx = _ri
+                                                    break
+                                            if _match_idx is not None:
+                                                break
+                                        if _match_idx is not None:
+                                            break
+                                    # 2) by EAN
+                                    if _match_idx is None:
+                                        _bv = _norm(_bp.get("ean_code"))
+                                        if _bv and _bv != "not found":
+                                            for _ri, _r in enumerate(data_rows):
+                                                if _ri in _taken: continue
+                                                for _c in ("EAN", "EAN Code", "Barcode", "UPC"):
+                                                    if _norm(_r.get(_c)) == _bv:
+                                                        _match_idx = _ri
+                                                        break
+                                                if _match_idx is not None:
+                                                    break
+                                    # 3) position
+                                    if _match_idx is None and _bi < len(data_rows) and _bi not in _taken:
+                                        _match_idx = _bi
+                                    if _match_idx is not None:
+                                        _taken.add(_match_idx)
+                                        _bp["_raw_row_text"] = _row_text(data_rows[_match_idx])
+
+                                # Phase 3 M2 — per-row recovery for rows GPT-4o
+                                # dropped during batch extraction (case-school B17,
+                                # B28, B29 all missed the batch). Use the pairing
+                                # above to find which rows GPT-4o did NOT return a
+                                # product for, then re-ask one at a time with a
+                                # focused prompt. We send one row, explicitly tell
+                                # the model to never drop it, and merge the result
+                                # back into the batch.
+                                _unmatched = [(_ri, _r) for _ri, _r in enumerate(data_rows) if _ri not in _taken]
+                                if _unmatched:
+                                    logger.warning(
+                                        f"[extract_from_file] Batch {batch_num}: recovering {len(_unmatched)} "
+                                        f"unmatched row(s) via solo GPT-4o calls"
+                                    )
+                                    for _mi, _row in _unmatched:
+                                        try:
+                                            _solo_prompt = (
+                                                "Extract ONE commercial product offer from this single Excel row. "
+                                                f"{_cat_directive} "
+                                                "Return JSON {\"product\": {...}} with every field you can see on the row. "
+                                                "Do NOT drop this row. If a field is absent, use \"Not Found\" (not null, not \"\"). "
+                                                "Apply Rule 13 brand correction: e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's, Hennesy → Hennessy, Bacardí → Bacardi.\n\n"
+                                                f"ROW:\n{json.dumps(_row, indent=2)}\n\n"
+                                                f"{_EXTRACTION_RULES}"
+                                            )
+                                            _solo_resp = await client.chat.completions.create(
+                                                model="gpt-4o",
+                                                messages=[
+                                                    {"role": "system",
+                                                     "content": "You are a careful extractor. Never drop the row; always return one product."},
+                                                    {"role": "user", "content": _solo_prompt}
+                                                ],
+                                                response_format={"type": "json_object"},
+                                                temperature=0.0,
+                                                max_tokens=4000,
+                                            )
+                                            _solo_c = _solo_resp.choices[0].message.content
+                                            _solo_j = json.loads(_solo_c)
+                                            _solo_prod = (
+                                                _solo_j.get("product")
+                                                if isinstance(_solo_j, dict) and isinstance(_solo_j.get("product"), dict)
+                                                else (_solo_j if isinstance(_solo_j, dict) else None)
+                                            )
+                                            if not _solo_prod:
+                                                logger.warning(
+                                                    f"[extract_from_file] Batch {batch_num}: solo recovery "
+                                                    f"row +{_mi} returned no product; dropped"
+                                                )
+                                                continue
+                                            _solo_cleaned = clean_product_data(_solo_prod)
+                                            _solo_cleaned["_raw_row_text"] = " | ".join(
+                                                f"{k}={v}" for k, v in _row.items() if v
+                                            )
+                                            cleaned_batch_products.append(_solo_cleaned)
+                                            logger.info(
+                                                f"[extract_from_file] Batch {batch_num}: solo recovery row +{_mi} "
+                                                f"recovered name={_solo_cleaned.get('product_name')!r}"
+                                            )
+                                        except Exception as _solo_err:
+                                            logger.error(
+                                                f"[extract_from_file] Batch {batch_num}: solo recovery row +{_mi} "
+                                                f"FAILED: {_solo_err}"
+                                            )
+
                                 all_extracted_products.extend(cleaned_batch_products)
                                 processed_row_count += len(batch_df)
                                 logger.info(f"[extract_from_file] Batch {batch_num}: complete — added {len(cleaned_batch_products)} product(s). Running total: {len(all_extracted_products)}")
