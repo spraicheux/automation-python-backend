@@ -343,6 +343,34 @@ _CURRENCY_SYMBOLS = {
 }
 
 
+def _snap_duplicated_row_per_unit(safe_data: dict) -> None:
+    """When a row carries the Rule-6 "multiple incoterms detected — row
+    duplicated" flag, Rule 6 says all sibling rows must be identical except
+    for incoterm/location — which includes price. GPT occasionally emits
+    `price_per_unit` with a stray trailing digit on one sibling (7.754999…)
+    and a cleanly-rounded one on another (7.755), which the dashboard then
+    renders as "€7.75" vs "€7.76" even though both carry the SAME
+    price_per_case. Snap price_per_unit = price_per_case / units_per_case
+    so every sibling of a split-by-incoterm group displays identically.
+    (Samuel 2026-10-27 — two Jameson rows €7.75 vs €7.76, same €46.53/case.)
+    """
+    flags = safe_data.get("error_flags") or []
+    if not isinstance(flags, list):
+        return
+    if not any(isinstance(f, str) and "multiple incoterms detected" in f and
+               "row duplicated" in f for f in flags):
+        return
+    pc = safe_data.get("price_per_case")
+    upc = safe_data.get("units_per_case")
+    try:
+        pc_f = float(pc) if pc not in (None, "") else None
+        upc_f = float(upc) if upc not in (None, "") else None
+    except (TypeError, ValueError):
+        return
+    if pc_f and upc_f and upc_f > 0:
+        safe_data["price_per_unit"] = round(pc_f / upc_f, 4)
+
+
 def _normalize_currency_and_prices(safe_data: dict) -> dict:
     """Detect currency from sign characters and populate EUR price fields.
 
@@ -988,6 +1016,7 @@ async def process_offer(payload, job_id: str):
                     _backfill_customs_from_text(safe_data)
 
                     # ── Currency normalisation & EUR conversion ──────────────
+                    _snap_duplicated_row_per_unit(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
 
                     # ── MOQ / quantity unit-aware normalization (RULE 0.3) ───
