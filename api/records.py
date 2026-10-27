@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Query, Depends, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from sqlalchemy.sql.expression import nulls_last
@@ -287,6 +287,7 @@ async def get_benchmarks(
 
 @router.get("/records")
 async def get_records(
+    response: Response,
     skip: int = Query(0),
     limit: int = Query(24),
     source_file_id: Optional[str] = Query(None),
@@ -298,6 +299,15 @@ async def get_records(
     supplier: Optional[str] = Query(None, description="exact supplier_name"),
     db: Session = Depends(get_db),
 ):
+    # The dashboard polls this endpoint after every ingest, backfill or
+    # drawer edit and the trader expects to see the latest state on the
+    # next load. No cache header means some browsers (notably Safari)
+    # heuristically cache GETs for 10 minutes, so a post-backfill UPDATE
+    # looks like it did not land until the next hard refresh. Force
+    # no-store so the response is always fresh (Samuel 2026-10-27 —
+    # flag text was correct in the DB but his browser kept serving the
+    # pre-UPDATE JSON until a full cache clear).
+    response.headers["Cache-Control"] = "no-store"
     # Same-file duplicate guard — only collapses TRUE extractor duplicates
     # (LLM sometimes emits the same line twice within a batch). A supplier
     # can legitimately list the same SKU multiple times in the same file

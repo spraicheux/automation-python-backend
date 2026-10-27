@@ -172,7 +172,8 @@ class TestServerSideFilters:
         db.commit()
 
     def _recs(self, db, **kw):
-        base = dict(skip=0, limit=100, source_file_id=None, search=None, category=None,
+        from fastapi import Response
+        base = dict(response=Response(), skip=0, limit=100, source_file_id=None, search=None, category=None,
                     sub_category=None, category_slug=None, custom_status=None, supplier=None, db=db)
         base.update(kw)
         return asyncio.run(get_records(**base))
@@ -331,7 +332,9 @@ def _rec(db, **kw):
 
 
 def _records(db, search=None, category_slug=None):
+    from fastapi import Response
     return asyncio.run(get_records(
+        response=Response(),
         skip=0, limit=100, source_file_id=None, search=search, category=None,
         sub_category=None, category_slug=category_slug,
         custom_status=None, supplier=None, db=db))
