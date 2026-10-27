@@ -413,6 +413,7 @@
     <button class="nav-tab active" id="tab-offers" onclick="switchTab('offers')">All Offers</button>
     <button class="nav-tab" id="tab-bestprices" onclick="switchTab('bestprices')">Best Prices</button>
     <button class="nav-tab" id="tab-alerts" onclick="switchTab('alerts')">Alerts <span id="alert-badge" class="alert-badge" hidden>0</span></button>
+    <button class="nav-tab primary-tab" onclick="openUploadModal()">+ Upload file</button>
     <button class="nav-tab primary-tab" onclick="openNewOfferModal()">+ New offer</button>
     <div class="stat-chip" id="stat-sources"><b>—</b> Sources</div>
     <div class="stat-chip" id="stat-records"><b>—</b> Offers</div>
@@ -703,6 +704,40 @@
   </div>
 </div>
 
+<!-- Upload file modal -->
+<div class="modal-scrim" id="upload-scrim" onclick="if(event.target===this) closeUploadModal()">
+  <div class="modal" role="dialog" aria-label="Upload offer file" style="max-width:520px;">
+    <h2 style="margin:0 0 6px;font-size:18px;font-weight:700;">Upload offer file</h2>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      Send an XLSX, CSV, or PDF to the ingest pipeline. The file will be parsed, offers extracted, and added to the records table.
+    </div>
+    <div class="form-grid" style="grid-template-columns:1fr;">
+      <div class="form-field">
+        <label>File (XLSX / CSV / PDF)</label>
+        <input id="up-file" type="file" accept=".xlsx,.xls,.csv,.pdf" />
+      </div>
+      <div class="form-field">
+        <label>Supplier name</label>
+        <input id="up-supplier_name" placeholder="e.g. Case School" />
+      </div>
+      <div class="form-field">
+        <label>Supplier email (optional)</label>
+        <input id="up-supplier_email" type="email" placeholder="offers@supplier.com" />
+      </div>
+      <div class="form-field">
+        <label>Subject / note (optional)</label>
+        <input id="up-subject" placeholder="e.g. Weekly price list" />
+      </div>
+    </div>
+    <div class="modal-err" id="up-err" style="display:none;"></div>
+    <div id="up-status" style="font-size:12px;color:var(--muted);margin-top:12px;display:none;"></div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeUploadModal()">Cancel</button>
+      <button class="btn" id="up-submit-btn" onclick="submitUpload()">Upload</button>
+    </div>
+  </div>
+</div>
+
 <!-- Detail drawer -->
 <div class="drawer-scrim" id="drawer-scrim" onclick="closeDrawer()"></div>
 <aside class="drawer" id="drawer">
@@ -723,7 +758,12 @@
 </aside>
 
 <script>
-  const API_BASE = 'https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net/';
+  // Dynamic API_BASE: when running locally (localhost / 127.0.0.1) talk to the
+  // same host that served the dashboard. In production it still points at the
+  // Azure App Service exactly as before.
+  const API_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+    ? location.origin
+    : 'https://whatsapp-automation-backend-app-cqd2fteqh6hvhped.francecentral-01.azurewebsites.net/';
   const PAGE_SIZE = 100;
   let currentToken = localStorage.getItem('adminToken');
 
@@ -1012,6 +1052,106 @@
       </div>
       <div class="alert-delta ${deltaCls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</div>
     </div>`;
+  }
+
+  // ─── Upload file modal ─────────────────────────────────────────────────────
+  function openUploadModal() {
+    document.getElementById('upload-scrim').classList.add('open');
+    document.getElementById('up-err').style.display = 'none';
+    document.getElementById('up-status').style.display = 'none';
+    document.getElementById('up-submit-btn').disabled = false;
+    document.getElementById('up-submit-btn').textContent = 'Upload';
+  }
+  function closeUploadModal() {
+    document.getElementById('upload-scrim').classList.remove('open');
+  }
+
+  async function submitUpload() {
+    const errEl = document.getElementById('up-err');
+    const statusEl = document.getElementById('up-status');
+    const btn = document.getElementById('up-submit-btn');
+    errEl.style.display = 'none';
+
+    const fileInput = document.getElementById('up-file');
+    if (!fileInput.files || fileInput.files.length === 0) {
+      errEl.textContent = 'Please choose a file first.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const file = fileInput.files[0];
+    const supplier = document.getElementById('up-supplier_name').value.trim();
+    const supplierEmail = document.getElementById('up-supplier_email').value.trim();
+    const subject = document.getElementById('up-subject').value.trim();
+
+    const form = new FormData();
+    form.append('files', file, file.name);
+    form.append('source_channel', 'ui');
+    form.append('source_filename', file.name);
+    if (supplier) form.append('supplier_name', supplier);
+    if (supplierEmail) form.append('supplier_email', supplierEmail);
+    if (subject) form.append('subject', subject);
+
+    btn.disabled = true;
+    btn.textContent = 'Uploading…';
+    statusEl.style.display = 'block';
+    statusEl.textContent = `Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)…`;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/ingest`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${currentToken}` },
+        body: form,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = (body && body.detail && (body.detail.message || JSON.stringify(body.detail)))
+          || body.error
+          || res.statusText;
+        throw new Error(msg);
+      }
+      statusEl.innerHTML = `Accepted. job_id: <code>${(body.job_id || '').slice(0,8)}…</code> · file: <code>${body.source_filename || file.name}</code><br>Processing in background — records will appear in the table shortly.`;
+      btn.textContent = 'Uploaded ✓';
+      // Poll for completion then refresh records. Max ~4 minutes to cover
+      // large files whose GPT-4o extraction takes several batches.
+      pollJobAndRefresh(body.job_id, 240);
+    } catch (e) {
+      errEl.textContent = 'Upload failed: ' + String(e.message || e).slice(0, 400);
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+    }
+  }
+
+  async function pollJobAndRefresh(jobId, maxTries) {
+    if (!jobId) { loadRecords(true); return; }
+    const statusEl = document.getElementById('up-status');
+    let tries = 0;
+    const interval = setInterval(async () => {
+      tries += 1;
+      try {
+        const r = await fetch(`${API_BASE}/api/result/${jobId}`,
+          { headers: { 'Authorization': `Bearer ${currentToken}` } });
+        if (r.ok) {
+          const data = await r.json();
+          const s = (data && data.status) || '';
+          if (s && s !== 'processing') {
+            clearInterval(interval);
+            statusEl.innerHTML = `Done — status: <strong>${s}</strong>. Refreshing records…`;
+            loadSources();
+            loadRecords(true);
+            loadAlertBadge();
+            return;
+          }
+          if (statusEl) statusEl.textContent = `Processing… (${tries}s)`;
+        }
+      } catch (_) {}
+      if (tries >= maxTries) {
+        clearInterval(interval);
+        statusEl.textContent = `Still processing after ${maxTries}s — closing poll. Click a source in the sidebar to see newly ingested rows.`;
+        loadSources();
+        loadRecords(true);
+      }
+    }, 1000);
   }
 
   // ─── New offer modal ───────────────────────────────────────────────────────
@@ -1804,7 +1944,12 @@
     const scrim = document.getElementById('drawer-scrim');
 
     document.getElementById('drawer-brand').textContent = (item.brand && item.brand !== 'Not Found') ? item.brand : '';
-    document.getElementById('drawer-name').textContent = item.product_name || '—';
+    // Match the records-table rendering: product_name + vintage joined with " · "
+    // (Samuel 2026-10-27 — table showed "Feitian · 2025", drawer showed only
+    // "Feitian"; fix the drawer so the two surfaces agree.)
+    const _drawerName = [item.product_name, item.vintage]
+      .filter(v => v && v !== 'Not Found').join(' · ');
+    document.getElementById('drawer-name').textContent = _drawerName || '—';
     // Drawer subtitle wants plain text; formatPack() returns HTML for the
     // records-table cell. Build a text equivalent here so the subtitle
     // doesn't render raw <div> markup.

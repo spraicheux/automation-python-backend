@@ -59,3 +59,10 @@ celery_app.conf.update(
     worker_max_tasks_per_child=10,
     worker_concurrency=1,
 )
+
+# Local / isolated-run escape hatch: when CELERY_TASK_ALWAYS_EAGER=1, tasks run
+# synchronously in-process, so you don't need a separate worker. Prod leaves it
+# unset and the worker keeps running tasks via the broker as normal.
+if os.getenv("CELERY_TASK_ALWAYS_EAGER") == "1":
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
