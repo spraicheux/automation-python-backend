@@ -212,6 +212,65 @@ def _backfill_customs_from_text(safe_data: dict) -> None:
         safe_data["product_name"] = _strip_customs_token(name)
 
 
+_INCOTERM_RE = re.compile(r"\b(EXW|DAP|DDP|FOB|CIF|CFR|CPT|FCA|DAT|FAS|EXWORK)\b", re.IGNORECASE)
+_LOC_SPLIT_RE = re.compile(r"\s*(?:/|,|\bor\b|\band\b|&)\s*", re.IGNORECASE)
+_LOC_TOKEN_RE = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' .\-]{1,30}$")
+
+
+def _detect_dropped_alt_locations(safe_data: dict) -> None:
+    """Compound-location preservation guard (Samuel 2026-10-27 — Jameson).
+
+    Rule 7 says a source line like "Exwork Loendersloot or Revera or Mentrex"
+    must land as location = "Loendersloot / Revera / Mentrex". GPT-4o
+    occasionally keeps only the first alternative, silently dropping the
+    others. Scan the raw source row for the same incoterm-followed-by-many-
+    locations pattern; if we parsed one short location but the raw text has
+    ≥2 location-shaped tokens joined by /, comma, "or" or "and", add an
+    explicit flag so the trader can see the drop and nothing fails silently.
+    The flag text names the alternatives found in the raw source.
+    """
+    raw = safe_data.get("_raw_row_text") or ""
+    stored = (safe_data.get("location") or "").strip()
+    if not raw or not stored or stored.lower() in ("not found", "", "none"):
+        return
+    # Already compound → GPT followed Rule 7, nothing to flag.
+    if _LOC_SPLIT_RE.search(stored):
+        return
+    # Find any incoterm occurrence in the raw text and look at the tokens
+    # that follow it on the same line. We only care about the FIRST match
+    # (one incoterm per Rule 7 branch).
+    m = _INCOTERM_RE.search(raw)
+    if not m:
+        return
+    tail = raw[m.end(): m.end() + 200]
+    # Stop the tail at the next clear sentence boundary (full stop, pipe,
+    # newline, semi-colon, en- or em-dash with surrounding space, or the
+    # first digit cluster) so we don't vacuum pack / price / qty data.
+    tail = re.split(r"[\.\|\n\r;]|\s[–—-]\s|\s\d", tail, maxsplit=1)[0]
+    parts = [p.strip(" .") for p in _LOC_SPLIT_RE.split(tail) if p.strip(" .")]
+    # Keep only the parts that LOOK like a location token (letters, spaces,
+    # dashes; no digits; short-to-medium length).
+    locs = [p for p in parts if _LOC_TOKEN_RE.match(p)]
+    if len(locs) < 2:
+        return
+    # Case-fold match so "LOENDERSLOOT" and "Loendersloot" count as the
+    # same stored anchor; the "others" we flag are everything else.
+    stored_lc = stored.lower()
+    others = [p for p in locs if p.lower() != stored_lc]
+    if not others:
+        return
+    flags = safe_data.get("error_flags") or []
+    if not isinstance(flags, list):
+        flags = []
+    all_locs = ", ".join([stored] + others)
+    msg = (f"source lists {len(locs)} alternative locations ({all_locs}); "
+           f"only {stored} persisted — re-ingest to recover alternatives")
+    # Don't double-add if the flag is already present.
+    if not any(isinstance(f, str) and "alternative locations" in f for f in flags):
+        flags.append(msg)
+    safe_data["error_flags"] = flags
+
+
 def is_valid_offer(offer_dict: dict) -> bool:
     """Strict validation for extracted offers"""
     if not offer_dict:
@@ -1015,6 +1074,11 @@ async def process_offer(payload, job_id: str):
                     # on the row's first write.
                     _backfill_customs_from_text(safe_data)
 
+                    # Compound-location preservation guard (Rule 7). Flags
+                    # rows where the raw source listed ≥2 alternative
+                    # locations and GPT kept only one.
+                    _detect_dropped_alt_locations(safe_data)
+
                     # ── Currency normalisation & EUR conversion ──────────────
                     _snap_duplicated_row_per_unit(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
@@ -1251,6 +1315,7 @@ async def process_offer(payload, job_id: str):
                 # ── Phase 3 M2 — customs_status fallback from raw text ─
                 # Mirrors the batch path above; see note there.
                 _backfill_customs_from_text(safe_data)
+                _detect_dropped_alt_locations(safe_data)
 
                 safe_data = _normalize_currency_and_prices(safe_data)
 

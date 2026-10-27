@@ -370,6 +370,63 @@ class TestSearchTokens:
         r = _records(db, search="Moutai Feitian 2025")
         assert r["total"] == 1 and r["records"][0]["uid"] == "mo25"
 
+    def test_alt_locations_detected_from_raw_row_text(self):
+        """Samuel 2026-10-27 Jameson: GPT dropped "Revera" and "Mentrex"
+        from "Exwork Loendersloot or Revera or Mentrex" and persisted only
+        Loendersloot. The _detect_dropped_alt_locations guard scans the
+        raw row text, finds the alternatives, and adds an explicit
+        'source lists N alternative locations …' review flag so no drop
+        goes silent."""
+        from workers.processor import _detect_dropped_alt_locations
+        d = {
+            "location": "Loendersloot",
+            "_raw_row_text": "Jameson Irish Whiskey 6x70cl 40% T1, CODED@ €46.53/cs. Exwork Loendersloot or Revera or Mentrex.",
+            "error_flags": ["sub_category inferred from brand name"],
+        }
+        _detect_dropped_alt_locations(d)
+        joined = " || ".join(d["error_flags"])
+        assert "alternative locations" in joined
+        assert "Revera" in joined and "Mentrex" in joined and "Loendersloot" in joined
+        assert "only Loendersloot persisted" in joined
+        # Idempotent — second call must not duplicate the flag.
+        _detect_dropped_alt_locations(d)
+        assert sum("alternative locations" in f for f in d["error_flags"]) == 1
+
+    def test_alt_locations_not_flagged_when_compound_already_stored(self):
+        """If GPT already followed Rule 7 and stored "A / B / C" as a
+        single compound location, don't double-flag the row."""
+        from workers.processor import _detect_dropped_alt_locations
+        d = {
+            "location": "Loendersloot / Revera / Mentrex",
+            "_raw_row_text": "Exwork Loendersloot or Revera or Mentrex",
+            "error_flags": [],
+        }
+        _detect_dropped_alt_locations(d)
+        assert d["error_flags"] == []
+
+    def test_alt_locations_slash_separator(self):
+        from workers.processor import _detect_dropped_alt_locations
+        d = {
+            "location": "Amsterdam",
+            "_raw_row_text": "DAP Amsterdam / Rotterdam / Antwerp – 12x70cl",
+            "error_flags": [],
+        }
+        _detect_dropped_alt_locations(d)
+        assert any("alternative locations" in f and "Rotterdam" in f and "Antwerp" in f
+                   for f in d["error_flags"])
+
+    def test_alt_locations_prompt_rule_covers_or(self):
+        """Guard the Rule 7 prompt text so a future edit cannot regress
+        the "or" / three-location example that drove this fix."""
+        from pathlib import Path
+        p = Path(__file__).resolve().parent.parent / "core" / "openai_client.py"
+        src = p.read_text()
+        # The Rule 7 block must mention "or" among the separators and must
+        # carry the Loendersloot / Revera / Mentrex worked example.
+        assert "RULE 7 — COMPOUND LOCATION" in src
+        assert "\"or\"" in src.split("RULE 7")[1].split("RULE 8")[0]
+        assert "Loendersloot / Revera / Mentrex" in src
+
     def test_duplicated_rows_snap_to_same_per_unit_price(self):
         """Samuel 2026-10-27: two Jameson rows on the same source file,
         both carrying the Rule-6 "multiple incoterms detected — row

@@ -395,28 +395,44 @@ If no issues → error_flags: []
 ══════════════════════════════════════════════════════════════════════
 RULE 6 — MULTIPLE INCOTERMS → SEPARATE ROWS  ⚠️
 ══════════════════════════════════════════════════════════════════════
-If a product has multiple incoterms (e.g. "EXW RIGA / DAP LOENDERSLOOT",
-"FOB Rotterdam or CIF London"), create ONE separate product row per incoterm.
+This rule fires ONLY when more than one DIFFERENT INCOTERM TOKEN
+(EXW / DAP / FOB / CIF / CFR / CPT / DDP / DAT / FCA / etc.) appears
+for the same product. If a product has multiple incoterms (e.g.
+"EXW RIGA / DAP LOENDERSLOOT", "FOB Rotterdam or CIF London"), create
+ONE separate product row per incoterm.
 - All other fields (brand, product_name, price, etc.) are IDENTICAL across rows.
 - Only incoterm and location differ between the duplicate rows.
 - Add "multiple incoterms detected — row duplicated" to error_flags on each row.
 - If only one incoterm found → single row as normal.
 - If no incoterm found → incoterm: "Not Found", location: "Not Found".
+⚠️ DO NOT invoke this rule when only the LOCATIONS vary under a single
+   incoterm (e.g. "EXW Loendersloot or Revera or Mentrex" — one incoterm
+   EXW with three alternative locations). That case belongs to Rule 7.
 ⚠️ DO NOT create extra rows for any other reason.
 
 ══════════════════════════════════════════════════════════════════════
 RULE 7 — COMPOUND LOCATION — PRESERVE FULL STRING  ⚠️ CRITICAL
 ══════════════════════════════════════════════════════════════════════
-When the location references multiple warehouses or places joined by "/" or "and" or "&",
-you MUST preserve the FULL compound string EXACTLY for ALL products from that offer.
+When the location references multiple warehouses or places joined by
+"/" or "and" or "&" or "or" or "," you MUST preserve the FULL compound
+string EXACTLY for ALL products from that offer. Normalise the separator
+to " / " (space-slash-space) and KEEP every alternative — never drop one.
 
 Examples:
-  "DAP LOENDERSLOOT / NEWCORP" → location: "LOENDERSLOOT / NEWCORP" for EVERY product
-  "EXW AMSTERDAM / ROTTERDAM"  → location: "AMSTERDAM / ROTTERDAM" for EVERY product
+  "DAP LOENDERSLOOT / NEWCORP"               → location: "LOENDERSLOOT / NEWCORP"
+  "EXW AMSTERDAM / ROTTERDAM"                → location: "AMSTERDAM / ROTTERDAM"
+  "Exwork Loendersloot or Revera or Mentrex" → location: "Loendersloot / Revera / Mentrex"  (single row, ONE incoterm EXW)
+  "EXW Riga and Loendersloot"                → location: "Riga / Loendersloot"
+  "DAP Rotterdam, Antwerp"                   → location: "Rotterdam / Antwerp"
 
 NEVER split the compound location or assign different parts to different products.
+NEVER drop an alternative location because it looks less likely — if the source
+lists three locations, store three.
 ALL products from the same offer get the SAME compound location string.
 This rule applies even if one product seems to fit one location better.
+
+If the source lists ≥2 locations under a SINGLE incoterm, this is Rule 7
+(compound location on one row), NOT Rule 6 (one row per incoterm).
 
 ══════════════════════════════════════════════════════════════════════
 RULE 8 — PRICE IDENTIFICATION AND CALCULATION  ⚠️ CRITICAL
