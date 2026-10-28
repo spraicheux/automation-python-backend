@@ -1413,6 +1413,10 @@
       // returned 0 when matching rows weren't in the first page).
       if (customStatusFilter) url += `&custom_status=${encodeURIComponent(customStatusFilter)}`;
       if (filters.supplier) url += `&supplier=${encodeURIComponent(filters.supplier)}`;
+      // Server-side sort so pagination returns globally-ordered rows
+      // (Samuel 2026-10-28: "Oldest first" was only sorting the loaded 100
+      //  rows locally). The server accepts the same key names the dropdown uses.
+      if (sortKey) url += `&sort=${encodeURIComponent(sortKey)}`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${currentToken}` } });
       const data = await res.json();
       const items = data.records || [];
@@ -1423,6 +1427,14 @@
 
       // Update dropdowns from what we've seen
       items.forEach(collectFilterValues);
+      // Server now returns the FULL-dataset supplier list in data.facets.supplier
+      // so the dropdown is complete even when only the first page is loaded
+      // (Samuel 2026-10-28: dropdown showed only "Balkan Luxury Supply" because
+      //  it was built from the loaded 100 rows alone).
+      if (data.facets && Array.isArray(data.facets.supplier)) {
+        availableFilters.supplier.clear();
+        data.facets.supplier.forEach(s => availableFilters.supplier.add(s));
+      }
       applyDropdownUpdates();
 
       // client-side filters: everything except category/sub_category (server) + search
@@ -1598,21 +1610,29 @@
     const withNulls = (val, dir) => val == null ? (dir === 'asc' ? Infinity : -Infinity) : val;
     // A null OR zero EUR price is "no price" (unusable) — it must never rank as
     // the cheapest. Push it to the end regardless of sort direction.
-    const priceKey = (val) => (val == null || val === 0) ? Infinity : val;
+    const priceKey = (val) => (val == null || val === 0 || !isFinite(val)) ? Infinity : val;
     const cmp = (a, b, dir=1) => (a < b ? -1 : a > b ? 1 : 0) * dir;
-    // A row flagged for manual review (anomalous/unverified price, e.g. the
-    // ALCODIS VSOP €3.33) must never LEAD a trusted "lowest price" ranking.
-    // Keep it visible (with its REVIEW badge) but sort it below every trusted
-    // row, regardless of its raw price (Samuel P1).
-    const reviewRank = (it) => it.needs_manual_review ? 1 : 0;
+    // "Unusable" rank: a zero / null / non-finite price OR a row flagged for
+    // manual review must never LEAD a trusted lowest-price ranking (Samuel
+    // 2026-10-28 — Hennessy 1L sorted by lowest €/unit put the €0 historical
+    // row ahead of the positive €3.33 row because reviewRank only fired on
+    // needs_manual_review). Both signals now fold into one rank so the
+    // trusted positive-priced rows come first, then anything unusable.
+    const unusableRank = (it, field) => {
+      const p = it[field];
+      const noPrice = p == null || p === 0 || !isFinite(p);
+      return (noPrice || it.needs_manual_review) ? 1 : 0;
+    };
     switch (key) {
       case 'quality_desc':
         return [...items].sort((a,b) => qualityScore(b) - qualityScore(a));
       case 'price_per_unit_eur_asc':
-        return [...items].sort((a,b) => reviewRank(a) - reviewRank(b)
+        return [...items].sort((a,b) =>
+          unusableRank(a, 'price_per_unit_eur') - unusableRank(b, 'price_per_unit_eur')
           || cmp(priceKey(a.price_per_unit_eur), priceKey(b.price_per_unit_eur), 1));
       case 'price_per_case_eur_asc':
-        return [...items].sort((a,b) => reviewRank(a) - reviewRank(b)
+        return [...items].sort((a,b) =>
+          unusableRank(a, 'price_per_case_eur') - unusableRank(b, 'price_per_case_eur')
           || cmp(priceKey(a.price_per_case_eur), priceKey(b.price_per_case_eur), 1));
       case 'offer_date_desc':
         return [...items].sort((a,b) => cmp(new Date(a.offer_date || a.created_at || 0), new Date(b.offer_date || b.created_at || 0), -1));

@@ -3,7 +3,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Query, Depends, Response
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, and_
+from sqlalchemy import func, or_, and_, case
 from sqlalchemy.sql.expression import nulls_last
 from typing import Optional, List
 from core.database import get_db
@@ -285,6 +285,13 @@ async def get_benchmarks(
     }
 
 
+_RECORDS_SORT_KEYS = {
+    "offer_date_desc", "offer_date_asc",
+    "price_per_unit_eur_asc", "price_per_case_eur_asc",
+    "supplier_asc", "created_at_desc",
+}
+
+
 @router.get("/records")
 async def get_records(
     response: Response,
@@ -297,6 +304,7 @@ async def get_records(
     category_slug: Optional[str] = Query(None, description="wines_spirits | perfumes | cosmetics"),
     custom_status: Optional[str] = Query(None, description="T1 | T2 | __none__ (no customs status)"),
     supplier: Optional[str] = Query(None, description="exact supplier_name"),
+    sort: Optional[str] = Query(None, description="offer_date_desc | offer_date_asc | price_per_unit_eur_asc | price_per_case_eur_asc | supplier_asc | created_at_desc"),
     db: Session = Depends(get_db),
 ):
     # The dashboard polls this endpoint after every ingest, backfill or
@@ -418,12 +426,77 @@ async def get_records(
         subquery, OfferItemDB.uid == subquery.c.uid
     ).filter(
         subquery.c.rn == 1
-    ).order_by(
-        OfferItemDB.created_at.desc()
     )
+
+    # Server-side sort (Samuel 2026-10-28 — "Oldest first" was returning
+    # the latest page sorted locally, which only covered the first 100
+    # loaded rows). Unknown sort keys fall back to created_at.desc.
+    # For price sorts, push zero / null / needs_manual_review rows to
+    # the tail together so an unusable €0 historical row cannot lead a
+    # trusted lowest-price ranking.
+    sort_key = sort if sort in _RECORDS_SORT_KEYS else None
+    if sort_key == "offer_date_desc":
+        query = query.order_by(nulls_last(OfferItemDB.offer_date.desc()),
+                               OfferItemDB.created_at.desc())
+    elif sort_key == "offer_date_asc":
+        query = query.order_by(nulls_last(OfferItemDB.offer_date.asc()),
+                               OfferItemDB.created_at.asc())
+    elif sort_key in ("price_per_unit_eur_asc", "price_per_case_eur_asc"):
+        _price_col = (OfferItemDB.price_per_unit_eur
+                      if sort_key == "price_per_unit_eur_asc"
+                      else OfferItemDB.price_per_case_eur)
+        # "Unusable" = null / 0 / needs_manual_review → sort to the tail.
+        _unusable = case(
+            (OfferItemDB.needs_manual_review.is_(True), 1),
+            (_price_col.is_(None), 1),
+            (_price_col == 0, 1),
+            else_=0,
+        )
+        query = query.order_by(_unusable.asc(),
+                               nulls_last(_price_col.asc()),
+                               OfferItemDB.created_at.desc())
+    elif sort_key == "supplier_asc":
+        query = query.order_by(nulls_last(func.lower(OfferItemDB.supplier_name).asc()),
+                               OfferItemDB.created_at.desc())
+    else:
+        query = query.order_by(OfferItemDB.created_at.desc())
 
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
+
+    # Full-dataset facet lists (Samuel 2026-10-28 — the supplier dropdown
+    # only showed "Balkan Luxury Supply" because it was built client-side
+    # from the loaded page). Facets are built from the SAME filtered base
+    # query (minus the dedup partition), so they reflect every supplier
+    # whose rows match the user's current filter, not just the loaded 100.
+    _facet_q = db.query(OfferItemDB)
+    if source_file_id:
+        _facet_q = _facet_q.filter(OfferItemDB.source_file_id == source_file_id)
+    if category:
+        _facet_q = _facet_q.filter(OfferItemDB.category.ilike(category))
+    if sub_category:
+        _facet_q = _facet_q.filter(OfferItemDB.sub_category.ilike(sub_category))
+    if category_slug:
+        cslug = category_slug.lower().strip()
+        if cslug == "__none__":
+            _facet_q = _facet_q.filter(or_(OfferItemDB.category_slug.is_(None),
+                                           OfferItemDB.category_slug == ""))
+        else:
+            _facet_q = _facet_q.filter(OfferItemDB.category_slug == cslug)
+    if custom_status:
+        cs = custom_status.strip()
+        if cs == "__none__":
+            _facet_q = _facet_q.filter(or_(OfferItemDB.custom_status.is_(None),
+                                           OfferItemDB.custom_status == ""))
+        else:
+            _facet_q = _facet_q.filter(OfferItemDB.custom_status == cs)
+    # Deliberately NOT applying `supplier=` to the facet query so the user
+    # still sees every other supplier available after selecting one.
+    _distinct_suppliers = sorted({
+        (s or "").strip()
+        for (s,) in _facet_q.with_entities(OfferItemDB.supplier_name).distinct().all()
+        if s
+    })
 
     # Cross-category EAN conflict detection (Samuel 2026-10-25). A valid GS1
     # EAN identifies a single physical product, so the same EAN appearing in
@@ -454,6 +527,7 @@ async def get_records(
         "skip": skip,
         "limit": limit,
         "records": records,
+        "facets": {"supplier": _distinct_suppliers},
     }
 
 

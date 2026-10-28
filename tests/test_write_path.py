@@ -174,7 +174,7 @@ class TestServerSideFilters:
     def _recs(self, db, **kw):
         from fastapi import Response
         base = dict(response=Response(), skip=0, limit=100, source_file_id=None, search=None, category=None,
-                    sub_category=None, category_slug=None, custom_status=None, supplier=None, db=db)
+                    sub_category=None, category_slug=None, custom_status=None, supplier=None, sort=None, db=db)
         base.update(kw)
         return asyncio.run(get_records(**base))
 
@@ -331,13 +331,13 @@ def _rec(db, **kw):
     db.commit()
 
 
-def _records(db, search=None, category_slug=None):
+def _records(db, search=None, category_slug=None, sort=None):
     from fastapi import Response
     return asyncio.run(get_records(
         response=Response(),
         skip=0, limit=100, source_file_id=None, search=search, category=None,
         sub_category=None, category_slug=category_slug,
-        custom_status=None, supplier=None, db=db))
+        custom_status=None, supplier=None, sort=sort, db=db))
 
 
 class TestSearchTokens:
@@ -429,6 +429,48 @@ class TestSearchTokens:
         assert "RULE 7 — COMPOUND LOCATION" in src
         assert "\"or\"" in src.split("RULE 7")[1].split("RULE 8")[0]
         assert "Loendersloot / Revera / Mentrex" in src
+
+    def test_price_sort_pushes_zero_and_review_to_tail(self):
+        """Samuel 2026-10-28: Hennessy 1L sorted by lowest €/unit placed
+        a €0 historical row before the €3.33 review-flagged row. Both are
+        'unusable' at that price and must sort after every trusted
+        positive-priced row. Server-side `sort=price_per_unit_eur_asc`
+        now applies this rule so pagination is also correct."""
+        db = _session()
+        _rec(db, uid="trust-cheap", brand="Hennessy", product_name="VS",
+             unit_volume_ml=1000, supplier_name="Supplier A",
+             price_per_unit=20.0, price_per_unit_eur=20.0, needs_manual_review=False)
+        _rec(db, uid="trust-mid", brand="Hennessy", product_name="VS",
+             unit_volume_ml=1000, supplier_name="Supplier B",
+             price_per_unit=26.5, price_per_unit_eur=26.5, needs_manual_review=False)
+        _rec(db, uid="review-low", brand="Hennessy", product_name="VSOP",
+             unit_volume_ml=1000, supplier_name="Supplier C",
+             price_per_unit=3.33, price_per_unit_eur=3.33, needs_manual_review=True)
+        _rec(db, uid="zero",       brand="Hennessy", product_name="VS",
+             unit_volume_ml=1000, supplier_name="Supplier D",
+             price_per_unit=0.0, price_per_unit_eur=0.0, needs_manual_review=False)
+        r = _records(db, search="Hennessy", sort="price_per_unit_eur_asc")
+        uids = [row["uid"] for row in r["records"]]
+        # Trusted positive-priced rows FIRST, in ascending price order.
+        assert uids[0] == "trust-cheap"
+        assert uids[1] == "trust-mid"
+        # Then the unusable tail — either order inside the tail is fine,
+        # but every unusable row must come AFTER every trusted row.
+        assert set(uids[2:]) == {"review-low", "zero"}
+
+    def test_supplier_facet_covers_full_filtered_dataset(self):
+        """Samuel 2026-10-28: supplier dropdown showed only "Balkan Luxury
+        Supply" because it was built from the loaded 100 rows. The server
+        now returns a facets.supplier list computed from the full filtered
+        dataset — selecting a specific supplier does NOT narrow the facet
+        (the user still sees every other supplier they could switch to)."""
+        db = _session()
+        for i, sup in enumerate(["Alpha", "Bravo", "Charlie", "Delta"]):
+            _rec(db, uid=f"s{i}", brand="Hennessy", product_name="VS",
+                 unit_volume_ml=1000, supplier_name=sup,
+                 price_per_unit_eur=20.0 + i)
+        r = _records(db)
+        assert r["facets"]["supplier"] == ["Alpha", "Bravo", "Charlie", "Delta"]
 
     def test_duplicated_rows_snap_to_same_per_unit_price(self):
         """Samuel 2026-10-27: two Jameson rows on the same source file,
