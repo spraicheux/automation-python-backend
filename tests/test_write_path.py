@@ -77,9 +77,9 @@ def _offer(db, uid, price_eur, valid_until, supplier):
     db.commit()
 
 
-def _bp(db):
+def _bp(db, skip=0, limit=24):
     return asyncio.run(get_best_prices(
-        skip=0, limit=24, search=None, category=None,
+        skip=skip, limit=limit, search=None, category=None,
         sub_category=None, category_slug=None, db=db))
 
 
@@ -472,6 +472,23 @@ class TestSearchTokens:
         r = _records(db)
         assert r["facets"]["supplier"] == ["Alpha", "Bravo", "Charlie", "Delta"]
 
+    def test_currency_facet_covers_full_filtered_dataset(self):
+        """Samuel 2026-10-28 retest 2: Moutai drawer showed USD but the
+        Currency filter listed EUR only — the dropdown was built from the
+        loaded 100 rows. The server now returns facets.currency across the
+        full filtered dataset so a USD row outside the page still populates."""
+        db = _session()
+        for i in range(5):
+            _rec(db, uid=f"eur{i}", brand="Hennessy", product_name="VS",
+                 unit_volume_ml=700, currency="EUR",
+                 price_per_unit_eur=20.0 + i)
+        # Single USD row — this is the "Moutai" case: present in data, invisible
+        # to the client-side builder when outside the loaded page.
+        _rec(db, uid="usd_only", brand="Moutai", product_name="Feitian",
+             unit_volume_ml=500, currency="USD", price_per_unit_eur=140)
+        r = _records(db)
+        assert set(r["facets"]["currency"]) == {"EUR", "USD"}, r["facets"]
+
     def test_duplicated_rows_snap_to_same_per_unit_price(self):
         """Samuel 2026-10-27: two Jameson rows on the same source file,
         both carrying the Rule-6 "multiple incoterms detected — row
@@ -542,6 +559,60 @@ class TestSearchTokens:
                   "Barcode: 3349668515714", "3349668515714"):
             r = _records(db, search=q)
             assert r["total"] == 1 and r["records"][0]["uid"] == "pr-labelled", q
+
+
+class TestBestPricesPaginationStable:
+    """Samuel 2026-10-28 retest 2: clicking "Load more" on Best Prices made the
+    first 24 groups appear again. Root cause was non-deterministic union-find:
+    `ks = list(ean_to_sku_keys[ek])` iterates a Python set in hash order, so
+    the root chosen by `_union` varied run-to-run. That shuffled
+    `grouped_list` across calls, so `?skip=24` could re-return groups already
+    served at `?skip=0`. The fix sorts both the outer EAN keys and the inner
+    sku-key list, then sorts `grouped_list` by a stable (brand, product_name,
+    volume, sku_identity) key before pagination."""
+
+    def _bulk(self, db, n):
+        # n distinct multi-supplier SKUs. Each SKU has two suppliers so it
+        # qualifies for Best Prices (≥2 distinct suppliers rule). The EANs
+        # overlap in groups of two so the union-find pass runs non-trivially.
+        for i in range(n):
+            ean = f"5901041{i:06d}"  # 13-digit numeric, treated as a valid key
+            for s_idx, sup in enumerate(("SupplierA", "SupplierB")):
+                _rec(db, uid=f"sku{i}_{s_idx}",
+                     brand=f"Brand{i:03d}", product_name="PN",
+                     unit_volume_ml=700, units_per_case=6,
+                     incoterm="EXW", location="Rotterdam",
+                     ean_code=ean, category_slug="wines_spirits",
+                     price_per_unit_eur=20.0 + i + s_idx * 0.5,
+                     supplier_name=sup)
+
+    def test_pagination_does_not_repeat_groups(self):
+        db = _session()
+        self._bulk(db, n=40)   # 40 SKUs > 24-group page size → paginates
+        page1 = _bp(db, skip=0,  limit=24)
+        page2 = _bp(db, skip=24, limit=24)
+        ids1 = [g["sku_identity"] for g in page1["groups"]]
+        ids2 = [g["sku_identity"] for g in page2["groups"]]
+        assert len(ids1) == 24
+        assert len(ids2) == 16        # 40 - 24
+        # The critical invariant: no overlap between the two pages.
+        assert set(ids1).isdisjoint(set(ids2)), (
+            "page 2 must not repeat groups already shown on page 1"
+        )
+        # And the two pages together cover every group exactly once.
+        assert sorted(ids1 + ids2) == sorted({*ids1, *ids2})
+        assert page1["total"] == page2["total"] == 40
+
+    def test_group_order_stable_across_calls(self):
+        """Two successive calls to the SAME page must return the SAME order.
+        Pre-fix, the union-find root selection varied between calls, so the
+        order of `grouped_list` could change between requests even without
+        any data change."""
+        db = _session()
+        self._bulk(db, n=30)
+        a = [g["sku_identity"] for g in _bp(db, skip=0, limit=24)["groups"]]
+        b = [g["sku_identity"] for g in _bp(db, skip=0, limit=24)["groups"]]
+        assert a == b, "same request returned a different order"
 
 
 class TestBestPricesSameEanPeer:

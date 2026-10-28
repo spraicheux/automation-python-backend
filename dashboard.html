@@ -1435,6 +1435,13 @@
         availableFilters.supplier.clear();
         data.facets.supplier.forEach(s => availableFilters.supplier.add(s));
       }
+      // Same treatment for currency so a USD-only row outside the loaded page
+      // still populates the dropdown (Samuel 2026-10-28: Moutai drawer showed
+      // USD but the Currency filter listed EUR only).
+      if (data.facets && Array.isArray(data.facets.currency)) {
+        availableFilters.currency.clear();
+        data.facets.currency.forEach(c => availableFilters.currency.add(c));
+      }
       applyDropdownUpdates();
 
       // client-side filters: everything except category/sub_category (server) + search

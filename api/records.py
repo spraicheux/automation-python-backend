@@ -497,6 +497,15 @@ async def get_records(
         for (s,) in _facet_q.with_entities(OfferItemDB.supplier_name).distinct().all()
         if s
     })
+    # Currency facet comes from the full filtered dataset too — the dashboard
+    # used to build it client-side from the loaded 100 rows only, so a USD row
+    # outside that page (Samuel: Moutai drawer shows USD, dropdown missing it)
+    # never appeared in the filter. Mirrors the supplier-facet treatment above.
+    _distinct_currencies = sorted({
+        (c or "").strip()
+        for (c,) in _facet_q.with_entities(OfferItemDB.currency).distinct().all()
+        if c
+    })
 
     # Cross-category EAN conflict detection (Samuel 2026-10-25). A valid GS1
     # EAN identifies a single physical product, so the same EAN appearing in
@@ -527,7 +536,10 @@ async def get_records(
         "skip": skip,
         "limit": limit,
         "records": records,
-        "facets": {"supplier": _distinct_suppliers},
+        "facets": {
+            "supplier": _distinct_suppliers,
+            "currency": _distinct_currencies,
+        },
     }
 
 
@@ -742,8 +754,15 @@ async def get_best_prices(
             if ek:
                 ean_to_sku_keys[ek].add(sku_k)
     ean_attribute_conflicts = {}  # sku_key → list of (ean, attr, va, vb) rejected unions
-    for ek, ks in ean_to_sku_keys.items():
-        ks = list(ks)
+    # Deterministic iteration: Python sets are unordered, so converting a set
+    # to list produces a run-to-run shuffle of which key becomes the union root.
+    # That shuffled the Best Prices group order across API calls, so paginating
+    # with ?skip=24 on the second call could return groups already shown on
+    # ?skip=0 (Samuel: "after Load more the first 24 groups appeared again").
+    # Sort both the outer EAN iteration and the inner sku-key list so the
+    # union-find root — and therefore the merged group order — is stable.
+    for ek in sorted(ean_to_sku_keys.keys()):
+        ks = sorted(ean_to_sku_keys[ek])
         base = ks[0]
         base_rep = sku_groups[base][0]  # exemplar row
         for i in range(1, len(ks)):
@@ -950,6 +969,17 @@ async def get_best_prices(
             "headline_is_stale": headline_is_stale,
             "peers": peers,
         })
+
+    # Final stable sort so ?skip=0 and ?skip=24 slice a consistent order
+    # across calls — defaultdict iteration preserves insertion order, but the
+    # upstream union-find root selection was non-deterministic; this is the
+    # second layer of defence on top of the sorted-ks fix above.
+    grouped_list.sort(key=lambda g: (
+        (g.get("brand") or "").lower(),
+        (g.get("product_name") or "").lower(),
+        g.get("unit_volume_ml") or 0,
+        g.get("sku_identity") or "",
+    ))
 
     return {
         "total": len(grouped_list),          # real comparable-GROUP count

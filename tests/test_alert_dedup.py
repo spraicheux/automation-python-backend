@@ -173,3 +173,56 @@ class TestAlertSameBatchGuard:
         alerts = _list_alerts(days=120, limit=50, db=db)["alerts"]
         dior = [x for x in alerts if (x["product"]["brand"] or "").lower() == "dior"]
         assert len(dior) >= 1, "a different-supplier undercut must still fire"
+
+
+class TestAlertCrossCategorySuppression:
+    """Samuel 2026-10-28 retest: an alert surfaced a Perfumes offer with a
+    Cosmetics benchmark even though the UI shows the EAN as a cross-category
+    conflict. The peer key is EAN + incoterm + location, which deliberately
+    ignores category, so the two rows peered together and fired a new-low
+    alert. The guard added in api/alerts.py skips any peer group that
+    contains a cross-category EAN (same EAN, more than one category_slug
+    across the whole table)."""
+
+    @staticmethod
+    def _row(uid, category_slug, price, days_ago, supplier="Supplier"):
+        return OfferItemDB(
+            uid=uid, job_id="t", brand="Mugler", product_name="Angel Fantasm",
+            unit_volume_ml=100, units_per_case=6,
+            incoterm="EXW", location="Rotterdam",
+            ean_code="3614274085518",
+            category_slug=category_slug,
+            price_per_unit_eur=price,
+            supplier_name=supplier,
+            offer_date=datetime.utcnow() - timedelta(days=days_ago),
+            created_at=datetime.utcnow(),
+        )
+
+    def test_cross_category_ean_suppresses_alert(self):
+        db = _session()
+        # Same EAN tagged under two different category_slugs — the exact
+        # inconsistency the records endpoint flags as cross_category_ean_conflict.
+        db.add(self._row("cat_old", "cosmetics", 50.0, days_ago=30, supplier="SupplierA"))
+        db.add(self._row("perf_new", "perfumes", 40.0, days_ago=1, supplier="SupplierB"))
+        db.commit()
+        res = _list_alerts(days=30, limit=50, db=db)
+        mugler = [a for a in res["alerts"]
+                  if (a["product"]["brand"] or "").lower() == "mugler"]
+        assert mugler == [], (
+            "cross-category EAN peer must not fire alerts; got " + repr(mugler)
+        )
+
+    def test_single_category_ean_still_alerts(self):
+        """Negative control: without the cross-category inconsistency, the
+        same undercut pattern must still fire. If this fails, the guard
+        over-reaches and suppresses legitimate alerts."""
+        db = _session()
+        db.add(self._row("p_old", "perfumes", 50.0, days_ago=30, supplier="SupplierA"))
+        db.add(self._row("p_new", "perfumes", 40.0, days_ago=1,  supplier="SupplierB"))
+        db.commit()
+        res = _list_alerts(days=30, limit=50, db=db)
+        mugler = [a for a in res["alerts"]
+                  if (a["product"]["brand"] or "").lower() == "mugler"]
+        assert len(mugler) == 1, (
+            "single-category undercut must still fire; got " + repr(mugler)
+        )

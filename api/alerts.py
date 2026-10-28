@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.normalization import peer_group_id, peer_group_id_from_ean, is_peer_group_qualified
+from core.normalization import peer_group_id, peer_group_id_from_ean, is_peer_group_qualified, ean_key
 from models.offer_item import OfferItemDB
 
 router = APIRouter()
@@ -48,6 +48,24 @@ def list_alerts(
     all_rows = (db.query(OfferItemDB)
                   .filter(OfferItemDB.price_per_unit_eur.isnot(None))
                   .all())
+
+    # Cross-category EAN conflict guard (Samuel 2026-10-28). A valid GS1 EAN
+    # identifies one physical product; if the same EAN carries two different
+    # `category_slug` values in the DB that is a classification inconsistency,
+    # not a reason to compare prices. The records endpoint already surfaces
+    # this as a read-only `cross_category_ean_conflict` flag. Alerts must not
+    # compare offers across the boundary — otherwise a Perfumes offer would
+    # fire a "new best" against a Cosmetics benchmark even though the UI shows
+    # the EAN as cross-category (Samuel's current example). We suppress every
+    # alert whose peer group contains any EAN that appears under more than one
+    # category_slug across the full table.
+    _ean_cats = defaultdict(set)
+    for r in all_rows:
+        ek = ean_key(r.ean_code)
+        cs = getattr(r, "category_slug", None)
+        if ek and cs:
+            _ean_cats[ek].add(cs)
+    _cross_cat_eans = {e for e, cs in _ean_cats.items() if len(cs) > 1}
 
     # Group all rows by canonical key.
     # EAN-primary: when a valid EAN is present, records that share the same
@@ -90,6 +108,14 @@ def list_alerts(
     for k, rows in by_key.items():
         if len(rows) < 2:
             continue  # No prior peer to beat — not an alert-worthy event
+
+        # Cross-category EAN exclusion: if any row in this peer group carries
+        # an EAN that is also tagged with a different category_slug elsewhere
+        # in the table, the two sides are not comparable until the mismatch is
+        # resolved. Skip the whole group — the records endpoint still shows
+        # the conflict flag so the operator can clean it up.
+        if any(ean_key(r.ean_code) in _cross_cat_eans for r in rows):
+            continue
 
         # Chronological order
         rows = sorted(rows, key=lambda x: x.offer_date or x.created_at or datetime.min)
