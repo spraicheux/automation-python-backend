@@ -2929,6 +2929,9 @@ def clean_product_data(product: dict) -> dict:
         ("location not found",           'location'),
         ("origin_country not found",     'origin_country'),
         ("label_language not found",     'label_language'),
+        ("moq_cases not found",          'moq_cases'),
+        ("units_per_case not found",     'units_per_case'),
+        ("ean_code not found",           'ean_code'),
     ]
     _flags = cleaned_product.get('error_flags') or []
     if isinstance(_flags, list) and _flags:
