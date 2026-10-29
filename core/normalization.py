@@ -425,6 +425,8 @@ def peer_group_id_from_ean(
     incoterm: str | None = None,
     location: str | None = None,
     custom_status: str | None = None,
+    perfume_format: str | None = None,
+    retail_state: str | None = None,
 ) -> str | None:
     """
     EAN-primary peer group key. When a valid EAN is present, two records
@@ -432,14 +434,23 @@ def peer_group_id_from_ean(
     same peer regardless of how each supplier formatted the product name.
     Customs status is included so a T1 (in-bond) offer is never grouped with a
     T2 (duty-paid) offer of the same EAN — an unspecified status folds to ""
-    and still peers with another unspecified row. Returns None when no valid
-    EAN is provided — callers fall back to the attribute-based peer_group_id.
+    and still peers with another unspecified row. perfume_format
+    (EDP/EDT/EDC/Parfum/Cologne/EDF) and retail_state (retail/tester/
+    sample/miniature) are also included so a shared EAN cannot silently
+    merge commercially distinct variants (Samuel acceptance v1 R-11:
+    "EDT and tester must be separated or explicitly held for identity
+    review despite shared EAN"). Non-perfume rows pass None/empty for
+    both fields and still peer with other non-perfume rows of the same
+    EAN. Returns None when no valid EAN is provided — callers fall back
+    to the attribute-based peer_group_id.
     """
     ean = ean_key(ean_code)
     if not ean:
         return None
     cs = _norm_text(custom_status)
-    return f"ean:{ean}|{_norm_incoterm(incoterm)}|{_normalize_location(location)}|{cs}"
+    pf = _norm_text(perfume_format)
+    rs = _norm_text(retail_state)
+    return f"ean:{ean}|{_norm_incoterm(incoterm)}|{_normalize_location(location)}|{cs}|{pf}|{rs}"
 
 
 # ── Backward-compat shim ────────────────────────────────────────────────────

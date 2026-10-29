@@ -167,6 +167,7 @@ class OfferItemDB(Base):
             # EAN no longer split the peer.)
             "peer_group_id": peer_group_id_from_ean(
                 self.ean_code, self.incoterm, self.location,
+                self.custom_status, self.perfume_format, self.retail_state,
             ) or peer_group_id(
                 self.brand, self.product_name,
                 unit_volume_ml=self.unit_volume_ml,

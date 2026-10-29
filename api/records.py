@@ -218,7 +218,7 @@ async def get_benchmarks(
         # same EAN + incoterm + location is ONE peer even if shade/range/name
         # differ, so the All Offers "12M LOW" badge and Best Prices describe the
         # SAME peer. Falls back to the attribute key when no valid EAN.
-        key = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status) or peer_group_id(
+        key = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status, r.perfume_format, r.retail_state) or peer_group_id(
             r.brand, r.product_name,
             unit_volume_ml=r.unit_volume_ml,
             units_per_case=r.units_per_case,
@@ -805,7 +805,7 @@ async def get_best_prices(
         # when no valid EAN is present.
         peer_buckets = defaultdict(list)
         for r in rows_in:
-            pg = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status) or peer_group_id(
+            pg = peer_group_id_from_ean(r.ean_code, r.incoterm, r.location, r.custom_status, r.perfume_format, r.retail_state) or peer_group_id(
                 r.brand, r.product_name,
                 unit_volume_ml=r.unit_volume_ml,
                 units_per_case=r.units_per_case,
