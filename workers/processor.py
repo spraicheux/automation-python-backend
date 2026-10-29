@@ -660,6 +660,21 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
 
     safe_data['moq_bottles'] = _to_float(safe_data.get('moq_bottles'))
 
+    # Stale-flag cleanup: the LLM sometimes attaches "MOQ in bottles, not
+    # cases" even when the source expresses MOQ in pallets or FTL (A10, A11
+    # in the acceptance pack). After we read `moq_unit`, drop that flag if
+    # moq_unit disagrees — otherwise the drawer reads as a defect it isn't.
+    if moq_unit and moq_unit not in ("bottles", "bottle"):
+        before = list(error_flags)
+        error_flags = [f for f in before
+                       if not (isinstance(f, str) and "MOQ in bottles" in f)]
+        if len(error_flags) != len(before):
+            logger.info(
+                f"[_normalize_moq_and_quantity] dropped stale MOQ-in-bottles "
+                f"flag(s) because moq_unit = {moq_unit!r}"
+            )
+            safe_data['error_flags'] = error_flags
+
     # ── quantity_case ───────────────────────────────────────────────────
     qty = _to_float(safe_data.get('quantity_case'))
     qty_unit = (safe_data.get('quantity_unit') or '').lower().strip()

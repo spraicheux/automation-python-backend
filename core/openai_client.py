@@ -2963,6 +2963,18 @@ def clean_product_data(product: dict) -> dict:
                             _drop = True
                             logger.info(f"[clean_product_data] stale-flag drop: {_f!r} (field '{_field}' now = {_v!r})")
                             break
+                # "MOQ in bottles, not cases" / "MOQ in bottles, cases unknown"
+                # — the LLM sometimes flags a non-bottle MOQ as bottles out
+                # of habit (A10 is pallets, A11 is FTL). If moq_unit disagrees
+                # with "bottles" the flag is stale and misleading.
+                if not _drop and "MOQ in bottles" in _f:
+                    _mu = (cleaned_product.get("moq_unit") or "").lower()
+                    if _mu and _mu not in ("bottles", "bottle"):
+                        _drop = True
+                        logger.info(
+                            f"[clean_product_data] stale-flag drop: {_f!r} "
+                            f"(moq_unit = {_mu!r}, not bottles)"
+                        )
             if not _drop:
                 _kept.append(_f)
         if len(_kept) != len(_flags):
