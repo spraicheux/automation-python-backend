@@ -657,8 +657,19 @@ GENERAL RULE FOR BRAND CORRECTIONS:
 - # brand canonicalization is informational, no error flag needed
 
 ══════════════════════════════════════════════════════════════════════
-SUPPLIER REFERENCE — OVERRIDE RULE  ⚠️
+SUPPLIER REFERENCE — OVERRIDE RULE  ⚠️  PER-PRODUCT, NEVER FILE-LEVEL
 ══════════════════════════════════════════════════════════════════════
+supplier_reference is ALWAYS a PER-PRODUCT field, never a document-level
+or shared value. If the source lists multiple products each with their
+own "Supplier reference: Xnn" / "Ref: Xnn" / "P.Code: Xnn" line (as in
+plain-text offer sheets like "Supplier reference: A01 … Supplier
+reference: A02 …"), you MUST assign the reference that appears INSIDE
+each product's block to THAT product only. NEVER reuse the first
+reference you saw as a global default for later products. If you cannot
+find a per-product reference for a specific product, return "Not Found"
+for that product's supplier_reference — do NOT copy the value from a
+different product's block.
+
 Scan EVERY column and piece of text. If found, MUST write to supplier_reference.
 Column names to scan:
   "P.Code", "P Code", "Ref", "Reference", "Ref No", "Supplier Ref",
@@ -923,36 +934,81 @@ async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
 
-    # ── LINE-BASED CHUNKING ────────────────────────────────────────────────────
-    # Split input by lines (never cuts a product line in half) and batch
-    # ~20 body lines per chunk — same principle as Excel row batching and PDF
-    # page batching. Each chunk produces ~15–20 products → well within the
-    # 16K output token limit even with compact JSON.
+    # ── BLOCK-AWARE CHUNKING ───────────────────────────────────────────────────
+    # When the input contains explicit per-product markers (e.g.
+    # "Supplier reference: A01", "Supplier reference: A02" …), split
+    # the text at those boundaries so each chunk carries ONLY complete
+    # product blocks. This stops the LLM from (a) collapsing adjacent
+    # products into one row, (b) reusing the first "Supplier reference"
+    # it saw as a shared default for later products, or (c) losing a
+    # block whose boundary happened to fall mid-chunk under the old
+    # line-based scheme. Samuel acceptance v1 (R-13 / R-14).
     #
-    # The first HEADER_LINES of the text (supplier name, email, date, subject)
-    # are prepended to EVERY chunk so the AI always has supplier context,
-    # even in chunks 2, 3, etc.
+    # Fallback (no markers detected): line-based chunking as before.
+    # The first HEADER_LINES of the text (supplier name, offer-date,
+    # subject) are prepended to EVERY chunk so the AI always has
+    # supplier context, even for chunks 2+.
     # ─────────────────────────────────────────────────────────────────────────
-    LINES_PER_CHUNK = 20   # ~15–20 product lines per API call
-    HEADER_LINES    = 8    # lines containing From/De, subject, date — kept in every chunk
+    LINES_PER_CHUNK = 20
+    HEADER_LINES    = 5    # tightened: a "Supplier reference: A01" on line 7+
+                           # must NOT be captured as "file-level" header
 
     all_lines    = text.splitlines(keepends=True)
     header_block = ''.join(all_lines[:HEADER_LINES])
     body_lines   = all_lines[HEADER_LINES:]
+    body_text    = ''.join(body_lines)
 
-    if len(body_lines) <= LINES_PER_CHUNK:
-        text_chunks = [text]
-    else:
-        text_chunks = [
-            header_block + ''.join(body_lines[i:i + LINES_PER_CHUNK])
-            for i in range(0, len(body_lines), LINES_PER_CHUNK)
-        ]
-
-    logger.info(
-        f"[extract_offer] Split into {len(text_chunks)} chunk(s) — "
-        f"LINES_PER_CHUNK={LINES_PER_CHUNK}, total_lines={len(all_lines)}, "
-        f"header_lines={HEADER_LINES}, body_lines={len(body_lines)}"
+    # Detect explicit per-product markers in the body (not header)
+    import re as _re_block
+    _BLOCK_MARKER_RE = _re_block.compile(
+        r'(?mi)^\s*(?:Supplier\s+reference|Reference|Ref|Ref\s*No|SKU|P\.?Code)\s*[:\-]\s*\S+'
     )
+    marker_positions = [m.start() for m in _BLOCK_MARKER_RE.finditer(body_text)]
+
+    text_chunks: list[str] = []
+    chunk_block_counts: list[int] = []  # how many product blocks each chunk contains
+
+    if len(marker_positions) >= 2:
+        # Each product block runs from one marker to the next (last block to EOT).
+        boundaries = marker_positions + [len(body_text)]
+        blocks = [body_text[boundaries[i]:boundaries[i + 1]]
+                  for i in range(len(boundaries) - 1)]
+        # Pack blocks into chunks so no chunk exceeds ~LINES_PER_CHUNK lines.
+        current_blocks: list[str] = []
+        current_lines = 0
+        for blk in blocks:
+            blk_lines = blk.count('\n') + 1
+            if current_blocks and current_lines + blk_lines > LINES_PER_CHUNK:
+                text_chunks.append(header_block + ''.join(current_blocks))
+                chunk_block_counts.append(len(current_blocks))
+                current_blocks, current_lines = [], 0
+            current_blocks.append(blk)
+            current_lines += blk_lines
+        if current_blocks:
+            text_chunks.append(header_block + ''.join(current_blocks))
+            chunk_block_counts.append(len(current_blocks))
+        logger.info(
+            f"[extract_offer] BLOCK-AWARE chunking: {len(marker_positions)} "
+            f"product markers → {len(text_chunks)} chunk(s), "
+            f"block_counts={chunk_block_counts}"
+        )
+    else:
+        # No per-product markers detected: fall back to line-based chunking
+        # (free-form email / catalogue text).
+        if len(body_lines) <= LINES_PER_CHUNK:
+            text_chunks = [text]
+            chunk_block_counts = [0]
+        else:
+            text_chunks = [
+                header_block + ''.join(body_lines[i:i + LINES_PER_CHUNK])
+                for i in range(0, len(body_lines), LINES_PER_CHUNK)
+            ]
+            chunk_block_counts = [0] * len(text_chunks)
+        logger.info(
+            f"[extract_offer] Line-based chunking: {len(text_chunks)} chunk(s) — "
+            f"LINES_PER_CHUNK={LINES_PER_CHUNK}, total_lines={len(all_lines)}, "
+            f"header_lines={HEADER_LINES}, body_lines={len(body_lines)}"
+        )
 
     all_products = []
 
@@ -960,13 +1016,28 @@ async def extract_offer(text: str) -> dict:
         logger.info(f"[extract_offer] ----- Chunk {idx + 1}/{len(text_chunks)} START — length: {len(chunk)} chars -----")
         logger.info(f"[extract_offer] Chunk {idx + 1} content preview (first 200 chars): {chunk[:200]!r}")
 
+        _block_hint = ""
+        _expected_in_chunk = chunk_block_counts[idx] if idx < len(chunk_block_counts) else 0
+        if _expected_in_chunk >= 1:
+            _block_hint = (
+                f"\n\n⚠️ BLOCK COUNT (hard rule for this chunk): the chunk contains "
+                f"EXACTLY {_expected_in_chunk} product block(s), each starting with a "
+                f"'Supplier reference:' / 'Reference:' / 'Ref:' / 'SKU:' / 'P.Code:' line. "
+                f"Your 'products' array for this chunk MUST have EXACTLY {_expected_in_chunk} "
+                f"item(s) (plus duplicates ONLY for multiple incoterms per Rule 6, "
+                f"never for alternative locations per Rule 7). Each product's "
+                f"supplier_reference MUST be the reference token that appears INSIDE "
+                f"THAT product's own block — NEVER copy a reference from a different "
+                f"block (Samuel R-13/R-14). Do NOT drop or merge blocks."
+            )
+
         prompt = f"""
         You are extracting commercial product offers from text (Wines &
         Spirits, Perfumes, or Cosmetics — identify category per Rule 0.23).
         Return COMPACT JSON ONLY (no indentation, no extra whitespace, no newlines inside the JSON), no explanation.
 
         Extract ALL products from the text. Return a JSON object with a 'products' array containing ALL products found.
-        If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).
+        If a product has MULTIPLE INCOTERMS, create one row per incoterm (all other fields identical).{_block_hint}
 
         CRITICAL: Extract ONLY the actual product lines. Do NOT create rows for section headers
         (like "Whisky", "Rum", "Gin"), brand lists, footers, or promotional text.
@@ -2344,7 +2415,10 @@ def clean_product_data(product: dict) -> dict:
     # zero/null prices downstream).
     _raw_ppu = product.get('price_per_unit')
     _raw_ppc = product.get('price_per_case')
-    _raw_zero_price = _raw_ppu in (0, 0.0, "0", "0.0", "0.00")
+    _ZERO_SENTINELS = (0, 0.0, "0", "0.0", "0.00")
+    _raw_zero_price = (
+        _raw_ppu in _ZERO_SENTINELS or _raw_ppc in _ZERO_SENTINELS
+    )
     # Samuel R-13 / B11: a supplier may quote "Price on request" / "POR" / "TBC"
     # with no numeric price. Current loop coerces that to None and the row
     # would be silently dropped by is_valid_offer. Detect the textual
@@ -2684,6 +2758,8 @@ def clean_product_data(product: dict) -> dict:
     # ──────────────────────────────────────────────────────────────────
 
     # Zero-price retention: see guard at the top of clean_product_data.
+    # Covers "EUR 0/case" (B10) as well as "EUR 0/btl" — either sentinel
+    # keeps the row with needs_manual_review + a visible flag.
     if _raw_zero_price:
         flags = cleaned_product.get('error_flags') or []
         _msg = "Zero price retained — unusable for trading until confirmed; excluded from Best Prices/benchmarks"
@@ -2691,8 +2767,16 @@ def clean_product_data(product: dict) -> dict:
             flags.append(_msg)
         cleaned_product['error_flags'] = flags
         cleaned_product['needs_manual_review'] = True
-        # Keep the explicit 0 so downstream can see "stated zero" vs "unknown"
-        if cleaned_product.get('price_per_unit') is None:
+        # Keep the explicit 0 on whichever price field it was stated so
+        # downstream can see "stated zero" vs "unknown". Prefer the field
+        # the source actually used; if neither survived the loop, plant
+        # the sentinel on price_per_unit so is_valid_offer keeps the row.
+        if cleaned_product.get('price_per_case') is None and _raw_ppc in _ZERO_SENTINELS:
+            cleaned_product['price_per_case'] = 0
+        if cleaned_product.get('price_per_unit') is None and _raw_ppu in _ZERO_SENTINELS:
+            cleaned_product['price_per_unit'] = 0
+        if (cleaned_product.get('price_per_unit') is None
+                and cleaned_product.get('price_per_case') is None):
             cleaned_product['price_per_unit'] = 0
 
     # Price-on-request retention (Samuel R-13 / B11): keep the row with a

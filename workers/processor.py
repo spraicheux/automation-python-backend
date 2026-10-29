@@ -743,14 +743,16 @@ def _date_from_filename(filename: str, fallback_year: int) -> Optional[datetime]
     return None
 
 
-def _resolve_offer_date(raw, source_filename: str, received: datetime) -> datetime:
+def _resolve_offer_date(raw, source_filename: str, received: datetime) -> Optional[datetime]:
     """
     Resolve the stored offer_date, in priority order:
       1. a real date parsed from the document/header (AI-extracted),
       2. the date encoded in the source filename (stock lists / price lists),
-      3. the received/ingest date — offers arrive and are ingested together,
-         so arrival is the logical offer date when nothing else is known.
-    Always returns a date, so no row ever shows an age with no offer date.
+      3. None — Samuel R-06 explicitly forbids inventing a commercial offer
+         date. date_received remains available on the row as the arrival
+         time, and the caller must emit a review flag so the dashboard
+         labels this row as "offer date unknown — using received date for
+         freshness display" instead of showing a fabricated commercial date.
     """
     parsed = _parse_offer_date(raw)
     if parsed is not None:
@@ -758,7 +760,31 @@ def _resolve_offer_date(raw, source_filename: str, received: datetime) -> dateti
     from_name = _date_from_filename(source_filename or "", (received or datetime.utcnow()).year)
     if from_name is not None:
         return from_name
-    return received or datetime.utcnow()
+    return None
+
+
+def _offer_date_or_flag(raw, source_filename: str, received: datetime,
+                       safe_data: dict) -> Optional[datetime]:
+    """Resolve offer_date; when the source gave none AND the filename yielded
+    none, store None (no fabricated commercial date, Samuel R-06) and record
+    a visible review flag so the dashboard can label the row as
+    "offer date unknown — showing received date for freshness only"."""
+    resolved = _resolve_offer_date(raw, source_filename, received)
+    if resolved is None:
+        try:
+            flags = safe_data.get('error_flags') or []
+            if not isinstance(flags, list):
+                flags = []
+            _msg = ("offer_date not stated in source — stored as unknown "
+                    "(freshness displayed from date_received as a labelled fallback, "
+                    "never as a commercial offer date)")
+            if _msg not in flags:
+                flags.append(_msg)
+                safe_data['error_flags'] = flags
+            safe_data['needs_manual_review'] = True
+        except Exception:
+            pass
+    return resolved
 
 
 def _apply_offer_defaults(data: dict) -> dict:
@@ -1224,10 +1250,10 @@ async def process_offer(payload, job_id: str):
                         lead_time=safe_data['lead_time'],
                         moq_cases=safe_data['moq_cases'],
                         valid_until=safe_data['valid_until'],
-                        offer_date=_resolve_offer_date(
+                        offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
                             payload.source_filename or "",
-                            datetime.utcnow()),
+                            datetime.utcnow(), safe_data),
                         date_received=datetime.utcnow(),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
@@ -1425,10 +1451,10 @@ async def process_offer(payload, job_id: str):
                     lead_time=safe_data['lead_time'],
                     moq_cases=safe_data['moq_cases'],
                     valid_until=safe_data['valid_until'],
-                    offer_date=_resolve_offer_date(
+                    offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),
                         payload.source_filename or "",
-                        datetime.utcnow()),
+                        datetime.utcnow(), safe_data),
                     date_received=datetime.utcnow(),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],

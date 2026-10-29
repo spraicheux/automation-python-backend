@@ -112,13 +112,19 @@ class TestResolveOfferDate:
         # No header date → the filename's document date is the price's true age
         assert _resolve_offer_date("Not Found", "STOCK LIST PERFUMES 13.04.xlsx", self.RECV) == datetime(2026, 4, 13)
 
-    def test_falls_back_to_received_when_nothing_in_name(self):
-        # No header date and no date in the name → arrival/ingest date
-        assert _resolve_offer_date("Not Found", "LOREAL_LUX.xlsx", self.RECV) == self.RECV
+    def test_returns_none_when_source_and_filename_have_no_date(self):
+        # Samuel acceptance v1 (R-06): "do not invent an offer date".
+        # When neither the source nor the filename supplies a date, the
+        # resolver must return None. The caller is responsible for raising
+        # the "offer_date unknown" review flag — this helper never
+        # fabricates a commercial date.
+        assert _resolve_offer_date("Not Found", "LOREAL_LUX.xlsx", self.RECV) is None
 
-    def test_always_returns_a_date(self):
-        # Never None — no row may show an age with no offer date
-        assert _resolve_offer_date(None, "", self.RECV) == self.RECV
+    def test_returns_none_when_everything_unknown(self):
+        # Samuel acceptance v1 (R-06): no fabrication at all. None allows
+        # the DB column to stay null so freshness is displayed from
+        # date_received with an explicit "offer_date unknown" label.
+        assert _resolve_offer_date(None, "", self.RECV) is None
 
 
 # ─── supplier placeholder guard (a filename / test marker is not a supplier) ───
