@@ -119,6 +119,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 location=offer_dict.get("location"),
                 lead_time=offer_dict.get("lead_time"),
                 moq_cases=offer_dict.get("moq_cases"),
+                moq_unit=offer_dict.get("moq_unit"),
                 valid_until=offer_dict.get("valid_until"),
                 best_before_date=offer_dict.get("best_before_date"),
                 vintage=offer_dict.get("vintage"),
@@ -142,8 +143,39 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 processing_version=offer_dict.get("processing_version"),
                 offer_date=offer_dict.get("offer_date"),
                 date_received=offer_dict.get("date_received"),
+                supersedes_ref=offer_dict.get("supersedes_ref"),
             )
             db.add(row)
+
+            # R-07 supersession resolver — same-supplier only. When this row
+            # arrives carrying `supersedes_ref="A01"`, back-populate the
+            # earlier row's `superseded_by_uid` / `superseded_by_ref` so
+            # Best Prices moves A01 from ACTIONABLE CURRENT to HISTORY and
+            # the drawer shows the replacement chain. Match by
+            # (supplier_name, supplier_reference) to avoid cross-supplier
+            # collisions — a Beta "A01" is NOT superseded by an Alpha "C01"
+            # that says it replaces A01.
+            try:
+                sref = (offer_dict.get("supersedes_ref") or "").strip()
+                sname = (offer_dict.get("supplier_name") or "").strip()
+                if sref and sname:
+                    earlier = (
+                        db.query(OfferItemDB)
+                          .filter(OfferItemDB.supplier_reference == sref)
+                          .filter(OfferItemDB.supplier_name == sname)
+                          .filter(OfferItemDB.uid != offer_dict.get("uid"))
+                          .all()
+                    )
+                    for prev in earlier:
+                        prev.superseded_by_uid = offer_dict.get("uid")
+                        prev.superseded_by_ref = offer_dict.get("supplier_reference")
+                        logger.info(
+                            f"R-07 supersession: {sname}/{sref} ({prev.uid}) "
+                            f"superseded by {offer_dict.get('supplier_reference')} "
+                            f"({offer_dict.get('uid')})"
+                        )
+            except Exception as _sup_err:
+                logger.warning(f"R-07 supersession resolve failed: {_sup_err}")
 
             source_file.product_count += 1
             # Phase 3 M1: keep imported_row_count in sync + flag import as
@@ -270,6 +302,43 @@ def _detect_dropped_alt_locations(safe_data: dict) -> None:
     if not any(isinstance(f, str) and "alternative locations" in f for f in flags):
         flags.append(msg)
     safe_data["error_flags"] = flags
+
+
+# R-07 supersession parser. The source may state explicitly that a new
+# commercial offer replaces an older one, e.g.
+#   "New supplier offer replaces our earlier A01 price for this commercial product."
+#   "This offer supersedes our previous B07 price."
+# We extract the referenced supplier_reference and store it in
+# `safe_data['supersedes_ref']` so save_offer_to_db can back-populate the
+# earlier row's `superseded_by_uid`. Match is case-insensitive and tolerates
+# "our earlier", "our previous", "the earlier/previous", or no article.
+_SUPERSEDES_RE = re.compile(
+    r"\b(?:replaces|supersedes|supercedes|superseding|replacing)\b"
+    r"(?:\s+(?:our|the))?"
+    r"(?:\s+(?:earlier|previous|prior|former|old))?"
+    r"\s+([A-Z]\w{0,15}\d+[A-Z]?)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_supersedes_ref(safe_data: dict) -> None:
+    """Scan the raw source row for an explicit "replaces X" statement and
+    record the referenced supplier reference on this row. Never fabricate —
+    only extract literal tokens that match the supplier_reference shape."""
+    if safe_data.get("supersedes_ref"):
+        return  # already set upstream
+    raw = safe_data.get("_raw_row_text") or ""
+    if not raw:
+        return
+    m = _SUPERSEDES_RE.search(raw)
+    if not m:
+        return
+    ref = m.group(1).strip()
+    # Never claim a row supersedes itself.
+    own = (safe_data.get("supplier_reference") or "").strip()
+    if ref and ref.lower() == own.lower():
+        return
+    safe_data["supersedes_ref"] = ref
 
 
 def is_valid_offer(offer_dict: dict) -> bool:
@@ -1172,6 +1241,10 @@ async def process_offer(payload, job_id: str):
                     # locations and GPT kept only one.
                     _detect_dropped_alt_locations(safe_data)
 
+                    # R-07 supersession — parse "replaces our earlier A01"
+                    # before persistence so save_offer_to_db has the field.
+                    _parse_supersedes_ref(safe_data)
+
                     # ── Currency normalisation & EUR conversion ──────────────
                     _snap_duplicated_row_per_unit(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
@@ -1250,6 +1323,7 @@ async def process_offer(payload, job_id: str):
                         location=safe_data['location'],
                         lead_time=safe_data['lead_time'],
                         moq_cases=safe_data['moq_cases'],
+                        moq_unit=safe_data.get('moq_unit'),
                         valid_until=safe_data['valid_until'],
                         offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
@@ -1281,6 +1355,7 @@ async def process_offer(payload, job_id: str):
                         ean_code=safe_data['ean_code'],
                         label_language=safe_data['label_language'],
                         product_reference=safe_data['product_reference'],
+                        supersedes_ref=safe_data.get('supersedes_ref'),
                     )
 
                     offer_dict = offer.model_dump(mode='json')
@@ -1411,6 +1486,7 @@ async def process_offer(payload, job_id: str):
                 # Mirrors the batch path above; see note there.
                 _backfill_customs_from_text(safe_data)
                 _detect_dropped_alt_locations(safe_data)
+                _parse_supersedes_ref(safe_data)
 
                 safe_data = _normalize_currency_and_prices(safe_data)
 
@@ -1451,6 +1527,7 @@ async def process_offer(payload, job_id: str):
                     location=safe_data['location'],
                     lead_time=safe_data['lead_time'],
                     moq_cases=safe_data['moq_cases'],
+                    moq_unit=safe_data.get('moq_unit'),
                     valid_until=safe_data['valid_until'],
                     offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),
@@ -1478,6 +1555,7 @@ async def process_offer(payload, job_id: str):
                     ean_code=safe_data['ean_code'],
                     label_language=safe_data['label_language'],
                     product_reference=safe_data['product_reference'],
+                    supersedes_ref=safe_data.get('supersedes_ref'),
                 )
 
                 offer_dict = offer.model_dump(mode='json')
@@ -1555,6 +1633,20 @@ async def process_offer(payload, job_id: str):
         redis_manager.set_job_result(job_id, result_data)
         redis_manager.set_job_status(job_id, "done")
         logger.info(f"Successfully processed {len(offers)} products for job {job_id}")
+
+        # R-12: persist any new trading events the full offer_items table
+        # now implies, so /api/events keeps the full chain (A01 €25 → B01
+        # €24 → C01 €23.50) rather than just the latest snapshot. The
+        # unique index on (peer_group_id, current_uid, previous_uid) makes
+        # this additive and idempotent.
+        try:
+            from core.database import SessionLocal
+            from core.event_writer import record_price_events
+            with SessionLocal() as _ev_db:
+                _new = record_price_events(_ev_db)
+                logger.info(f"R-12 events: {len(_new)} new event(s) persisted after job {job_id}")
+        except Exception as _ev_err:
+            logger.warning(f"R-12 event retention failed for job {job_id}: {_ev_err}")
 
     except Exception as e:
         error_trace = traceback.format_exc()

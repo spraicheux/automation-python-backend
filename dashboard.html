@@ -1804,8 +1804,21 @@
       : '';
     const _ageMarker = !_hasOfferDate ? '*' : (_isFallbackDate ? '~' : '');
     const _ageStyle = (!_hasOfferDate || _isFallbackDate) ? 'opacity:0.6;font-style:italic;' : '';
+    // R-06 (acceptance retest): when the source gave no offer_date, make the
+    // received-date fallback visible in-cell, not only on hover. Samuel's
+    // feedback: "shows an age of 5h without a visible received-date
+    // explanation in that screenshot". We add an explicit inline label and
+    // the received date value.
+    let _ageInlineNote = '';
+    if (!_hasOfferDate && i.date_received) {
+      _ageInlineNote = ` <small style="opacity:0.75;font-size:10px;">(received ${String(i.date_received).slice(0,10)}, offer date unknown)</small>`;
+    } else if (!_hasOfferDate && i.created_at) {
+      _ageInlineNote = ` <small style="opacity:0.75;font-size:10px;">(received ${String(i.created_at).slice(0,10)}, offer date unknown)</small>`;
+    } else if (_isFallbackDate) {
+      _ageInlineNote = ` <small style="opacity:0.75;font-size:10px;">(received-date fallback)</small>`;
+    }
     const ageHtml = ageInfo
-      ? `<span title="${escapeAttr(_ageTitle)}" style="${_ageStyle}">${escapeHtml(ageInfo.text)}${_ageMarker}</span>`
+      ? `<span title="${escapeAttr(_ageTitle)}" style="${_ageStyle}">${escapeHtml(ageInfo.text)}${_ageMarker}</span>${_ageInlineNote}`
       : nullCell();
     const ageCls = ageInfo ? (ageInfo.cls || '') : '';
     const flags = classifyFlags(i.error_flags || []);
@@ -1843,6 +1856,12 @@
       dotHtml = `<span class="review-dot ${dotCls}" title="${escapeAttr(dotAria)}"></span><div class="${tipCls}">${needsPart}${infoPart}</div>`;
     }
     const reviewPill = hasNeeds ? `<span class="review-pill" title="Extraction flagged this row for manual review">REVIEW</span>` : '';
+    // R-07 supersession badge — the supplier themselves announced this
+    // price was replaced by a later offer. Shown in HISTORY only (the row
+    // is already excluded from ACTIONABLE CURRENT by is_actionable).
+    const supersededPill = i.superseded_by_uid
+      ? `<span class="review-pill" style="background:#eee;color:#555;" title="Superseded by ${escapeAttr(i.superseded_by_ref || i.superseded_by_uid)} — source stated this price was replaced">SUPERSEDED${i.superseded_by_ref ? ' by ' + escapeHtml(i.superseded_by_ref) : ''}</span>`
+      : '';
 
     // R-02 (retest): the status badge must NOT sit inside the uppercase
     // .prod-brand div — that rendered "HENNESSY" + "T2" visually as a single
@@ -1855,7 +1874,7 @@
     return `<tr data-uid="${escapeAttr(i.uid)}" ${hasNeeds ? 'class="needs-review"' : ''}>
       <td class="product">
         <div class="prod-brand">${escapeHtml(brand)}</div>
-        <div class="prod-name">${escapeHtml(name || i.product_name || '—')} ${statusChip}${reviewPill ? `<span class="customs-chip">${reviewPill}</span>` : ''}</div>
+        <div class="prod-name">${escapeHtml(name || i.product_name || '—')} ${statusChip}${reviewPill ? `<span class="customs-chip">${reviewPill}</span>` : ''}${supersededPill ? `<span class="customs-chip">${supersededPill}</span>` : ''}</div>
         <div class="prod-cat">${[i.category, i.sub_category].filter(x => x && x !== 'Not Found').map(escapeHtml).join(' · ') || ''}</div>
       </td>
       <td class="pack">${pack}</td>

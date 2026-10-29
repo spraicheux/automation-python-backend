@@ -859,6 +859,12 @@ async def get_best_prices(
                     and not getattr(r, 'needs_manual_review', False)
                     and r.price_per_unit_eur is not None
                     and r.price_per_unit_eur > 0
+                    # R-07: an offer the supplier themselves announced as
+                    # replaced ("New supplier offer replaces our earlier
+                    # A01 price") is HISTORY, not an actionable current
+                    # price. The drawer still shows the full row and the
+                    # replacement chain.
+                    and not getattr(r, 'superseded_by_uid', None)
                 )
                 # Implausible pack guard: a full-size perfume/cosmetic does not
                 # come in a case of hundreds. A mis-extracted units_per_case
@@ -886,7 +892,9 @@ async def get_best_prices(
             # still renders in the offer list with its REVIEW badge, it just
             # cannot set the peer's best_price_eur or the SKU headline.
             active_rows = [r for r in pg_sorted
-                           if not _is_expired(r) and not r.needs_manual_review]
+                           if not _is_expired(r)
+                           and not r.needs_manual_review
+                           and not getattr(r, 'superseded_by_uid', None)]
             best_row = active_rows[0] if active_rows else pg_sorted[0]
             entry = {
                 "peer_group_id": pg_key,

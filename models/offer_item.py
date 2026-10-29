@@ -107,6 +107,18 @@ class OfferItemDB(Base):
     custom_status       = Column(String(128), nullable=True)
     processing_version  = Column(String(32), nullable=True)
 
+    # Supersession (R-07): a later offer may explicitly replace an earlier one
+    # from the same supplier. The source states this in free text —
+    # "New supplier offer replaces our earlier A01 price for this commercial
+    # product." The ingest pipeline parses the referenced supplier_reference
+    # into `supersedes_ref`; after persistence, the earlier row's
+    # `superseded_by_uid` + `superseded_by_ref` are back-populated so Best
+    # Prices can keep it out of ACTIONABLE CURRENT while leaving it fully
+    # readable in HISTORY. Never a silent delete.
+    supersedes_ref      = Column(String(255), nullable=True)
+    superseded_by_uid   = Column(String(64), nullable=True, index=True)
+    superseded_by_ref   = Column(String(255), nullable=True)
+
     # Timestamps
     offer_date    = Column(DateTime, nullable=True)
     date_received = Column(DateTime, nullable=True)
@@ -254,6 +266,9 @@ class OfferItemDB(Base):
             "error_flags": json.loads(self.error_flags) if self.error_flags else [],
             "custom_status": self.custom_status,
             "processing_version": self.processing_version,
+            "supersedes_ref": self.supersedes_ref,
+            "superseded_by_uid": self.superseded_by_uid,
+            "superseded_by_ref": self.superseded_by_ref,
             "offer_date": self.offer_date.isoformat() if self.offer_date else None,
             "date_received": self.date_received.isoformat() if self.date_received else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,

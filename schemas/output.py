@@ -39,6 +39,11 @@ class OfferItem(BaseModel):
     location: str = Field(default="Not Found")
     lead_time: str = Field(default="Not Found")
     moq_cases: Optional[float] = None
+    # ORIGINAL MOQ unit the source used: "cases" | "bottles" | "pallets" |
+    # "ftl" | "unspecified". The dashboard renders this verbatim beside
+    # moq_cases so a trader sees "MOQ 1 FTL" or "MOQ 1 pallets" exactly as
+    # the source stated, not a silently-normalized "MOQ 80 cases".
+    moq_unit: Optional[str] = None
     valid_until: Optional[str] = None
     offer_date: Optional[datetime] = None
     date_received: Optional[datetime] = None
@@ -59,6 +64,8 @@ class OfferItem(BaseModel):
     error_flags: List[str] = Field(default_factory=list)
     custom_status: Optional[str] = None
     processing_version: str = Field(default="1.0.0")
+    # R-07 supersession — supplier_reference the row explicitly replaces
+    supersedes_ref: Optional[str] = None
     ean_code: Optional[str] = None
     label_language: str = Field(default="EN")
     product_reference: Optional[str] = None

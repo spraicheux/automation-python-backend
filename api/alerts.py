@@ -199,6 +199,10 @@ def list_alerts(
                 return False
             if r.offer_date is None:
                 return False
+            # R-07: a row the supplier explicitly superseded is not an
+            # eligible current price for new-best/competitive comparisons.
+            if getattr(r, "superseded_by_uid", None):
+                return False
             vu = _parse_valid_until(getattr(r, "valid_until", None))
             if vu is not None and _latest_date is not None:
                 if vu < _latest_date:

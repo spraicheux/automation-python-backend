@@ -65,7 +65,7 @@ def init_db():
     then apply any lightweight schema additions (add-only, idempotent)."""
     try:
         # Import models so their tables are registered on Base.metadata
-        from models import offer_item, source_file
+        from models import offer_item, source_file, price_event  # noqa: F401
         engine = get_engine()
         Base.metadata.create_all(bind=engine)
         logger.info("✓ Database tables verified / created")
@@ -95,6 +95,13 @@ def init_db():
             # static fallback table, or an external daily feed; fx_date
             # (already in model) stays null unless upstream supplies one.
             ("fx_source",           "VARCHAR(128)"),
+            # R-07 supersession (acceptance retest): explicit
+            # "replaces our earlier Xnn" statements link rows together so
+            # history stays accessible but the superseded row is excluded
+            # from ACTIONABLE CURRENT / best_price / alerts.
+            ("supersedes_ref",      "VARCHAR(255)"),
+            ("superseded_by_uid",   "VARCHAR(64)"),
+            ("superseded_by_ref",   "VARCHAR(255)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:
@@ -123,6 +130,10 @@ def init_db():
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_source_files_content_hash "
                 "ON source_files (content_hash)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_offer_items_superseded_by_uid "
+                "ON offer_items (superseded_by_uid)"
             ))
         logger.info("✓ Column additions verified")
     except Exception as e:

@@ -1108,6 +1108,11 @@ async def extract_offer(text: str) -> dict:
                             _blk = _blocks[_p_idx]
                         if not _blk:
                             continue
+                        # R-07 supersession feed — stash the block text so the
+                        # processor's `_parse_supersedes_ref` can see any
+                        # "replaces our earlier Xnn price" sentence that lives
+                        # beneath the product's structured fields.
+                        _product['_raw_row_text'] = _blk
                         # EAN salvage — fill only when LLM left it as a sentinel
                         _llm_ean = str(_product.get('ean_code') or '').strip()
                         if _llm_ean in ("", "Not Found", "null", "None"):
@@ -1172,7 +1177,13 @@ async def extract_offer(text: str) -> dict:
                             product[key] = "Not Found"
 
                 logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}: passing to clean_product_data()")
+                # Preserve the per-block raw text across the cleaning step
+                # (clean_product_data drops any key not in the schema). The
+                # processor's R-07 supersession parser reads this field.
+                _rrt = product.get('_raw_row_text')
                 cleaned_product = clean_product_data(product)
+                if _rrt:
+                    cleaned_product['_raw_row_text'] = _rrt
 
                 logger.info(f"[extract_offer] Chunk {idx + 1}, Product {p_idx + 1}: === AFTER clean_product_data ===")
                 logger.info(f"[extract_offer]   product_name    = {cleaned_product.get('product_name')!r}")
@@ -2554,6 +2565,11 @@ def clean_product_data(product: dict) -> dict:
         'refillable_status': "Not Found",
         'custom_status': "Not Found",
         'moq_cases': None,
+        # Preserve the MOQ unit the source stated verbatim ("ftl",
+        # "pallets", …) — Samuel acceptance R-14 wants "MOQ 1 FTL" to
+        # show "FTL", not blank.
+        'moq_unit': None,
+        'moq_bottles': None,
         # Phase 3 M1 — Multi-category fields. The LLM emits these on
         # perfume / cosmetics rows (per Rule 0.23) and the DB / SKU key
         # both consume them, but they were absent from this whitelist so
@@ -2930,6 +2946,7 @@ def clean_product_data(product: dict) -> dict:
         ("origin_country not found",     'origin_country'),
         ("label_language not found",     'label_language'),
         ("moq_cases not found",          'moq_cases'),
+        ("moq_unit not found",           'moq_unit'),
         ("units_per_case not found",     'units_per_case'),
         ("ean_code not found",           'ean_code'),
     ]
