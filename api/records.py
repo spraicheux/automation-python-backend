@@ -845,6 +845,21 @@ async def get_best_prices(
             def _offer_dict(r):
                 d = r.to_dict()
                 d['is_expired'] = _is_expired(r)
+                # A row is actionable when it can be traded today. Mirrors the
+                # eligibility used by alerts (api/alerts._is_commercially_
+                # eligible) and the best_price_eur winner selection above so
+                # the dashboard "Actionable current" bucket, the alerts, and
+                # the headline all agree on one truth. A row that is undated
+                # (offer_date NULL), needs manual review, has no positive
+                # price, or has expired is relegated to Benchmark history even
+                # when its received date is recent.
+                d['is_actionable'] = bool(
+                    r.offer_date is not None
+                    and not _is_expired(r)
+                    and not getattr(r, 'needs_manual_review', False)
+                    and r.price_per_unit_eur is not None
+                    and r.price_per_unit_eur > 0
+                )
                 # Implausible pack guard: a full-size perfume/cosmetic does not
                 # come in a case of hundreds. A mis-extracted units_per_case
                 # (e.g. 380) produced absurd case prices (€12,730). Treat such a

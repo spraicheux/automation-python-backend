@@ -2365,6 +2365,12 @@
       const _dayMs = 1000 * 60 * 60 * 24;
       const _now = Date.now();
       const _isCurrent = (o) => {
+        // Backend classification wins when present (api/records
+        // get_best_prices sets is_actionable to mirror alerts and winner
+        // eligibility — undated rows, needs_manual_review rows, zero-price
+        // / Price-on-request rows and expired rows are all non-actionable).
+        if (typeof o.is_actionable === 'boolean') return o.is_actionable;
+        // Legacy fallback for older server responses.
         if (o.is_expired) return false;
         const d = o.offer_date || o.created_at;
         if (!d) return true;
