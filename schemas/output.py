@@ -31,6 +31,7 @@ class OfferItem(BaseModel):
     price_per_case_eur: Optional[float] = None
     fx_rate: Optional[float] = Field(default=1.0)
     fx_date: Optional[str] = None
+    fx_source: Optional[str] = None
     alcohol_percent: Optional[float] = None
     origin_country: Optional[str] = None
     supplier_country: str = Field(default="")

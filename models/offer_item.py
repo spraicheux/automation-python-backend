@@ -67,6 +67,7 @@ class OfferItemDB(Base):
     price_per_case_eur = Column(Float, nullable=True)
     fx_rate           = Column(Float, nullable=True)
     fx_date           = Column(String(64), nullable=True)
+    fx_source         = Column(String(128), nullable=True)  # e.g. "fallback-table-static-0.92" / "source-document" / "ECB-daily"
 
     # Product details
     alcohol_percent   = Column(Float, nullable=True)
@@ -222,6 +223,7 @@ class OfferItemDB(Base):
             "price_per_case_eur": self.price_per_case_eur,
             "fx_rate": self.fx_rate,
             "fx_date": self.fx_date,
+            "fx_source": self.fx_source,
             "alcohol_percent": self.alcohol_percent,
             "origin_country": self.origin_country,
             "supplier_country": self.supplier_country,

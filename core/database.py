@@ -89,6 +89,12 @@ def init_db():
             ("product_name_raw",    "VARCHAR(1024)"),
             ("brand_raw",           "VARCHAR(255)"),
             ("moq_unit",            "VARCHAR(32)"),
+            # Phase 3 acceptance (R-09): FX provenance so Samuel can
+            # reconcile EUR amounts against a known FX source. fx_source
+            # records whether the rate came from the source document, a
+            # static fallback table, or an external daily feed; fx_date
+            # (already in model) stays null unless upstream supplies one.
+            ("fx_source",           "VARCHAR(128)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:

@@ -111,6 +111,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 price_per_case_eur=offer_dict.get("price_per_case_eur"),
                 fx_rate=offer_dict.get("fx_rate"),
                 fx_date=offer_dict.get("fx_date"),
+                fx_source=offer_dict.get("fx_source"),
                 alcohol_percent=offer_dict.get("alcohol_percent"),
                 origin_country=offer_dict.get("origin_country"),
                 supplier_country=offer_dict.get("supplier_country"),
@@ -294,7 +295,11 @@ def is_valid_offer(offer_dict: dict) -> bool:
         # them (benchmarks and Best Prices already exclude zero prices).
         flags = offer_dict.get('error_flags') or []
         if isinstance(flags, list) and any(
-                isinstance(f, str) and 'Zero price retained' in f for f in flags):
+                isinstance(f, str) and (
+                    'Zero price retained' in f
+                    or 'Price on request retained' in f
+                )
+                for f in flags):
             return True
         logger.debug(f"Offer {name} rejected: No price data found.")
         return False
@@ -460,9 +465,26 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     except (TypeError, ValueError):
         ai_fx = 1.0
 
-    # If AI didn't provide a meaningful rate for non-EUR, use table fallback
-    fx = ai_fx if (currency == 'EUR' or ai_fx != 1.0) else _FALLBACK_FX.get(currency, 1.0)
+    # If AI didn't provide a meaningful rate for non-EUR, use table fallback.
+    # Record the PROVENANCE of whichever rate wins so Samuel (R-09) can
+    # reconcile EUR amounts against a known FX source: either the source
+    # document (ai_fx != 1.0 on a non-EUR row) or the static fallback table.
+    if currency == 'EUR':
+        fx = 1.0
+        fx_source = 'identity-EUR'
+    elif ai_fx != 1.0:
+        fx = ai_fx
+        fx_source = 'source-document'
+    else:
+        fx = _FALLBACK_FX.get(currency, 1.0)
+        fx_source = f'fallback-table-static-{currency}-{fx}'
     safe_data['fx_rate'] = fx
+    # Only overwrite fx_source if the pipeline hasn't already set one upstream
+    # (keeps future ECB-daily or dated-rate injections intact).
+    if not safe_data.get('fx_source'):
+        safe_data['fx_source'] = fx_source
+    # fx_date: left to upstream (source document) or null. Not fabricated here;
+    # Samuel R-06 explicitly forbids inventing dates.
 
     pu = safe_data.get('price_per_unit')
     pc = safe_data.get('price_per_case')
@@ -798,6 +820,7 @@ def _apply_offer_defaults(data: dict) -> dict:
 
         # fx and price fields (already handled by _safe_float, but we keep them here for completeness)
         'fx_date': None,
+        'fx_source': None,
         'fx_rate': 1.0,
         'price_per_unit': 0,
         'price_per_unit_eur': 0,
@@ -1058,6 +1081,7 @@ async def process_offer(payload, job_id: str):
                         'price_per_case_eur': _safe_float(merged_data.get('price_per_case_eur')),
                         'fx_rate': _safe_float(merged_data.get('fx_rate'), 1.0),
                         'fx_date': merged_data.get('fx_date'),
+                        'fx_source': merged_data.get('fx_source'),
                         'alcohol_percent': merged_data.get('alcohol_percent'),
                         'origin_country': merged_data.get('origin_country'),
                         'supplier_country': merged_data.get('supplier_country') or "",
@@ -1191,6 +1215,7 @@ async def process_offer(payload, job_id: str):
                         price_per_case_eur=safe_data['price_per_case_eur'],
                         fx_rate=safe_data['fx_rate'],
                         fx_date=safe_data['fx_date'],
+                        fx_source=safe_data.get('fx_source'),
                         alcohol_percent=safe_data['alcohol_percent'],
                         origin_country=safe_data['origin_country'],
                         supplier_country=safe_data['supplier_country'],
@@ -1308,6 +1333,7 @@ async def process_offer(payload, job_id: str):
                     'price_per_case_eur': _safe_float(extracted_data.get('price_per_case_eur')),
                     'fx_rate': _safe_float(extracted_data.get('fx_rate'), 1.0),
                     'fx_date': extracted_data.get('fx_date'),
+                    'fx_source': extracted_data.get('fx_source'),
                     'alcohol_percent': extracted_data.get('alcohol_percent'),
                     'origin_country': extracted_data.get('origin_country'),
                     'supplier_country': extracted_data.get('supplier_country') or "",
@@ -1390,6 +1416,7 @@ async def process_offer(payload, job_id: str):
                     price_per_case_eur=safe_data['price_per_case_eur'],
                     fx_rate=safe_data['fx_rate'],
                     fx_date=safe_data['fx_date'],
+                    fx_source=safe_data.get('fx_source'),
                     alcohol_percent=safe_data.get('alcohol_percent'),
                     origin_country=safe_data['origin_country'],
                     supplier_country=safe_data['supplier_country'],

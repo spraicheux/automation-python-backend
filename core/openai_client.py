@@ -221,8 +221,13 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 - cases_per_pallet: Number of cases per pallet.
 - quantity_case: Number of cases offered or ordered.
 - bottle_or_can_type: Packaging type (bottle/can/other).
-- price_per_unit: Unit (bottle) price.
-- price_per_case: Case price.
+- price_per_unit: Unit (bottle) price. If the source gives NO numeric price
+  but instead says "Price on request" / "POR" / "P.O.R." / "To be confirmed"
+  / "TBC" / "Price pending" / "On request" / "POA" / "Ask" / "Contact" —
+  preserve that phrase VERBATIM as the string value (do NOT use "Not Found",
+  do NOT fabricate a number). Downstream retains the row with a review flag.
+- price_per_case: Case price. Same rule as price_per_unit for "Price on
+  request" / "POR" / "TBC" placeholders — preserve the phrase verbatim.
 - currency: Currency (EUR, USD, GBP...).
 - price_per_unit_eur: Unit price converted into EUR.
 - price_per_case_eur: Case price converted into EUR.
@@ -416,14 +421,17 @@ RULE 7 — COMPOUND LOCATION — PRESERVE FULL STRING  ⚠️ CRITICAL
 When the location references multiple warehouses or places joined by
 "/" or "and" or "&" or "or" or "," you MUST preserve the FULL compound
 string EXACTLY for ALL products from that offer. Normalise the separator
-to " / " (space-slash-space) and KEEP every alternative — never drop one.
+to " OR " (space-OR-space, uppercase — explicit disjunction semantics,
+Samuel R-14) and KEEP every alternative — never drop one. The row still
+represents ONE physical offer with alternative pick-up locations — not
+three independent stocks.
 
 Examples:
-  "DAP LOENDERSLOOT / NEWCORP"               → location: "LOENDERSLOOT / NEWCORP"
-  "EXW AMSTERDAM / ROTTERDAM"                → location: "AMSTERDAM / ROTTERDAM"
-  "Exwork Loendersloot or Revera or Mentrex" → location: "Loendersloot / Revera / Mentrex"  (single row, ONE incoterm EXW)
-  "EXW Riga and Loendersloot"                → location: "Riga / Loendersloot"
-  "DAP Rotterdam, Antwerp"                   → location: "Rotterdam / Antwerp"
+  "DAP LOENDERSLOOT / NEWCORP"               → location: "LOENDERSLOOT OR NEWCORP"
+  "EXW AMSTERDAM / ROTTERDAM"                → location: "AMSTERDAM OR ROTTERDAM"
+  "Exwork Loendersloot or Revera or Mentrex" → location: "Loendersloot OR Revera OR Mentrex"  (single row, ONE incoterm EXW)
+  "EXW Riga and Loendersloot"                → location: "Riga OR Loendersloot"
+  "DAP Rotterdam, Antwerp"                   → location: "Rotterdam OR Antwerp"
 
 NEVER split the compound location or assign different parts to different products.
 NEVER drop an alternative location because it looks less likely — if the source
@@ -2335,7 +2343,29 @@ def clean_product_data(product: dict) -> dict:
     # needs_manual_review = true (benchmarks and Best Prices already exclude
     # zero/null prices downstream).
     _raw_ppu = product.get('price_per_unit')
+    _raw_ppc = product.get('price_per_case')
     _raw_zero_price = _raw_ppu in (0, 0.0, "0", "0.0", "0.00")
+    # Samuel R-13 / B11: a supplier may quote "Price on request" / "POR" / "TBC"
+    # with no numeric price. Current loop coerces that to None and the row
+    # would be silently dropped by is_valid_offer. Detect the textual
+    # placeholder BEFORE the loop and tag the row so the pipeline retains
+    # it (needs_manual_review, excluded from benchmarks). Never fabricate
+    # a price.
+    def _looks_like_price_placeholder(v):
+        if not isinstance(v, str):
+            return False
+        s = v.strip().lower()
+        if not s or s in ("not found", "null", "none", "n/a", "na"):
+            return False
+        return any(tok in s for tok in (
+            "price on request", "on request", "p.o.r", "por",
+            "to be confirmed", "tbc", "price pending", "pending",
+            "ask", "contact", "poa",
+        ))
+    _raw_price_on_request = (
+        _looks_like_price_placeholder(_raw_ppu)
+        or _looks_like_price_placeholder(_raw_ppc)
+    )
     logger.info(f"[clean_product_data] ===== START =====")
     logger.info(f"[clean_product_data] Input product keys: {list(product.keys())}")
     logger.info(f"[clean_product_data] Input: product_name={product.get('product_name')!r}, packaging={product.get('packaging')!r}, units_per_case={product.get('units_per_case')!r}, price_per_case={product.get('price_per_case')!r}, price_per_unit={product.get('price_per_unit')!r}")
@@ -2665,6 +2695,22 @@ def clean_product_data(product: dict) -> dict:
         if cleaned_product.get('price_per_unit') is None:
             cleaned_product['price_per_unit'] = 0
 
+    # Price-on-request retention (Samuel R-13 / B11): keep the row with a
+    # review flag + sentinel zero so is_valid_offer doesn't drop it. Never
+    # fabricate a price. Benchmarks and Best Prices already exclude zero.
+    if _raw_price_on_request and not _raw_zero_price:
+        flags = cleaned_product.get('error_flags') or []
+        _msg = "Price on request retained — supplier gave no numeric price; unusable for trading until confirmed; excluded from Best Prices/benchmarks"
+        if _msg not in flags:
+            flags.append(_msg)
+        cleaned_product['error_flags'] = flags
+        cleaned_product['needs_manual_review'] = True
+        # Sentinel zero only to keep is_valid_offer's existing "Zero price
+        # retained" / price-present gate happy; the flag text above makes
+        # the real meaning clear in exports and the dashboard tooltip.
+        if cleaned_product.get('price_per_unit') is None and cleaned_product.get('price_per_case') is None:
+            cleaned_product['price_per_unit'] = 0
+
     raw_ean = cleaned_product.get('ean_code')
     if raw_ean and raw_ean != "Not Found":
         import re as _re_ean
@@ -2694,6 +2740,29 @@ def clean_product_data(product: dict) -> dict:
                 # un-repairable EANs). The repair is still in the
                 # pipeline logs for audit.
             cleaned_product['ean_code'] = repaired
+    # ──────────────────────────────────────────────────────────────────
+
+    # ─── COMPOUND LOCATION: " OR " SEMANTICS ────────────────────────────
+    # Samuel R-14: compound locations must display with explicit OR
+    # semantics so a reader knows the alternatives are a disjunction
+    # (one physical offer, pick-up at any of the listed warehouses),
+    # not three independent stocks. The LLM is instructed to emit " OR "
+    # (Rule 7), but historical rows and occasional LLM slips still land
+    # as " / "-joined. Normalise unconditionally so the stored and
+    # displayed form is identical and explicit.
+    _loc = cleaned_product.get('location')
+    if isinstance(_loc, str) and ' / ' in _loc:
+        # Only treat as compound if every segment looks like a location
+        # name (letters / spaces / dashes, no digits, short-to-medium).
+        _parts = [p.strip() for p in _loc.split(' / ') if p.strip()]
+        if len(_parts) >= 2 and all(
+            p and not any(c.isdigit() for c in p) and 1 < len(p) <= 60
+            for p in _parts
+        ):
+            _new_loc = ' OR '.join(_parts)
+            if _new_loc != _loc:
+                cleaned_product['location'] = _new_loc
+                logger.info(f"[clean_product_data] compound-location: {_loc!r} → {_new_loc!r} (explicit OR semantics)")
     # ──────────────────────────────────────────────────────────────────
 
     # ─── STALE *_not_found FLAG CLEANUP ─────────────────────────────────
