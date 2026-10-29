@@ -466,6 +466,7 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
 
     pu = safe_data.get('price_per_unit')
     pc = safe_data.get('price_per_case')
+    upc = safe_data.get('units_per_case')
 
     def _conv(v):
         if v is None:
@@ -478,6 +479,47 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
 
     safe_data['price_per_unit_eur'] = _conv(pu)
     safe_data['price_per_case_eur'] = _conv(pc)
+
+    # ─── EUR INTERNAL ARITHMETIC CONSISTENCY ────────────────────────────
+    # Samuel 2026-10-29: a USD row with ppc=323, ppu=26.9167 (= 323/12
+    # rounded), fx=0.92 was giving ppc_eur=297.16 but ppu_eur=24.7634.
+    # Inside EUR: 297.16/12 = 24.76333 → 24.7633, so the stored EUR
+    # columns drifted 0.0001 against each other because ppu_eur chained
+    # TWO roundings (ppc/units → 4dp, then ×fx → 4dp again).
+    # When:
+    #   (a) ppu looks derived (within 0.001 of ppc/units — i.e. the LLM
+    #       just divided the case price), and
+    #   (b) a positive ppc_eur and a sane units_per_case exist,
+    # recompute ppu_eur from the EUR case price in one rounding step so
+    # the two EUR columns are mathematically consistent. Explicit per-
+    # unit source values (where ppu ≠ ppc/units — e.g. a case discount)
+    # are left as the straight fx conversion so the explicit source
+    # price is preserved verbatim.
+    try:
+        _pu_f = float(pu) if pu is not None else None
+        _pc_f = float(pc) if pc is not None else None
+        _upc_f = float(upc) if upc is not None else None
+        _ppc_eur = safe_data.get('price_per_case_eur')
+        if (_pu_f is not None and _pc_f is not None and _upc_f and _upc_f > 1
+                and _ppc_eur and _ppc_eur > 0):
+            _derived_pu_native = _pc_f / _upc_f
+            # If LLM-emitted ppu is within rounding tolerance of ppc/units,
+            # the per-unit figure wasn't quoted — it was computed. Keep EUR
+            # internally consistent by deriving from ppc_eur in one step.
+            if abs(_pu_f - _derived_pu_native) <= 0.001:
+                _new_ppu_eur = round(float(_ppc_eur) / _upc_f, 4)
+                _old_ppu_eur = safe_data['price_per_unit_eur']
+                if _new_ppu_eur != _old_ppu_eur:
+                    safe_data['price_per_unit_eur'] = _new_ppu_eur
+                    logger.info(
+                        f"[_normalize_currency_and_prices] EUR consistency: "
+                        f"price_per_unit_eur {_old_ppu_eur} → {_new_ppu_eur} "
+                        f"(derived from {_ppc_eur} / {_upc_f}; single-step "
+                        f"rounding; ppu was derived in native currency)"
+                    )
+    except (TypeError, ValueError) as _eur_e:
+        logger.warning(f"[_normalize_currency_and_prices] EUR consistency skipped: {_eur_e}")
+    # ──────────────────────────────────────────────────────────────────
 
     return safe_data
 

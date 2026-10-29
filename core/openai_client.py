@@ -451,12 +451,16 @@ STEP 2 — IDENTIFY PRICE TYPE using explicit suffixes:
     → put value in price_per_case, leave price_per_unit for calculation
   - No suffix or ambiguous → default to price_per_case
 
-STEP 3 — CALCULATE the missing price (ALWAYS do this when units_per_case is known):
+STEP 3 — CALCULATE the missing price (ALWAYS do this when units_per_case is known).
+Preserve full precision — the storage layer carries 4 decimal places and the
+dashboard renders the stored value verbatim (Samuel 2026-10-27), so a 2-dp
+truncation here loses genuine information (e.g. 46.53 / 6 = 7.755 must not
+collapse to 7.75):
   - If price_per_unit is known AND units_per_case is known AND price_per_case is missing:
-    → price_per_case = ROUND(price_per_unit × units_per_case, 2)
+    → price_per_case = ROUND(price_per_unit × units_per_case, 4)
     → add "price_per_case calculated from price_per_unit x units_per_case" to error_flags
   - If price_per_case is known AND units_per_case is known AND price_per_unit is missing:
-    → price_per_unit = ROUND(price_per_case / units_per_case, 2)
+    → price_per_unit = ROUND(price_per_case / units_per_case, 4)
     → add "price_per_unit calculated from price_per_case / units_per_case" to error_flags
 
 EXAMPLES:
@@ -466,7 +470,11 @@ EXAMPLES:
 
   "USD194/cs Exwork Loendersloot" — explicitly per case:
     → price_per_case: 194.00, currency: "USD"
-    → price_per_unit = 194.00 / 12 = 16.17  (if 12 bottles per case)
+    → price_per_unit = 194.00 / 12 = 16.1667  (if 12 bottles per case)
+
+  "€46.53/cs" with units_per_case = 6:
+    → price_per_case: 46.53
+    → price_per_unit = 46.53 / 6 = 7.755  (NOT 7.75 — keep the third decimal)
 
   "11,40eur/btl" → price_per_unit: 11.40, currency: "EUR"
   "32,50eur/cs"  → price_per_case: 32.50, currency: "EUR"
@@ -2493,29 +2501,72 @@ def clean_product_data(product: dict) -> dict:
 
         if ppu and isinstance(ppu, (int, float)) and ppu > 0:
             if not ppc or not isinstance(ppc, (int, float)) or ppc <= 0:
-                calculated_ppc = round(ppu * units, 2)
+                # 4-dp preserves genuine precision — Samuel 2026-10-29: the
+                # LLM was rounding 46.53/6 to 7.75 (losing the third decimal)
+                # and the dashboard-verbatim fix (9e79cef) could only show
+                # whatever the DB held. 4 dp matches the EUR-conversion
+                # precision in _normalize_currency_and_prices.
+                calculated_ppc = round(ppu * units, 4)
                 logger.info(
                     f"[clean_product_data] PRICE CALC (unit→case): "
                     f"{ppu} × {units} = {calculated_ppc}"
                 )
                 cleaned_product['price_per_case'] = calculated_ppc
-                # Informational — a deterministic calculation was applied.
-                # The row does NOT need human review. Kept out of error_flags
-                # so the dashboard's REVIEW badge only fires on genuine
-                # ambiguities (same silent-correction pattern as brand
-                # canonicalization and EAN repair from M1). Still visible
-                # in pipeline logs for audit.
 
         if ppc and isinstance(ppc, (int, float)) and ppc > 0:
-            if not ppu or not isinstance(ppu, (int, float)) or ppu <= 0:
-                # units > 1 guaranteed by the outer if — safe to divide.
-                calculated_ppu = round(ppc / units, 2)
+            # Recalculate ppu from ppc when units>1 ONLY when the LLM's ppu
+            # is missing or within a rounding tolerance of ppc/units
+            # (i.e. the LLM just rounded the division and dropped the
+            # third decimal: 46.53/6 → 7.75 instead of 7.755). When the
+            # LLM's ppu differs from ppc/units by more than the rounding
+            # tolerance (commercially meaningful — a supplier may give a
+            # case discount, so a quoted bottle price differs from
+            # case/units), KEEP THE EXPLICIT ppu and raise a review flag
+            # describing the discrepancy. Samuel 2026-10-29: a silent
+            # overwrite would lose explicitly quoted bottle prices.
+            calculated_ppu = round(ppc / units, 4)
+            PPU_ROUNDING_TOLERANCE = 0.01  # ≤ 1 cent = rounding artefact; > 1 cent = real pricing choice
+            if ppu is None or (not isinstance(ppu, (int, float))) or ppu <= 0:
+                # No per-unit price at all: derive it.
+                cleaned_product['price_per_unit'] = calculated_ppu
                 logger.info(
-                    f"[clean_product_data] PRICE CALC (case→unit): "
+                    f"[clean_product_data] PRICE CALC (case→unit, 4dp, no ppu): "
                     f"{ppc} / {units} = {calculated_ppu}"
                 )
-                cleaned_product['price_per_unit'] = calculated_ppu
-                # Informational — see note above.
+                _flags = cleaned_product.get('error_flags') or []
+                _msg = "price_per_unit calculated from price_per_case / units_per_case"
+                if _msg not in _flags:
+                    _flags.append(_msg)
+                    cleaned_product['error_flags'] = _flags
+            else:
+                _diff = abs(calculated_ppu - float(ppu))
+                if _diff <= PPU_ROUNDING_TOLERANCE:
+                    # LLM dropped a decimal (rounding artefact). Repair to 4 dp.
+                    if _diff > 1e-6:
+                        logger.info(
+                            f"[clean_product_data] PRICE CALC (case→unit, 4dp, rounding repair): "
+                            f"{ppc} / {units} = {calculated_ppu}  "
+                            f"(LLM returned {ppu}; diff {_diff:.4f} ≤ {PPU_ROUNDING_TOLERANCE})"
+                        )
+                        cleaned_product['price_per_unit'] = calculated_ppu
+                else:
+                    # Meaningful discrepancy — explicitly quoted bottle price
+                    # differs from case/units. Preserve BOTH; flag for review.
+                    logger.warning(
+                        f"[clean_product_data] PRICE CALC: ppu ({ppu}) ≠ ppc/units "
+                        f"({calculated_ppu}); diff {_diff:.4f} > {PPU_ROUNDING_TOLERANCE} "
+                        f"— preserving explicit ppu; flagged for review"
+                    )
+                    _flags = cleaned_product.get('error_flags') or []
+                    _msg = (
+                        f"price_per_unit ({ppu}) ≠ price_per_case/units_per_case "
+                        f"({calculated_ppu}); source may give a case discount or a "
+                        f"different quoted bottle price — both preserved for review"
+                    )
+                    if _msg not in _flags:
+                        _flags.append(_msg)
+                        cleaned_product['error_flags'] = _flags
+                    cleaned_product['needs_manual_review'] = True
 
     ppu = cleaned_product.get('price_per_unit')
     ppc = cleaned_product.get('price_per_case')
@@ -2643,6 +2694,45 @@ def clean_product_data(product: dict) -> dict:
                 # un-repairable EANs). The repair is still in the
                 # pipeline logs for audit.
             cleaned_product['ean_code'] = repaired
+    # ──────────────────────────────────────────────────────────────────
+
+    # ─── STALE *_not_found FLAG CLEANUP ─────────────────────────────────
+    # The LLM is instructed to add "custom_status not found" (and similar)
+    # whenever it can't see a field in the raw text. But downstream passes
+    # — gazetteer repairs, supplier-default fallbacks, deterministic rules
+    # — later populate those fields. The stale flag then reads as a defect
+    # in the dashboard REVIEW tooltip (Samuel 2026-10-29). Drop any
+    # "<field> not found" flag whose target field is now populated with a
+    # real value. Mirrors api/admin.py:retest_cleanup_stale_flags so the
+    # same contradiction rules apply at ingest instead of only in a
+    # post-hoc admin pass.
+    _stale_contradictions = [
+        ("custom_status not found",      'custom_status'),
+        ("incoterm not found",           'incoterm'),
+        ("refillable_status not found",  'refillable_status'),
+        ("supplier_name not found",      'supplier_name'),
+        ("supplier_email not found",     'supplier_email'),
+        ("location not found",           'location'),
+        ("origin_country not found",     'origin_country'),
+        ("label_language not found",     'label_language'),
+    ]
+    _flags = cleaned_product.get('error_flags') or []
+    if isinstance(_flags, list) and _flags:
+        _kept = []
+        for _f in _flags:
+            _drop = False
+            if isinstance(_f, str):
+                for _needle, _field in _stale_contradictions:
+                    if _needle in _f:
+                        _v = cleaned_product.get(_field)
+                        if _v and (not isinstance(_v, str) or (_v.strip() and _v.strip().lower() != "not found")):
+                            _drop = True
+                            logger.info(f"[clean_product_data] stale-flag drop: {_f!r} (field '{_field}' now = {_v!r})")
+                            break
+            if not _drop:
+                _kept.append(_f)
+        if len(_kept) != len(_flags):
+            cleaned_product['error_flags'] = _kept
     # ──────────────────────────────────────────────────────────────────
 
     logger.info(f"[clean_product_data] ===== END =====")
