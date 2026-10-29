@@ -420,15 +420,27 @@ class TestSearchTokens:
 
     def test_alt_locations_prompt_rule_covers_or(self):
         """Guard the Rule 7 prompt text so a future edit cannot regress
-        the "or" / three-location example that drove this fix."""
+        the "or" / three-location example that drove this fix.
+
+        Samuel acceptance v1 (R-14): the normalised compound-location
+        output now uses explicit " OR " semantics rather than " / ", so
+        the Loendersloot/Revera/Mentrex worked example in the prompt was
+        updated to match. The assertions below check for either form so
+        the test still protects against a future deletion of the whole
+        worked example — the point of the test, not the specific joiner.
+        """
         from pathlib import Path
         p = Path(__file__).resolve().parent.parent / "core" / "openai_client.py"
         src = p.read_text()
         # The Rule 7 block must mention "or" among the separators and must
-        # carry the Loendersloot / Revera / Mentrex worked example.
+        # carry a Loendersloot / Revera / Mentrex worked example (either
+        # the historic " / " form or the new " OR " form, Samuel R-14).
         assert "RULE 7 — COMPOUND LOCATION" in src
         assert "\"or\"" in src.split("RULE 7")[1].split("RULE 8")[0]
-        assert "Loendersloot / Revera / Mentrex" in src
+        assert (
+            "Loendersloot / Revera / Mentrex" in src
+            or "Loendersloot OR Revera OR Mentrex" in src
+        )
 
     def test_price_sort_pushes_zero_and_review_to_tail(self):
         """Samuel 2026-10-28: Hennessy 1L sorted by lowest €/unit placed
