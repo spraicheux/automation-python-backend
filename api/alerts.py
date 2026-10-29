@@ -117,8 +117,13 @@ def list_alerts(
         if any(ean_key(r.ean_code) in _cross_cat_eans for r in rows):
             continue
 
-        # Chronological order
-        rows = sorted(rows, key=lambda x: x.offer_date or x.created_at or datetime.min)
+        # Chronological order BY offer_date only — Samuel R-06/R-12: a row
+        # whose source gave no commercial offer_date (U01) must not be
+        # treated as "the latest commercial event". Undated rows sort to
+        # the start (datetime.min) so they only ever appear as prior
+        # history, never as the alert's "current". The prior-set filter
+        # below also excludes them from best-prior computation.
+        rows = sorted(rows, key=lambda x: x.offer_date or datetime.min)
         latest = rows[-1]
 
         # Freshness gate: use offer_date ONLY — never fall back to
@@ -159,11 +164,58 @@ def list_alerts(
         ]
         if not prior:
             continue
-        best_prior = min(prior, key=lambda x: x.price_per_unit_eur or float("inf"))
+
+        # Eligibility filter for the best-prior comparison (Samuel R-07/R-12):
+        # a trading alert's "previous best" must be a trusted, actionable price.
+        # Exclude from the prior set:
+        #   • zero / unknown prices (price_per_unit_eur <= 0)
+        #   • needs_manual_review rows (POR retained, zero price retained,
+        #     explicit-vs-derived ppu discrepancy, implausible ABV, …)
+        #   • undated rows (offer_date is None — "U01 ineligible under
+        #     declared policy", Samuel R-12)
+        #   • expired rows (valid_until < latest.offer_date — a 2026-09-30
+        #     expired low must not win the current best)
+        def _parse_valid_until(v):
+            # valid_until is stored as a free-form string (model col String(64)).
+            # Accept "YYYY-MM-DD" and ISO-with-time; return None on anything else
+            # so an unparseable value never pretends to be a current offer.
+            if v is None or (isinstance(v, str) and not v.strip()):
+                return None
+            if isinstance(v, datetime):
+                return v
+            s = str(v).strip()
+            try:
+                return datetime.fromisoformat(s[:19].replace("Z", ""))
+            except ValueError:
+                try:
+                    return datetime.strptime(s[:10], "%Y-%m-%d")
+                except ValueError:
+                    return None
+
+        def _is_commercially_eligible(r) -> bool:
+            if r.price_per_unit_eur is None or r.price_per_unit_eur <= 0:
+                return False
+            if getattr(r, "needs_manual_review", False):
+                return False
+            if r.offer_date is None:
+                return False
+            vu = _parse_valid_until(getattr(r, "valid_until", None))
+            if vu is not None and _latest_date is not None:
+                if vu < _latest_date:
+                    return False
+            return True
+        prior_eligible = [r for r in prior if _is_commercially_eligible(r)]
+        if not prior_eligible:
+            continue
+        best_prior = min(prior_eligible, key=lambda x: x.price_per_unit_eur or float("inf"))
         best_prior_price = best_prior.price_per_unit_eur or float("inf")
         cur_price = latest.price_per_unit_eur
 
         if cur_price is None or best_prior_price is None or best_prior_price == float("inf"):
+            continue
+        # The latest offer itself must also be commercially eligible — a
+        # POR / zero / review row cannot ANNOUNCE a new best price.
+        if not _is_commercially_eligible(latest):
             continue
 
         alert_type = None
