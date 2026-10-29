@@ -196,14 +196,21 @@ class TestMoqNormalization:
         assert r["moq_cases"] == 7540.0
         assert any("auto-normalized" in f for f in flags)
 
-    def test_quantity_bottles_to_cases(self):
-        """FBC Trades Johnnie Walker: 9600 btls / 6 per case → 1600 cases."""
+    def test_quantity_bottles_passthrough_after_llm_rule_0_3(self):
+        """Rule 0.3 (Samuel acceptance v1): the LLM pre-converts bottle
+        counts to case counts and emits them in `quantity_case`, keeping
+        `quantity_unit='bottles'` for traceability only. The pipeline
+        trusts the LLM's already-converted value (double-conversion
+        corrupts quantity — Johnnie Walker 1600 cases was becoming
+        266.67 cases before this contract was documented). The MOQ
+        auto-normalisation above is unaffected; only quantity_case
+        passthrough changed."""
         flags = []
-        data = {"moq_cases": None, "quantity_case": 9600, "quantity_unit": "bottles",
+        data = {"moq_cases": None, "quantity_case": 1600, "quantity_unit": "bottles",
                 "units_per_case": 6.0}
         r = _normalize_moq_and_quantity(data, flags)
-        assert r["quantity_case"] == 1600.0
-        assert any("bottles to" in f for f in flags)
+        assert r["quantity_case"] == 1600.0  # unchanged
+        assert not any("converted from" in f.lower() for f in flags)
 
     def test_quantity_ftl_is_null_with_flag(self):
         flags = []

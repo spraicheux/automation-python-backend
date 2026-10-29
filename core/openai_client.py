@@ -226,8 +226,13 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
   / "TBC" / "Price pending" / "On request" / "POA" / "Ask" / "Contact" —
   preserve that phrase VERBATIM as the string value (do NOT use "Not Found",
   do NOT fabricate a number). Downstream retains the row with a review flag.
+  A placeholder PRICE never excuses omitting OTHER fields of the same
+  product block — EAN, packaging, units_per_case, unit_volume_ml,
+  incoterm, location, custom_status, supplier_reference, available
+  quantity, etc. MUST still be extracted from the block exactly as stated.
 - price_per_case: Case price. Same rule as price_per_unit for "Price on
   request" / "POR" / "TBC" placeholders — preserve the phrase verbatim.
+  Other fields on the same block are still extracted in full.
 - currency: Currency (EUR, USD, GBP...).
 - price_per_unit_eur: Unit price converted into EUR.
 - price_per_case_eur: Case price converted into EUR.
@@ -1071,6 +1076,62 @@ async def extract_offer(text: str) -> dict:
             result = json.loads(content)
             products = result.get('products', [])
             logger.info(f"[extract_offer] Chunk {idx + 1}: AI returned {len(products)} product(s) in JSON")
+
+            # ─── EAN / supplier_reference salvage from this chunk's blocks ──────
+            # When the LLM is confused by a POR / zero price it occasionally
+            # drops the EAN or supplier_reference even though the source
+            # printed them on their own line. We can repair deterministically:
+            # split the chunk text by the per-product markers, find the
+            # block for each LLM-emitted product (match by supplier_reference
+            # when present, else by block index), and backfill EAN /
+            # supplier_reference from the block's own text.
+            try:
+                _marker_re = _re_block.compile(
+                    r'(?mi)^\s*(?:Supplier\s+reference|Reference|Ref|Ref\s*No|SKU|P\.?Code)\s*[:\-]\s*(\S+)'
+                )
+                _marker_hits = list(_marker_re.finditer(chunk))
+                if _marker_hits:
+                    _boundaries = [m.start() for m in _marker_hits] + [len(chunk)]
+                    _blocks = [chunk[_boundaries[i]:_boundaries[i + 1]]
+                               for i in range(len(_boundaries) - 1)]
+                    _ref_to_block = {}
+                    for _blk in _blocks:
+                        _mref = _marker_re.search(_blk)
+                        if _mref:
+                            _ref_to_block[_mref.group(1).strip()] = _blk
+                    _ean_in_block = _re_block.compile(r'(?mi)^\s*EAN\s*[:\-]\s*(\d[\d\s]{7,19}\d)')
+                    for _p_idx, _product in enumerate(products):
+                        # Pick the matching block: by supplier_reference first, else by positional index
+                        _ref_val = (_product.get('supplier_reference') or '').strip()
+                        _blk = _ref_to_block.get(_ref_val)
+                        if _blk is None and _p_idx < len(_blocks):
+                            _blk = _blocks[_p_idx]
+                        if not _blk:
+                            continue
+                        # EAN salvage — fill only when LLM left it as a sentinel
+                        _llm_ean = str(_product.get('ean_code') or '').strip()
+                        if _llm_ean in ("", "Not Found", "null", "None"):
+                            _m_ean = _ean_in_block.search(_blk)
+                            if _m_ean:
+                                _ean_digits = _re_block.sub(r"\D+", "", _m_ean.group(1))
+                                if _ean_digits:
+                                    _product['ean_code'] = _ean_digits
+                                    logger.info(
+                                        f"[extract_offer] Chunk {idx + 1}, "
+                                        f"Product {_p_idx + 1}: EAN salvage from block → {_ean_digits}"
+                                    )
+                        # supplier_reference salvage — same idea
+                        if not _ref_val or _ref_val in ("Not Found", "null", "None"):
+                            _m_ref = _marker_re.search(_blk)
+                            if _m_ref:
+                                _product['supplier_reference'] = _m_ref.group(1).strip()
+                                logger.info(
+                                    f"[extract_offer] Chunk {idx + 1}, "
+                                    f"Product {_p_idx + 1}: supplier_reference salvage → {_m_ref.group(1).strip()}"
+                                )
+            except Exception as _salvage_err:
+                logger.warning(f"[extract_offer] Chunk {idx + 1}: block-level salvage skipped: {_salvage_err}")
+            # ──────────────────────────────────────────────────────────────────
 
             cleaned_products = []
             for p_idx, product in enumerate(products):

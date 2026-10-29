@@ -47,21 +47,31 @@ class TestLoosePackBottleQuantity:
         assert out['quantity_case'] is None
 
 
-class TestBottlesToCasesConversion:
-    """When a real case pack exists, convert correctly."""
+class TestBottlesToCasesPassthrough:
+    """Rule 0.3 contract (Samuel 2026-10-29 acceptance): the LLM is
+    required to emit `quantity_case` ALREADY expressed in cases, even
+    when the source stated availability in bottles. In that case
+    `quantity_unit` remains "bottles" for traceability but the value
+    in `quantity_case` is the case count. _normalize_moq_and_quantity
+    must trust that value and NOT re-divide by units_per_case
+    (pre-Rule-0.3 pipelines double-converted, corrupting quantity —
+    e.g. Johnnie Walker Red Label's "9600 bottles / 6" would land
+    at 266.67 cases instead of 1600)."""
 
-    def test_12_pack_converts(self):
-        out, flags = _run(qty=240, unit='bottles', upc=12)
-        assert out['quantity_case'] == 20.0
-        assert any('converted from 240 bottles' in f for f in flags)
+    def test_12_pack_passthrough(self):
+        # LLM pre-converted: "240 btls on 12-pack" → quantity_case=20.
+        out, flags = _run(qty=20, unit='bottles', upc=12)
+        assert out['quantity_case'] == 20
+        assert not any('converted from' in f.lower() for f in flags)
 
-    def test_6_pack_converts(self):
-        out, flags = _run(qty=120, unit='bottles', upc=6)
-        assert out['quantity_case'] == 20.0
+    def test_6_pack_passthrough(self):
+        out, flags = _run(qty=20, unit='bottles', upc=6)
+        assert out['quantity_case'] == 20
 
-    def test_odd_division_rounds(self):
-        out, flags = _run(qty=15, unit='bottles', upc=12)
-        # 15 / 12 = 1.25
+    def test_non_integer_case_count_passthrough(self):
+        # Already-converted non-integer case count (e.g. 1.25 cases)
+        # must pass through unchanged.
+        out, flags = _run(qty=1.25, unit='bottles', upc=12)
         assert out['quantity_case'] == 1.25
 
 
@@ -84,27 +94,15 @@ class TestFtl:
 
 
 class TestConversionFlagContract:
-    """R-14 (Samuel's acceptance blocker): a VALID bottles->cases conversion is
-    an informational audit note, not a REVIEW case. The flag text is a contract
-    shared by three places — core.openai_client._INFO_PREFIXES, api.admin
-    INFO_PATTERNS, and the dashboard classifyFlags INFO_FLAG_PREFIXES — all of
-    which key on the exact prefix 'Quantity converted from'. If the flag text
-    ever drifts from that prefix, the row silently reverts to a false REVIEW
-    badge (the Johnnie Walker Red Label symptom). Lock the prefix here."""
+    """Legacy contract test. The pipeline no longer re-converts quantity
+    (Rule 0.3: the LLM does it), so the conversion-flag string is now
+    emitted by the extraction prompt rather than by _normalize_moq_and_
+    quantity. The classification contract still holds (any flag that
+    reaches the DB starting with 'Quantity converted from' is info, not
+    review) — the test for its presence belongs at the extraction level,
+    not here."""
 
-    CONVERSION_PREFIX = "Quantity converted from"
-
-    def test_valid_conversion_flag_uses_contract_prefix(self):
-        out, flags = _run(qty=9600, unit='bottles', upc=6)
-        # 9600 bottles / 6 per case = 1600 cases — the exact JW Red Label case.
-        assert out['quantity_case'] == 1600.0
-        conv = [f for f in flags if f.startswith(self.CONVERSION_PREFIX)]
-        assert conv, (
-            f"conversion flag must start with {self.CONVERSION_PREFIX!r} so the "
-            f"info-classification in every layer keeps matching; got {flags!r}"
-        )
-
-    def test_loose_pack_does_not_emit_conversion_prefix(self):
-        # No case pack -> no 'converted to cases' claim (would be a lie).
+    def test_loose_pack_still_emits_no_conversion_claim(self):
+        # No case pack → the pipeline never claims a conversion happened.
         _out, flags = _run(qty=20, unit='bottles', upc=None)
-        assert not any(f.startswith(self.CONVERSION_PREFIX) for f in flags)
+        assert not any(f.lower().startswith("quantity converted from") for f in flags)

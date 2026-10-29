@@ -599,20 +599,21 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
         safe_data['quantity_case'] = None
         error_flags.append('Quantity: FTL (Full Truck Load)')
     elif qty_unit == 'bottles' and qty:
-        if upc and upc > 1:
-            converted = round(qty / upc, 2)
-            safe_data['quantity_case'] = converted
-            error_flags.append(f'Quantity converted from {int(qty)} bottles to {converted} cases')
-        else:
-            # Loose or unknown pack: cases is NOT the bottle count.
-            # Null quantity_case and keep raw bottles in moq_bottles for traceability
-            # so the UI shows "20 btls (loose)" rather than "20 cases".
+        # Rule 0.3 is explicit: `quantity_case` ALWAYS stores the number of
+        # cases, even when the source expressed availability in bottles and
+        # quantity_unit was preserved as "bottles" for traceability. The LLM
+        # has already converted (e.g. "9600 btls" with 6-bottle case →
+        # quantity_case=1600, quantity_unit="bottles"). Pre-Rule-0.3 pipelines
+        # re-divided by upc here, double-converting 1600 → 266.67 and silently
+        # corrupting quantity. We now trust the LLM's quantity_case value and
+        # only null it when there is no real case pack (loose single pieces,
+        # upc in {0, 1}) — matching R-14's "A07 loose pieces: no fictional
+        # case price" rule.
+        if not upc or upc in (0, 1):
             safe_data['quantity_case'] = None
             safe_data['_quantity_bottles'] = qty
-            if not upc or upc in (0, 1):
-                error_flags.append(f'Quantity in bottles ({int(qty)}), loose pack — case qty N/A')
-            else:
-                error_flags.append(f'Quantity in bottles ({int(qty)}), cases unknown (no units_per_case)')
+            error_flags.append(f'Quantity in bottles ({int(qty)}), loose pack — case qty N/A')
+        # else: trust LLM's already-converted quantity_case; no re-conversion.
 
     return safe_data
 
