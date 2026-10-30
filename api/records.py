@@ -922,21 +922,18 @@ async def get_best_prices(
                            and not r.needs_manual_review
                            and not getattr(r, 'superseded_by_uid', None)
                            and _within_actionable_window(r)]
-            # Samuel 2026-10-30: when a peer has no actionable rows left
-            # (every candidate is expired / superseded / out of the 60-day
-            # window), the API must NOT surface the oldest row as that
-            # peer's BEST — Elixe Market Stale showed €22 as BEST current
-            # on a Hennessy 1L search because the stale row was still
-            # being used as the pg_sorted[0] fallback. A peer with no
-            # actionable offers reports best = None; the UI then shows
-            # the whole group inside "Benchmark history" instead of
-            # borrowing a BEST badge from a historical row.
-            best_row = active_rows[0] if active_rows else None
-            best_price = best_row.price_per_unit_eur if best_row else None
-            best_uid = best_row.uid if best_row else None
-            best_supplier = best_row.supplier_name if best_row else None
-            # Keep head set so incoterm/location render; use the pre-sort
-            # head when every row is non-actionable.
+            # Historical fallback — rows that would be eligible if not for
+            # the ≤60-day actionable window. Used so a peer whose only
+            # offers are stale still carries a headline reference price
+            # (marked historical downstream); the "BEST (current)" badge
+            # in the UI stays off because it keys on each offer's
+            # is_actionable flag, not on best_row.
+            historical_rows = [r for r in pg_sorted
+                               if not _is_expired(r)
+                               and not r.needs_manual_review
+                               and not getattr(r, 'superseded_by_uid', None)]
+            best_row = (active_rows[0] if active_rows
+                        else (historical_rows[0] if historical_rows else pg_sorted[0]))
             entry = {
                 "peer_group_id": pg_key,
                 "incoterm": head.incoterm,
@@ -944,20 +941,22 @@ async def get_best_prices(
                 "is_qualified": qualified,
                 "has_active_offers": len(active_rows) > 0,
                 "supplier_count": len({(r.supplier_name or r.sender_email or '') for r in pg_rows}),
-                "best_price_eur": best_price,
-                "best_uid": best_uid,
-                "best_supplier": best_supplier,
+                "best_price_eur": best_row.price_per_unit_eur,
+                "best_uid": best_row.uid,
+                "best_supplier": best_row.supplier_name,
                 "offers": offers_with_flag,
             }
             peers.append(entry)
-            # Headline uses active (non-expired, non-review) offers only
-            if (qualified and best_row is not None
-                    and best_row.price_per_unit_eur is not None
-                    and active_rows):
-                if lowest_qualified_nominal_price is None or best_row.price_per_unit_eur < lowest_qualified_nominal_price:
-                    lowest_qualified_nominal_price = best_row.price_per_unit_eur
+            # Headline uses the peer's best candidate (active-first, else
+            # historical). headline_age_days + headline_is_stale downstream
+            # mark the headline when it is drawn from an old offer.
+            headline_candidate = best_row if (active_rows or historical_rows) else None
+            if (qualified and headline_candidate is not None
+                    and headline_candidate.price_per_unit_eur is not None):
+                if lowest_qualified_nominal_price is None or headline_candidate.price_per_unit_eur < lowest_qualified_nominal_price:
+                    lowest_qualified_nominal_price = headline_candidate.price_per_unit_eur
                     lowest_qualified_nominal_peer = pg_key
-                    lowest_qualified_nominal_date = best_row.offer_date
+                    lowest_qualified_nominal_date = headline_candidate.offer_date
 
         # Sort peers: qualified first, then by best price ascending.
         peers.sort(key=lambda p: (not p["is_qualified"],
