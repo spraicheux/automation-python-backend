@@ -853,8 +853,24 @@ async def get_best_prices(
                 # (offer_date NULL), needs manual review, has no positive
                 # price, or has expired is relegated to Benchmark history even
                 # when its received date is recent.
+                # Age gate: the UI section header promises
+                # "Actionable current (≤ 60 days)". A row older than that
+                # must not land in the actionable bucket, even when its
+                # valid_until happens to be null or still in the future —
+                # Samuel reported Elixe Market / FBC Hennessy 1L offers
+                # from 8 months ago showing up as BEST (current). The age
+                # is measured from offer_date so that the backend truth
+                # matches the label the operator reads.
+                _age_days = None
+                if r.offer_date is not None:
+                    try:
+                        _age_days = (datetime.utcnow() - r.offer_date).days
+                    except (TypeError, ValueError):
+                        _age_days = None
                 d['is_actionable'] = bool(
                     r.offer_date is not None
+                    and _age_days is not None
+                    and _age_days <= 60
                     and not _is_expired(r)
                     and not getattr(r, 'needs_manual_review', False)
                     and r.price_per_unit_eur is not None
@@ -891,11 +907,36 @@ async def get_best_prices(
             # VSOP €3.33 anomaly) must never become the trusted best — it
             # still renders in the offer list with its REVIEW badge, it just
             # cannot set the peer's best_price_eur or the SKU headline.
+            # Mirror the ≤60-day actionable gate on BEST-winner selection
+            # so the "BEST (current)" badge cannot land on a months-old
+            # row with an open-ended validity window.
+            def _within_actionable_window(r):
+                if r.offer_date is None:
+                    return False
+                try:
+                    return (datetime.utcnow() - r.offer_date).days <= 60
+                except (TypeError, ValueError):
+                    return False
             active_rows = [r for r in pg_sorted
                            if not _is_expired(r)
                            and not r.needs_manual_review
-                           and not getattr(r, 'superseded_by_uid', None)]
-            best_row = active_rows[0] if active_rows else pg_sorted[0]
+                           and not getattr(r, 'superseded_by_uid', None)
+                           and _within_actionable_window(r)]
+            # Samuel 2026-10-30: when a peer has no actionable rows left
+            # (every candidate is expired / superseded / out of the 60-day
+            # window), the API must NOT surface the oldest row as that
+            # peer's BEST — Elixe Market Stale showed €22 as BEST current
+            # on a Hennessy 1L search because the stale row was still
+            # being used as the pg_sorted[0] fallback. A peer with no
+            # actionable offers reports best = None; the UI then shows
+            # the whole group inside "Benchmark history" instead of
+            # borrowing a BEST badge from a historical row.
+            best_row = active_rows[0] if active_rows else None
+            best_price = best_row.price_per_unit_eur if best_row else None
+            best_uid = best_row.uid if best_row else None
+            best_supplier = best_row.supplier_name if best_row else None
+            # Keep head set so incoterm/location render; use the pre-sort
+            # head when every row is non-actionable.
             entry = {
                 "peer_group_id": pg_key,
                 "incoterm": head.incoterm,
@@ -903,14 +944,16 @@ async def get_best_prices(
                 "is_qualified": qualified,
                 "has_active_offers": len(active_rows) > 0,
                 "supplier_count": len({(r.supplier_name or r.sender_email or '') for r in pg_rows}),
-                "best_price_eur": best_row.price_per_unit_eur,
-                "best_uid": best_row.uid,
-                "best_supplier": best_row.supplier_name,
+                "best_price_eur": best_price,
+                "best_uid": best_uid,
+                "best_supplier": best_supplier,
                 "offers": offers_with_flag,
             }
             peers.append(entry)
             # Headline uses active (non-expired, non-review) offers only
-            if qualified and best_row.price_per_unit_eur is not None and active_rows:
+            if (qualified and best_row is not None
+                    and best_row.price_per_unit_eur is not None
+                    and active_rows):
                 if lowest_qualified_nominal_price is None or best_row.price_per_unit_eur < lowest_qualified_nominal_price:
                     lowest_qualified_nominal_price = best_row.price_per_unit_eur
                     lowest_qualified_nominal_peer = pg_key

@@ -476,6 +476,51 @@ _CURRENCY_SYMBOLS = {
 }
 
 
+def _preserve_raw_identity(safe_data: dict) -> None:
+    """R-16 (Samuel 2026-10-30): product_name_raw / brand_raw must be
+    populated on EVERY row — not only when the customs T1/T2 token is
+    stripped. The LLM's first-pass extraction is the raw source value we
+    want to keep immutable: a later re-canonicalisation of brand
+    ("Dior" → "Christian Dior") or product name must not lose the
+    original. We call this *after* _backfill_customs_from_text so a row
+    whose brand was de-tokenized still records the token-less canonical
+    too, but we never overwrite values the customs pass already set.
+    """
+    if not safe_data.get("product_name_raw"):
+        pn = safe_data.get("product_name")
+        if pn and pn != "Not Found":
+            safe_data["product_name_raw"] = pn
+    if not safe_data.get("brand_raw"):
+        br = safe_data.get("brand")
+        if br and br != "Not Found":
+            safe_data["brand_raw"] = br
+
+
+def _drop_misleading_multi_incoterm_flag(safe_data: dict) -> None:
+    """Samuel 2026-10-30: a fresh Jameson test rendered a "multiple
+    incoterms detected — row duplicated" flag even though the stored row
+    carries one incoterm. GPT occasionally attaches that flag to a Rule-7
+    compound-location row (one incoterm, several locations) because the
+    source line listed many places. The fix is a server-side guard: if
+    the raw source row contains at most one distinct incoterm token, the
+    "multiple incoterms" flag is a misread and we drop it. The row
+    still keeps every other flag the LLM emitted.
+    """
+    raw = (safe_data.get("_raw_row_text") or "").upper()
+    flags = safe_data.get("error_flags") or []
+    if not isinstance(flags, list) or not flags:
+        return
+    distinct = set(_INCOTERM_RE.findall(raw))
+    distinct = {t.upper() for t in distinct}
+    if len(distinct) >= 2:
+        return
+    kept = [f for f in flags
+            if not (isinstance(f, str)
+                    and "multiple incoterms detected" in f.lower())]
+    if len(kept) != len(flags):
+        safe_data["error_flags"] = kept
+
+
 def _snap_duplicated_row_per_unit(safe_data: dict) -> None:
     """When a row carries the Rule-6 "multiple incoterms detected — row
     duplicated" flag, Rule 6 says all sibling rows must be identical except
@@ -1251,10 +1296,19 @@ async def process_offer(payload, job_id: str):
                     # on the row's first write.
                     _backfill_customs_from_text(safe_data)
 
+                    # R-16 (Samuel 2026-10-30): keep the LLM's original
+                    # product name + brand immutably on every row.
+                    _preserve_raw_identity(safe_data)
+
                     # Compound-location preservation guard (Rule 7). Flags
                     # rows where the raw source listed ≥2 alternative
                     # locations and GPT kept only one.
                     _detect_dropped_alt_locations(safe_data)
+
+                    # Drop the misleading "multiple incoterms detected"
+                    # flag when the raw row has at most one incoterm —
+                    # Samuel's Jameson fresh-test regression.
+                    _drop_misleading_multi_incoterm_flag(safe_data)
 
                     # R-07 supersession — parse "replaces our earlier A01"
                     # before persistence so save_offer_to_db has the field.
@@ -1500,7 +1554,9 @@ async def process_offer(payload, job_id: str):
                 # ── Phase 3 M2 — customs_status fallback from raw text ─
                 # Mirrors the batch path above; see note there.
                 _backfill_customs_from_text(safe_data)
+                _preserve_raw_identity(safe_data)
                 _detect_dropped_alt_locations(safe_data)
+                _drop_misleading_multi_incoterm_flag(safe_data)
                 _parse_supersedes_ref(safe_data)
 
                 safe_data = _normalize_currency_and_prices(safe_data)

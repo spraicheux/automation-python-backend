@@ -1953,10 +1953,35 @@
     unspecified: 'cs', '': 'cs',
   };
   function formatQuantity(i) {
-    if (i.quantity_case == null) return nullCell();
     const raw = (i.quantity_unit || '').toLowerCase().trim();
+    const cpp = Number(i.cases_per_pallet) || null;
+    const upc = Number(i.units_per_case) || null;
+    const qc  = i.quantity_case != null ? Number(i.quantity_case) : null;
+    // Samuel 2026-10-30: pallet / FTL / bottle rows must show the source
+    // phrase alongside the normalized number. A10 (160 cs from 2 plt),
+    // A11 (1 FTL, no case equivalent), A12 (12 btls = 2 cs) all read in
+    // one glance so the operator sees both representations.
+    if (raw === 'ftl') {
+      return `<span title="Full Truck Load — case count N/A">1 FTL</span>`;
+    }
+    if (raw === 'pallets' || raw === 'pallet' || raw === 'plt') {
+      if (qc == null) return nullCell();
+      const plt = (cpp && cpp > 0) ? Math.round(qc / cpp) : null;
+      const src = plt ? ` <span class="qty-source" title="source quantity">(${plt} plt × ${cpp} cs/plt)</span>` : '';
+      return `${qc} cs${src}`;
+    }
+    if (raw === 'bottles' || raw === 'bottle' || raw === 'btls') {
+      if (qc == null) {
+        const btls = i._quantity_bottles ? ` (${i._quantity_bottles} btls)` : '';
+        return `<span class="qty-loose" title="Loose bottles — no case pack">—${btls}</span>`;
+      }
+      const btls = (upc && upc > 0) ? Math.round(qc * upc) : null;
+      const src = btls ? ` <span class="qty-source" title="source quantity">(${btls} btls)</span>` : '';
+      return `${qc} cs${src}`;
+    }
+    if (qc == null) return nullCell();
     const label = _QTY_UNIT_LABEL[raw] || 'cs';
-    return `${Number(i.quantity_case)} ${label}`;
+    return `${qc} ${label}`;
   }
 
   // ─── Flag categorization ────────────────────────────────────────────────────
