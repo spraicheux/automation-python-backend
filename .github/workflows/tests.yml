@@ -43,4 +43,5 @@ jobs:
                  tests/test_alert_dedup.py \
                  tests/test_write_path.py \
                  tests/test_phase3_acceptance_v3.py \
+                 tests/test_phase3_acceptance_v4.py \
                  -v --tb=short

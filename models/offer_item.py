@@ -56,6 +56,14 @@ class OfferItemDB(Base):
     # short slugs the extractor emits: "cases" | "bottles" | "pallets" |
     # "pieces" | "ftl" | "unspecified".
     quantity_unit       = Column(String(32), nullable=True)
+    # Source counts in native units — populated whenever the source expresses
+    # availability in bottles / pieces / pallets / FTL. Keeps the drawer honest
+    # when `quantity_case` cannot be computed (A11 FTL, A07/B05/H02 loose pack)
+    # or when the trader needs to see the source quantity alongside the
+    # normalised cases (A10 pallets, A12 bottle MOQ). Immutable at ingest.
+    quantity_bottles    = Column(Float, nullable=True)
+    quantity_pallets    = Column(Float, nullable=True)
+    quantity_ftl        = Column(Float, nullable=True)
     gift_box            = Column(String(255), nullable=True)
     refillable_status   = Column(String(64), nullable=True)
 
@@ -78,6 +86,10 @@ class OfferItemDB(Base):
     lead_time         = Column(String(255), nullable=True)
     moq_cases         = Column(Float, nullable=True)
     moq_unit          = Column(String(32), nullable=True)   # cases | bottles | pallets | pieces | ftl
+    # Source MOQ in native unit — e.g. A12's "MOQ 12 btls" lives here while
+    # moq_cases carries the normalised 2 cs. Drawer shows both so the trader
+    # sees the supplier's own figure, not just the converted one.
+    moq_bottles       = Column(Float, nullable=True)
     valid_until       = Column(String(64), nullable=True)
     best_before_date  = Column(String(64), nullable=True)
     vintage           = Column(String(64), nullable=True)
@@ -227,6 +239,9 @@ class OfferItemDB(Base):
             "cases_per_pallet": self.cases_per_pallet,
             "quantity_case": self.quantity_case,
             "quantity_unit": self.quantity_unit,
+            "quantity_bottles": self.quantity_bottles,
+            "quantity_pallets": self.quantity_pallets,
+            "quantity_ftl": self.quantity_ftl,
             "gift_box": self.gift_box,
             "refillable_status": self.refillable_status,
             "currency": self.currency,
@@ -245,6 +260,7 @@ class OfferItemDB(Base):
             "lead_time": self.lead_time,
             "moq_cases": self.moq_cases,
             "moq_unit": self.moq_unit,
+            "moq_bottles": self.moq_bottles,
             "valid_until": self.valid_until,
             "best_before_date": self.best_before_date,
             "vintage": self.vintage,

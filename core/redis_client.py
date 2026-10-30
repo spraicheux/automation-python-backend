@@ -16,11 +16,14 @@ class RedisManager:
             REDIS_URL = os.getenv("REDIS_URL")
 
             if REDIS_URL:
-                self.client = redis.Redis.from_url(
-                    REDIS_URL,
-                    decode_responses=True,
-                    ssl_cert_reqs=None,
-                )
+                # redis.Redis.from_url rejects ssl_cert_reqs for non-SSL
+                # schemes (plain redis://). Pass it only for rediss://,
+                # otherwise local isolated-test runs silently fall back
+                # to in-memory and uvicorn + celery stop sharing status.
+                kwargs = {"decode_responses": True}
+                if REDIS_URL.lower().startswith("rediss://"):
+                    kwargs["ssl_cert_reqs"] = None
+                self.client = redis.Redis.from_url(REDIS_URL, **kwargs)
                 self.client.ping()
                 self.use_redis = True
                 print("✓ Redis connected successfully")

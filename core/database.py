@@ -89,6 +89,15 @@ def init_db():
             ("product_name_raw",    "VARCHAR(1024)"),
             ("brand_raw",           "VARCHAR(255)"),
             ("moq_unit",            "VARCHAR(32)"),
+            # Samuel 2026-10-31: source counts in their native unit so that
+            # the drawer surfaces "1 FTL available", "100 pieces available",
+            # or "12 btls MOQ (= 2 cs)" even when the normalised case field is
+            # null (A11 FTL) or converted (A12 MOQ, A07/B05/H02 loose pack).
+            # Add-only, nullable — no production rows need backfill.
+            ("moq_bottles",         "DOUBLE PRECISION"),
+            ("quantity_bottles",    "DOUBLE PRECISION"),
+            ("quantity_pallets",    "DOUBLE PRECISION"),
+            ("quantity_ftl",        "DOUBLE PRECISION"),
             # Phase 3 acceptance (R-09): FX provenance so Samuel can
             # reconcile EUR amounts against a known FX source. fx_source
             # records whether the rate came from the source document, a

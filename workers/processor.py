@@ -94,6 +94,9 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 cases_per_pallet=offer_dict.get("cases_per_pallet"),
                 quantity_case=offer_dict.get("quantity_case"),
                 quantity_unit=offer_dict.get("quantity_unit"),
+                quantity_bottles=offer_dict.get("quantity_bottles"),
+                quantity_pallets=offer_dict.get("quantity_pallets"),
+                quantity_ftl=offer_dict.get("quantity_ftl"),
                 range_name=offer_dict.get("range_name"),
                 category_slug=offer_dict.get("category_slug"),
                 perfume_format=offer_dict.get("perfume_format"),
@@ -120,6 +123,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 lead_time=offer_dict.get("lead_time"),
                 moq_cases=offer_dict.get("moq_cases"),
                 moq_unit=offer_dict.get("moq_unit"),
+                moq_bottles=offer_dict.get("moq_bottles"),
                 valid_until=offer_dict.get("valid_until"),
                 best_before_date=offer_dict.get("best_before_date"),
                 vintage=offer_dict.get("vintage"),
@@ -476,17 +480,43 @@ _CURRENCY_SYMBOLS = {
 }
 
 
+_PRODUCT_LINE_RE = re.compile(
+    r"(?mi)^\s*(?:Product|Product\s+name|Item|Description|Désignation|Designation)"
+    r"\s*[:\-]\s*(.+?)\s*$"
+)
+
+
 def _preserve_raw_identity(safe_data: dict) -> None:
-    """R-16 (Samuel 2026-10-30): product_name_raw / brand_raw must be
-    populated on EVERY row — not only when the customs T1/T2 token is
-    stripped. The LLM's first-pass extraction is the raw source value we
-    want to keep immutable: a later re-canonicalisation of brand
-    ("Dior" → "Christian Dior") or product name must not lose the
-    original. We call this *after* _backfill_customs_from_text so a row
-    whose brand was de-tokenized still records the token-less canonical
-    too, but we never overwrite values the customs pass already set.
+    """R-16 (Samuel 2026-10-30, extended 2026-10-31): product_name_raw must
+    hold the EXACT source description — not the LLM's post-cleanup
+    product_name. Samuel reviewed v3 and found that B05's raw dropped the
+    "Foundation" suffix and B09's dropped the "Test" prefix because we were
+    copying the LLM's already-normalised product_name into _raw.
+
+    Strategy: parse the "Product:" line directly out of _raw_row_text (the
+    unmodified source block, threaded in by openai_client.extract_offer).
+    That line is literally what the supplier wrote. We only fall back to
+    the LLM's product_name when the raw block has no "Product:" marker
+    (e.g. Excel rows where columns were split out before extraction).
+
+    brand_raw stays on the LLM-pass behaviour because the source files
+    don't have a dedicated Brand: line — the brand is inside the product
+    name, so the LLM's brand split is already our best source of truth.
     """
-    if not safe_data.get("product_name_raw"):
+    raw = safe_data.get("_raw_row_text") or ""
+    source_line = None
+    if raw:
+        m = _PRODUCT_LINE_RE.search(raw)
+        if m:
+            source_line = m.group(1).strip()
+            # Collapse internal whitespace runs so a tab inside the raw
+            # block doesn't make the stored value look doctored.
+            source_line = re.sub(r"\s+", " ", source_line)
+    if source_line:
+        # Overwrite even if a prior pass filled it — the source line is the
+        # authoritative raw text, by Samuel's acceptance criterion.
+        safe_data["product_name_raw"] = source_line
+    elif not safe_data.get("product_name_raw"):
         pn = safe_data.get("product_name")
         if pn and pn != "Not Found":
             safe_data["product_name_raw"] = pn
@@ -735,8 +765,35 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
     qty_unit = (safe_data.get('quantity_unit') or '').lower().strip()
 
     if qty_unit == 'ftl':
+        # Samuel 2026-10-31 (A11): keep the source FTL count persistent so
+        # the drawer can show "1 FTL available" even though the case
+        # equivalent is intentionally null. Parse the count out of the raw
+        # row text ("1 FTL available", "FTL × 1") when the LLM gave a
+        # numeric quantity_case before we null it; default to 1 when the
+        # supplier wrote "1 FTL" or just "FTL" with no explicit count.
+        ftl_count = None
+        if qty is not None and qty > 0:
+            ftl_count = qty
+        else:
+            raw = safe_data.get('_raw_row_text') or ''
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(?:FTL|full\s*truck\s*load)\b',
+                          raw, re.IGNORECASE)
+            if m:
+                try:
+                    ftl_count = float(m.group(1))
+                except (TypeError, ValueError):
+                    ftl_count = None
+            elif re.search(r'\bFTL\b', raw, re.IGNORECASE):
+                ftl_count = 1.0
+        safe_data['quantity_ftl'] = ftl_count
         safe_data['quantity_case'] = None
-        error_flags.append('Quantity: FTL (Full Truck Load)')
+        if ftl_count:
+            error_flags.append(
+                f'Quantity: {int(ftl_count) if ftl_count == int(ftl_count) else ftl_count} '
+                f'FTL (Full Truck Load, case equivalent unknown)'
+            )
+        else:
+            error_flags.append('Quantity: FTL (Full Truck Load)')
     elif qty_unit in ('pallets', 'pallet', 'plt'):
         # Source expressed availability in pallets (A10: "2 pallets ... each
         # pallet contains 80 cases"). Rule 0.3 says `quantity_case` must
@@ -751,7 +808,16 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
             if qty <= cpp:
                 pallets = qty
                 safe_data['quantity_case'] = qty * cpp
-            # else qty is already in cases: trust it.
+            else:
+                # LLM already converted pallets → cases (qty > cpp): derive
+                # the pallet count by dividing so the drawer can still show
+                # "2 plt × 80 cs/plt" instead of only "160 cs".
+                try:
+                    _p = qty / cpp
+                    if _p > 0 and abs(_p - round(_p)) < 1e-6:
+                        pallets = _p
+                except (TypeError, ZeroDivisionError):
+                    pallets = None
         else:
             raw = safe_data.get('_raw_row_text') or ''
             m = re.search(r'(\d+(?:\.\d+)?)\s*(?:pallets?|plt)\b',
@@ -764,22 +830,71 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
                     pass
         if pallets:
             safe_data['_quantity_pallets'] = pallets
-    elif qty_unit == 'bottles' and qty:
+            safe_data['quantity_pallets'] = pallets
+    elif qty_unit in ('bottles', 'bottle', 'btls',
+                       'pieces', 'piece', 'pcs'):
         # Rule 0.3 is explicit: `quantity_case` ALWAYS stores the number of
-        # cases, even when the source expressed availability in bottles and
-        # quantity_unit was preserved as "bottles" for traceability. The LLM
-        # has already converted (e.g. "9600 btls" with 6-bottle case →
-        # quantity_case=1600, quantity_unit="bottles"). Pre-Rule-0.3 pipelines
-        # re-divided by upc here, double-converting 1600 → 266.67 and silently
-        # corrupting quantity. We now trust the LLM's quantity_case value and
-        # only null it when there is no real case pack (loose single pieces,
-        # upc in {0, 1}) — matching R-14's "A07 loose pieces: no fictional
-        # case price" rule.
-        if not upc or upc in (0, 1):
+        # cases. For loose packs (upc 0/1) the case equivalent is null; the
+        # source piece / bottle count still has to reach the drawer. Samuel
+        # 2026-10-31 (A07/B05/H02 NARS "100 pieces"): the LLM sometimes
+        # emits quantity_case=null + a flag "quantity_case not explicitly
+        # stated" even though the source has "Available quantity: 100
+        # pieces". Fall back to parsing the raw block when the LLM dropped
+        # the number.
+        if qty is None:
+            raw = safe_data.get('_raw_row_text') or ''
+            m = re.search(
+                r'Available\s+quantity\s*:\s*(\d+(?:[.,]\d+)?)\s*'
+                r'(?:pieces|piece|pcs|bottles|bottle|btls)\b',
+                raw, re.IGNORECASE
+            )
+            if m:
+                try:
+                    qty = float(m.group(1).replace(',', '.'))
+                except (TypeError, ValueError):
+                    qty = None
+        if qty is None:
+            # Nothing to persist; keep columns null and skip the flag.
+            pass
+        elif not upc or upc in (0, 1):
+            # Loose pack: persist the source count on quantity_bottles so
+            # the drawer renders "100 pieces" instead of "—".
             safe_data['quantity_case'] = None
             safe_data['_quantity_bottles'] = qty
-            error_flags.append(f'Quantity in bottles ({int(qty)}), loose pack — case qty N/A')
-        # else: trust LLM's already-converted quantity_case; no re-conversion.
+            safe_data['quantity_bottles'] = qty
+            # Normalise the stored unit for consistent downstream handling.
+            if qty_unit in ('pieces', 'piece', 'pcs'):
+                safe_data['quantity_unit'] = 'pieces'
+            label = 'pieces' if qty_unit in ('pieces', 'piece', 'pcs') else 'bottles'
+            error_flags.append(
+                f'Quantity in {label} ({int(qty)}), loose pack — case qty N/A'
+            )
+        else:
+            # Case pack is known: the LLM's quantity_case is already in
+            # cases, so compute the source bottle count for the drawer.
+            try:
+                safe_data['quantity_bottles'] = float(qty) * float(upc)
+            except (TypeError, ValueError):
+                pass
+
+    # Second-chance pallet-count: when the LLM already converted pallets to
+    # cases (quantity_unit='cases', quantity_case=160 for A10) the raw block
+    # still contains "N pallets". Fish out the pallet count so the drawer
+    # can render the source phrase. Only fires when quantity_pallets is still
+    # null (no double-write) and the row looks pallet-y.
+    if safe_data.get('quantity_pallets') in (None, 0, 0.0):
+        raw_block = safe_data.get('_raw_row_text') or ''
+        cpp = _to_float(safe_data.get('cases_per_pallet'))
+        qc_final = _to_float(safe_data.get('quantity_case'))
+        if raw_block and cpp and cpp > 0 and qc_final and qc_final > 0:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*pallets?\b', raw_block, re.IGNORECASE)
+            if m:
+                try:
+                    _plt = float(m.group(1))
+                    if _plt * cpp == qc_final:
+                        safe_data['quantity_pallets'] = _plt
+                except (TypeError, ValueError):
+                    pass
 
     # Final sync: safe_data['error_flags'] must reflect every flag this function
     # produced (FTL quantity, bottle-pack notes, pallet notes). The caller's
@@ -1409,6 +1524,9 @@ async def process_offer(payload, job_id: str):
                         cases_per_pallet=safe_data['cases_per_pallet'],
                         quantity_case=safe_data['quantity_case'],
                         quantity_unit=safe_data.get('quantity_unit'),
+                        quantity_bottles=safe_data.get('quantity_bottles'),
+                        quantity_pallets=safe_data.get('quantity_pallets'),
+                        quantity_ftl=safe_data.get('quantity_ftl'),
                         range_name=safe_data.get('range_name'),
                         category_slug=safe_data.get('category_slug'),
                         perfume_format=safe_data.get('perfume_format'),
@@ -1435,6 +1553,7 @@ async def process_offer(payload, job_id: str):
                         lead_time=safe_data['lead_time'],
                         moq_cases=safe_data['moq_cases'],
                         moq_unit=safe_data.get('moq_unit'),
+                        moq_bottles=safe_data.get('moq_bottles'),
                         valid_until=safe_data['valid_until'],
                         offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
@@ -1623,6 +1742,9 @@ async def process_offer(payload, job_id: str):
                     cases_per_pallet=safe_data['cases_per_pallet'],
                     quantity_case=safe_data['quantity_case'],
                     quantity_unit=safe_data.get('quantity_unit'),
+                    quantity_bottles=safe_data.get('quantity_bottles'),
+                    quantity_pallets=safe_data.get('quantity_pallets'),
+                    quantity_ftl=safe_data.get('quantity_ftl'),
                     gift_box=safe_data['gift_box'],
                     refillable_status=safe_data['refillable_status'],
                     currency=safe_data['currency'],
@@ -1641,6 +1763,7 @@ async def process_offer(payload, job_id: str):
                     lead_time=safe_data['lead_time'],
                     moq_cases=safe_data['moq_cases'],
                     moq_unit=safe_data.get('moq_unit'),
+                    moq_bottles=safe_data.get('moq_bottles'),
                     valid_until=safe_data['valid_until'],
                     offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),

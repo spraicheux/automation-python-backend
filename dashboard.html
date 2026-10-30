@@ -1957,25 +1957,45 @@
     const cpp = Number(i.cases_per_pallet) || null;
     const upc = Number(i.units_per_case) || null;
     const qc  = i.quantity_case != null ? Number(i.quantity_case) : null;
-    // Samuel 2026-10-30: pallet / FTL / bottle rows must show the source
-    // phrase alongside the normalized number. A10 (160 cs from 2 plt),
-    // A11 (1 FTL, no case equivalent), A12 (12 btls = 2 cs) all read in
-    // one glance so the operator sees both representations.
+    const qBottles = i.quantity_bottles != null ? Number(i.quantity_bottles)
+                   : (i._quantity_bottles != null ? Number(i._quantity_bottles) : null);
+    const qPallets = i.quantity_pallets != null ? Number(i.quantity_pallets)
+                   : (i._quantity_pallets != null ? Number(i._quantity_pallets) : null);
+    const qFtl     = i.quantity_ftl != null ? Number(i.quantity_ftl) : null;
+    // Samuel 2026-10-30/31: pallet / FTL / loose-piece rows must show the
+    // source phrase alongside the normalised number — A10 (160 cs from 2
+    // plt), A11 ("1 FTL, no case equivalent"), A12 (12 btls → 2 cs) and
+    // A07/B05/H02 ("100 pieces", loose cosmetics) all read in one glance.
     if (raw === 'ftl') {
-      return `<span title="Full Truck Load — case count N/A">1 FTL</span>`;
+      const n = qFtl != null ? qFtl : 1;
+      const label = Number.isInteger(n) ? n : n;
+      return `<span title="Full Truck Load — case equivalent N/A">${label} FTL</span>`;
     }
     if (raw === 'pallets' || raw === 'pallet' || raw === 'plt') {
-      if (qc == null) return nullCell();
-      const plt = (cpp && cpp > 0) ? Math.round(qc / cpp) : null;
+      if (qc == null && qPallets == null) return nullCell();
+      const plt = qPallets != null ? qPallets
+                : ((cpp && cpp > 0 && qc != null) ? Math.round(qc / cpp) : null);
+      if (qc == null) {
+        return `<span>${plt} plt</span>`;
+      }
       const src = plt ? ` <span class="qty-source" title="source quantity">(${plt} plt × ${cpp} cs/plt)</span>` : '';
       return `<span>${qc} cs${src}</span>`;
     }
-    if (raw === 'bottles' || raw === 'bottle' || raw === 'btls') {
+    if (raw === 'bottles' || raw === 'bottle' || raw === 'btls' ||
+        raw === 'pieces' || raw === 'piece' || raw === 'pcs') {
+      // Loose pack (A07/B05/H02 cosmetics, "100 pieces"): no case
+      // equivalent available, but surface the source count prominently
+      // so the drawer isn't a dash.
       if (qc == null) {
-        const btls = i._quantity_bottles ? ` (${i._quantity_bottles} btls)` : '';
-        return `<span class="qty-loose" title="Loose bottles — no case pack">—${btls}</span>`;
+        if (qBottles != null) {
+          const unitLabel = (raw === 'pieces' || raw === 'piece' || raw === 'pcs')
+            ? 'pieces' : 'btls';
+          return `<span class="qty-loose" title="Loose pack — case equivalent N/A">${qBottles} ${unitLabel}</span>`;
+        }
+        return `<span class="qty-loose" title="Loose pack — no case pack">—</span>`;
       }
-      const btls = (upc && upc > 0) ? Math.round(qc * upc) : null;
+      const btls = qBottles != null ? qBottles
+                 : ((upc && upc > 0) ? Math.round(qc * upc) : null);
       const src = btls ? ` <span class="qty-source" title="source quantity">(${btls} btls)</span>` : '';
       return `<span>${qc} cs${src}</span>`;
     }
@@ -2191,7 +2211,7 @@
         <h3>Commercial conditions</h3>
         <div class="kv-grid three">
           ${kv('Supplier', supplierRich(i), false, 'supplier_name')}
-          ${kv('Available qty', i.quantity_case != null ? formatQuantity(i) : null, true, 'quantity_case')}
+          ${kv('Available qty', formatQuantity(i), true, 'quantity_case')}
           ${kv('MOQ', formatMoq(i), true, 'moq_cases')}
           ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true, 'incoterm')}
           ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
@@ -2478,7 +2498,7 @@
         ].filter(Boolean).join(' ');
         return `<tr class="${trClass}" data-uid="${escapeAttr(o.uid)}">
           <td>${supplierCell(o)}</td>
-          <td class="bp-mono">${o.quantity_case != null ? formatQuantity(o) : '—'}</td>
+          <td class="bp-mono">${formatQuantity(o)}</td>
           <td class="bp-mono" style="color:${pu != null && !isExpired && group === 'current' ? 'var(--green)' : 'var(--muted)'}; font-weight:${pu != null && !isExpired && group === 'current' ? 700 : 400};">${pu != null ? `€${Number(pu).toFixed(2)}` : '—'}</td>
           <td class="bp-mono" style="color:${pc != null && !isExpired && group === 'current' ? 'var(--green)' : 'var(--muted)'}; font-weight:${pc != null && !isExpired && group === 'current' ? 600 : 400};">${pc != null ? `€${Number(pc).toFixed(2)}` : '—'}</td>
           <td class="bp-mono">${dateStr}</td>

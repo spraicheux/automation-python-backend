@@ -51,6 +51,7 @@ class OfferCreate(BaseModel):
     brand: Optional[str] = None
     category: Optional[str] = None
     sub_category: Optional[str] = None
+    category_slug: Optional[str] = None  # wines_spirits | perfumes | cosmetics
     packaging: Optional[str] = None
     bottle_or_can_type: Optional[str] = None
     unit_volume_ml: Optional[float] = None
@@ -110,6 +111,7 @@ class OfferPatch(BaseModel):
 
 _EDITABLE_FIELDS = {
     "product_name", "product_key", "brand", "category", "sub_category",
+    "category_slug",
     "packaging", "packaging_raw", "bottle_or_can_type", "unit_volume_ml",
     "units_per_case", "cases_per_pallet", "quantity_case", "quantity_unit", "gift_box",
     "refillable_status", "currency", "price_per_unit", "price_per_unit_eur",
@@ -176,10 +178,16 @@ def create_offer(payload: OfferCreate, db: Session = Depends(get_db)):
         source_file_id=src.id,
         job_id=src.job_id,
         product_name=payload.product_name,
+        # Manual rows have no supplier-source line, so the stored product
+        # name is itself the raw description — populate product_name_raw so
+        # the "immutable raw" invariant holds for every row the DB has.
+        product_name_raw=payload.product_name,
+        brand_raw=payload.brand,
         product_key=(payload.brand or "") + "_" + payload.product_name,
         brand=payload.brand,
         category=payload.category,
         sub_category=payload.sub_category,
+        category_slug=payload.category_slug,
         packaging=payload.packaging or "Bottle",
         packaging_raw=payload.packaging or "bottle",
         bottle_or_can_type=payload.bottle_or_can_type,
