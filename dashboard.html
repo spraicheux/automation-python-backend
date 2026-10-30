@@ -1968,7 +1968,7 @@
       if (qc == null) return nullCell();
       const plt = (cpp && cpp > 0) ? Math.round(qc / cpp) : null;
       const src = plt ? ` <span class="qty-source" title="source quantity">(${plt} plt × ${cpp} cs/plt)</span>` : '';
-      return `${qc} cs${src}`;
+      return `<span>${qc} cs${src}</span>`;
     }
     if (raw === 'bottles' || raw === 'bottle' || raw === 'btls') {
       if (qc == null) {
@@ -1977,41 +1977,45 @@
       }
       const btls = (upc && upc > 0) ? Math.round(qc * upc) : null;
       const src = btls ? ` <span class="qty-source" title="source quantity">(${btls} btls)</span>` : '';
-      return `${qc} cs${src}`;
+      return `<span>${qc} cs${src}</span>`;
     }
     if (qc == null) return nullCell();
     const label = _QTY_UNIT_LABEL[raw] || 'cs';
-    return `${qc} ${label}`;
+    return `<span>${qc} ${label}</span>`;
   }
 
   function formatMoq(i) {
     // Samuel 2026-10-30: A12 shows available stock 120 cs AND MOQ 12 btls
     // (= 2 cs). The drawer must distinguish stock from MOQ and must show
     // the source MOQ unit alongside the normalized cases.
+    //
+    // Output wrapped in a leading <span> so kv() renders as HTML rather
+    // than escaping; kv() keys off a leading "<" to decide passthrough.
     const moqCs = i.moq_cases != null ? Number(i.moq_cases) : null;
     const moqUnit = (i.moq_unit || '').toLowerCase().trim();
     const moqBtls = i.moq_bottles != null ? Number(i.moq_bottles) : null;
     if (moqCs == null && !moqBtls) return null;
+    const wrap = inner => `<span>${inner}</span>`;
     if (moqUnit === 'bottles' || moqUnit === 'bottle') {
       const b = moqBtls || (moqCs && i.units_per_case
         ? Math.round(moqCs * Number(i.units_per_case))
         : null);
       if (b && moqCs != null) {
-        return `${b} btls <span class="qty-source" title="normalized">(${moqCs} cs)</span>`;
+        return wrap(`${b} btls <span class="qty-source" title="normalized">(${moqCs} cs)</span>`);
       }
-      if (b) return `${b} btls`;
-      return moqCs != null ? `${moqCs} cs` : null;
+      if (b) return wrap(`${b} btls`);
+      return moqCs != null ? wrap(`${moqCs} cs`) : null;
     }
     if (moqUnit === 'pallets' || moqUnit === 'pallet' || moqUnit === 'plt') {
       const cpp = Number(i.cases_per_pallet) || null;
       const plt = cpp && moqCs ? Math.round(moqCs / cpp) : null;
       if (plt && moqCs != null) {
-        return `${plt} plt <span class="qty-source" title="normalized">(${moqCs} cs)</span>`;
+        return wrap(`${plt} plt <span class="qty-source" title="normalized">(${moqCs} cs)</span>`);
       }
-      return moqCs != null ? `${moqCs} cs` : null;
+      return moqCs != null ? wrap(`${moqCs} cs`) : null;
     }
-    if (moqUnit === 'ftl') return '1 FTL';
-    return moqCs != null ? `${moqCs} cs` : null;
+    if (moqUnit === 'ftl') return wrap('1 FTL');
+    return moqCs != null ? wrap(`${moqCs} cs`) : null;
   }
 
   // ─── Flag categorization ────────────────────────────────────────────────────
