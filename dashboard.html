@@ -1984,6 +1984,36 @@
     return `${qc} ${label}`;
   }
 
+  function formatMoq(i) {
+    // Samuel 2026-10-30: A12 shows available stock 120 cs AND MOQ 12 btls
+    // (= 2 cs). The drawer must distinguish stock from MOQ and must show
+    // the source MOQ unit alongside the normalized cases.
+    const moqCs = i.moq_cases != null ? Number(i.moq_cases) : null;
+    const moqUnit = (i.moq_unit || '').toLowerCase().trim();
+    const moqBtls = i.moq_bottles != null ? Number(i.moq_bottles) : null;
+    if (moqCs == null && !moqBtls) return null;
+    if (moqUnit === 'bottles' || moqUnit === 'bottle') {
+      const b = moqBtls || (moqCs && i.units_per_case
+        ? Math.round(moqCs * Number(i.units_per_case))
+        : null);
+      if (b && moqCs != null) {
+        return `${b} btls <span class="qty-source" title="normalized">(${moqCs} cs)</span>`;
+      }
+      if (b) return `${b} btls`;
+      return moqCs != null ? `${moqCs} cs` : null;
+    }
+    if (moqUnit === 'pallets' || moqUnit === 'pallet' || moqUnit === 'plt') {
+      const cpp = Number(i.cases_per_pallet) || null;
+      const plt = cpp && moqCs ? Math.round(moqCs / cpp) : null;
+      if (plt && moqCs != null) {
+        return `${plt} plt <span class="qty-source" title="normalized">(${moqCs} cs)</span>`;
+      }
+      return moqCs != null ? `${moqCs} cs` : null;
+    }
+    if (moqUnit === 'ftl') return '1 FTL';
+    return moqCs != null ? `${moqCs} cs` : null;
+  }
+
   // ─── Flag categorization ────────────────────────────────────────────────────
   // Must mirror core.openai_client._INFO_PREFIXES / api.admin INFO_PATTERNS —
   // the backend's list of auto-correction / unit-normalisation notes that are
@@ -2158,7 +2188,7 @@
         <div class="kv-grid three">
           ${kv('Supplier', supplierRich(i), false, 'supplier_name')}
           ${kv('Available qty', i.quantity_case != null ? formatQuantity(i) : null, true, 'quantity_case')}
-          ${kv('MOQ', i.moq_cases != null ? `${Number(i.moq_cases)} cs` : null, true, 'moq_cases')}
+          ${kv('MOQ', formatMoq(i), true, 'moq_cases')}
           ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true, 'incoterm')}
           ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
           ${kv('Customs status (T1/T2)', (i.custom_status && i.custom_status !== 'Not Found') ? statusBadge(i.custom_status) : null, true, 'custom_status')}

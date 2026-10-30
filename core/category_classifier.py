@@ -133,6 +133,33 @@ def _normalize_category(raw: Optional[str]) -> Optional[str]:
     return None
 
 
+def detect_row_category(row_text: Optional[str]) -> Optional[str]:
+    """Loose per-row classifier for use when the LLM returned no category
+    and the document heuristic would otherwise force a wrong default on a
+    mixed-category file (e.g. a NARS / YSL line in an otherwise-spirits
+    document). Returns a canonical slug only when ONE category has strictly
+    more hits than the other two — no margin requirement; a single tagged
+    keyword is enough. Still returns None when every category is zero or
+    when two categories tie.
+    """
+    if not row_text:
+        return None
+    fold = _fold(row_text)
+    if not fold:
+        return None
+    scores = {
+        WINES_SPIRITS: _count_matches(fold, _WINES_SPIRITS_TOKENS),
+        PERFUMES:      _count_matches(fold, _PERFUME_TOKENS),
+        COSMETICS:     _count_matches(fold, _COSMETICS_TOKENS),
+    }
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_slug, top_score = ordered[0]
+    runner_score = ordered[1][1]
+    if top_score > 0 and top_score > runner_score:
+        return top_slug
+    return None
+
+
 def detect_category(text: Optional[str] = None,
                     source_filename: Optional[str] = None,
                     explicit_category: Optional[str] = None) -> Optional[str]:

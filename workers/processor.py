@@ -514,9 +514,17 @@ def _drop_misleading_multi_incoterm_flag(safe_data: dict) -> None:
     distinct = {t.upper() for t in distinct}
     if len(distinct) >= 2:
         return
-    kept = [f for f in flags
-            if not (isinstance(f, str)
-                    and "multiple incoterms detected" in f.lower())]
+
+    def _is_multi_incoterm_flag(f) -> bool:
+        if not isinstance(f, str):
+            return False
+        fl = f.lower()
+        if "incoterm" not in fl:
+            return False
+        return any(w in fl for w in ("multiple", "several", "mixed",
+                                     "many", "various"))
+
+    kept = [f for f in flags if not _is_multi_incoterm_flag(f)]
     if len(kept) != len(flags):
         safe_data["error_flags"] = kept
 
@@ -711,14 +719,16 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
     # moq_unit disagrees — otherwise the drawer reads as a defect it isn't.
     if moq_unit and moq_unit not in ("bottles", "bottle"):
         before = list(error_flags)
-        error_flags = [f for f in before
-                       if not (isinstance(f, str) and "MOQ in bottles" in f)]
+        # Mutate the caller's list in place rather than rebinding — subsequent
+        # appends in this function (FTL quantity, pallet notes, etc.) must land
+        # on the same list and reach safe_data['error_flags'] below.
+        error_flags[:] = [f for f in before
+                          if not (isinstance(f, str) and "MOQ in bottles" in f)]
         if len(error_flags) != len(before):
             logger.info(
                 f"[_normalize_moq_and_quantity] dropped stale MOQ-in-bottles "
                 f"flag(s) because moq_unit = {moq_unit!r}"
             )
-            safe_data['error_flags'] = error_flags
 
     # ── quantity_case ───────────────────────────────────────────────────
     qty = _to_float(safe_data.get('quantity_case'))
@@ -727,6 +737,33 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
     if qty_unit == 'ftl':
         safe_data['quantity_case'] = None
         error_flags.append('Quantity: FTL (Full Truck Load)')
+    elif qty_unit in ('pallets', 'pallet', 'plt'):
+        # Source expressed availability in pallets (A10: "2 pallets ... each
+        # pallet contains 80 cases"). Rule 0.3 says `quantity_case` must
+        # ALWAYS store cases, so when cases_per_pallet is known we convert.
+        # Three paths:
+        #   (a) LLM already converted → qty % cpp == 0 and qty > cpp.
+        #   (b) LLM left qty as the pallet count (A10 → qty=2) → multiply.
+        #   (c) Parse pallet count out of _raw_row_text when LLM gave null.
+        cpp = _to_float(safe_data.get('cases_per_pallet'))
+        pallets = None
+        if cpp and cpp > 0 and qty is not None and qty > 0:
+            if qty <= cpp:
+                pallets = qty
+                safe_data['quantity_case'] = qty * cpp
+            # else qty is already in cases: trust it.
+        else:
+            raw = safe_data.get('_raw_row_text') or ''
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(?:pallets?|plt)\b',
+                          raw, re.IGNORECASE)
+            if m and cpp and cpp > 0:
+                try:
+                    pallets = float(m.group(1))
+                    safe_data['quantity_case'] = pallets * cpp
+                except (TypeError, ValueError):
+                    pass
+        if pallets:
+            safe_data['_quantity_pallets'] = pallets
     elif qty_unit == 'bottles' and qty:
         # Rule 0.3 is explicit: `quantity_case` ALWAYS stores the number of
         # cases, even when the source expressed availability in bottles and
@@ -744,6 +781,11 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
             error_flags.append(f'Quantity in bottles ({int(qty)}), loose pack — case qty N/A')
         # else: trust LLM's already-converted quantity_case; no re-conversion.
 
+    # Final sync: safe_data['error_flags'] must reflect every flag this function
+    # produced (FTL quantity, bottle-pack notes, pallet notes). The caller's
+    # list and safe_data may be the same list; _assign unconditionally_ so both
+    # paths land in storage even when safe_data arrived with a stale value.
+    safe_data['error_flags'] = list(error_flags)
     return safe_data
 
 

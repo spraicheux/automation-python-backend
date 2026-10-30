@@ -164,7 +164,9 @@ def apply_deterministic_defaults(products: list, source_text: str,
                                  source_filename: Optional[str] = None,
                                  sender_email: Optional[str] = None) -> tuple:
     """Apply document-level defaults + normalise the LLM's category output."""
-    from core.category_classifier import detect_category, _normalize_category  # noqa: E501
+    from core.category_classifier import (
+        detect_category, detect_row_category, _normalize_category,
+    )  # noqa: E501
     """
     Apply document-level defaults to LLM-extracted products.
     Returns (corrected_products, list_of_corrections).
@@ -224,9 +226,32 @@ def apply_deterministic_defaults(products: list, source_text: str,
             corrections.append(f"Row {i+1}: supplier_name=None → {doc_supplier} (inherited from document metadata)")
 
         # ── category slug ────────────────────────────────────────────
-        # Prefer any per-row slug the LLM already emitted (normalised);
-        # otherwise fall back to the deterministic document-level guess.
+        # Precedence (Samuel 2026-10-30 — mixed-category files must not
+        # inherit document-level default for off-category rows: NARS /
+        # YSL rows in an otherwise-spirits document):
+        #   1. Any per-row slug the LLM already emitted (normalised).
+        #   2. Per-row deterministic classifier run on the row's own
+        #      _raw_row_text + brand/product_name — catches cosmetic /
+        #      perfume rows the LLM failed to tag, before the document
+        #      fallback mis-labels them.
+        #   3. Document-level heuristic fallback.
         row_cat = _normalize_category(p.get("category_slug") or p.get("category"))
+        if not row_cat:
+            row_text_parts = [
+                p.get("_raw_row_text") or "",
+                p.get("product_name") or "",
+                p.get("brand") or "",
+                p.get("sub_category") or "",
+                p.get("product_type") or "",
+            ]
+            row_text = " ".join(s for s in row_text_parts if s)
+            if row_text.strip():
+                row_cat = detect_row_category(row_text)
+                if row_cat:
+                    corrections.append(
+                        f"Row {i+1}: category_slug=None → {row_cat} "
+                        f"(derived from row text; overrides document default)"
+                    )
         if row_cat:
             if p.get("category_slug") != row_cat:
                 p["category_slug"] = row_cat
