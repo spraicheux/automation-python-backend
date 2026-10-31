@@ -1988,7 +1988,14 @@
       // so the drawer isn't a dash.
       if (qc == null) {
         if (qBottles != null) {
-          const unitLabel = (raw === 'pieces' || raw === 'piece' || raw === 'pcs')
+          // The LLM often normalises the supplier's "pieces" to "bottles"
+          // before we store it, so quantity_unit can read 'bottles' for a
+          // loose cosmetic the source counted in pieces (Samuel 2026-10-31:
+          // NARS foundation "100 pieces" rendered "100 btls"). A loose
+          // cosmetic is counted in pieces, never bottles — honour the source
+          // noun by category so the drawer matches what the supplier wrote.
+          const unitLabel = (raw === 'pieces' || raw === 'piece' || raw === 'pcs'
+            || (i.category_slug || '').toLowerCase() === 'cosmetics')
             ? 'pieces' : 'btls';
           return `<span class="qty-loose" title="Loose pack — case equivalent N/A">${qBottles} ${unitLabel}</span>`;
         }
@@ -2014,8 +2021,13 @@
     const moqCs = i.moq_cases != null ? Number(i.moq_cases) : null;
     const moqUnit = (i.moq_unit || '').toLowerCase().trim();
     const moqBtls = i.moq_bottles != null ? Number(i.moq_bottles) : null;
-    if (moqCs == null && !moqBtls) return null;
     const wrap = inner => `<span>${inner}</span>`;
+    // FTL MOQ (A11 "MOQ 1 FTL") carries no case or bottle equivalent — truck
+    // capacity is not supplied — so it must be handled BEFORE the null guard
+    // below, otherwise the drawer renders "—" for a MOQ the source stated
+    // explicitly (Samuel 2026-10-31).
+    if (moqUnit === 'ftl') return wrap('1 FTL');
+    if (moqCs == null && !moqBtls) return null;
     if (moqUnit === 'bottles' || moqUnit === 'bottle') {
       const b = moqBtls || (moqCs && i.units_per_case
         ? Math.round(moqCs * Number(i.units_per_case))
@@ -2034,7 +2046,6 @@
       }
       return moqCs != null ? wrap(`${moqCs} cs`) : null;
     }
-    if (moqUnit === 'ftl') return wrap('1 FTL');
     return moqCs != null ? wrap(`${moqCs} cs`) : null;
   }
 
