@@ -2975,6 +2975,21 @@ def clean_product_data(product: dict) -> dict:
                             f"[clean_product_data] stale-flag drop: {_f!r} "
                             f"(moq_unit = {_mu!r}, not bottles)"
                         )
+                # "moq_cases not found" is misleading when the MOQ is fully stated
+                # in a non-case unit — A11 "MOQ 1 FTL" has no case equivalent by
+                # nature; pallets/bottles/pieces likewise carry the MOQ. The
+                # absent CASE count is then expected, not a review item (Samuel
+                # 2026-11-01: Martell VSOP showed "NEEDS REVIEW — moq_cases not
+                # found" next to "MOQ 1 FTL").
+                if not _drop and "moq_cases not found" in _f:
+                    _mu2 = (cleaned_product.get("moq_unit") or "").lower().strip()
+                    if _mu2 in ("ftl", "pallets", "pallet", "plt",
+                                "bottles", "bottle", "pieces", "piece", "pcs"):
+                        _drop = True
+                        logger.info(
+                            f"[clean_product_data] stale-flag drop: {_f!r} "
+                            f"(moq fully stated as {_mu2!r}, case count N/A)"
+                        )
             if not _drop:
                 _kept.append(_f)
         if len(_kept) != len(_flags):

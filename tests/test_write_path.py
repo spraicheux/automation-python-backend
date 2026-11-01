@@ -110,6 +110,38 @@ class TestExpiredOfferHandling:
         assert all(o["is_expired"] for o in peer["offers"])
 
 
+class TestHistoricalBenchmarkIncludesExpired:
+    """Samuel 2026-11-01 — the 12M Low is a HISTORICAL benchmark, so an expired
+    offer within the window must still set the historical low. (Expiry is a
+    current-availability fact handled by Best Prices, not by history.) The NARS
+    €15 offer was expired and therefore wrongly absent from its own 12M Low while
+    it sat plainly in the export."""
+
+    def test_expired_offer_sets_historical_low(self):
+        db = _session()
+        # Same peer (brand/product/EAN/volume/incoterm/location); the cheaper €15
+        # offer is EXPIRED, the €19 offer is active.
+        _offer(db, "exp15", 15.0, valid_until="2020-01-01", supplier="SupplierA")
+        _offer(db, "act19", 19.0, valid_until="2099-12-31", supplier="SupplierB")
+        bm = asyncio.run(get_benchmarks(window="12M", db=db))
+        assert len(bm["peers"]) == 1, bm["peers"]
+        peer = next(iter(bm["peers"].values()))
+        # The expired €15 IS the historical low and IS counted as a sample.
+        assert peer["low_eur"] == 15.0, peer
+        assert peer["samples"] == 2, peer
+
+    def test_zero_price_still_excluded_from_history(self):
+        # Data-trust filters stay: a €0 row never sets a historical low even
+        # though it is "history".
+        db = _session()
+        _offer(db, "good", 19.0, valid_until="2099-12-31", supplier="SupplierA")
+        _offer(db, "zero", 0.0, valid_until="2099-12-31", supplier="SupplierB")
+        bm = asyncio.run(get_benchmarks(window="12M", db=db))
+        peer = next(iter(bm["peers"].values()))
+        assert peer["low_eur"] == 19.0, peer
+        assert peer["samples"] == 1, peer
+
+
 class TestManualCreateEditPersistence:
     """REQ 15 — create/edit persist every field, incl. category-specific ones."""
 

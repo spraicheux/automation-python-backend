@@ -137,6 +137,9 @@ def strip_info_flags(
         "sub_category inferred from brand name",
         "Quantity in bottles",
         "quantity_case not explicitly stated",
+        # FTL quantity/MOQ has no case equivalent by nature — informational,
+        # never a review item (Samuel 2026-11-01).
+        "Full Truck Load",
     )
 
     rows = (db.query(OfferItemDB)
@@ -397,6 +400,9 @@ def sync_review_flags(
         "sub_category inferred from brand name",
         "Quantity in bottles",
         "quantity_case not explicitly stated",
+        # FTL quantity/MOQ has no case equivalent by nature — informational,
+        # never a review item (Samuel 2026-11-01).
+        "Full Truck Load",
     )
 
     rows = (db.query(OfferItemDB)
@@ -2101,6 +2107,15 @@ def retest_cleanup_stale_flags(
                         if v and (not isinstance(v, str) or v.strip() and v.strip().lower() != "not found"):
                             drop = True
                             break
+                # "moq_cases not found" is stale once the MOQ is fully stated in a
+                # non-case unit — "MOQ 1 FTL" has no case equivalent by nature
+                # (mirrors core.openai_client.clean_product_data and the
+                # dashboard's visibleFlags; Samuel 2026-11-01: Martell VSOP).
+                if not drop and "moq_cases not found" in f:
+                    _mu = (getattr(r, "moq_unit", None) or "").lower().strip()
+                    if _mu in ("ftl", "pallets", "pallet", "plt",
+                               "bottles", "bottle", "pieces", "piece", "pcs"):
+                        drop = True
             if drop:
                 stats["flags_dropped"] += 1
                 changed = True

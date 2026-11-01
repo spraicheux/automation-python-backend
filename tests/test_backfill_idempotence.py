@@ -130,3 +130,54 @@ class TestBackfillPreservesRawProductData:
         row2 = db.query(OfferItemDB).filter_by(uid="r1").first()
         assert row2.product_name == "Hennessy VSOP"
         assert row2.product_name_raw == "Hennessy VSOP T2"
+
+
+class TestMoqFtlStaleFlagCleanup:
+    """Samuel 2026-11-01 — "moq_cases not found" is misleading once the MOQ is
+    fully stated in a non-case unit (A11/Martell "MOQ 1 FTL" has no case
+    equivalent by nature). The cleanup drops that stale flag, keeps the real FTL
+    note, leaves a genuine case-unit gap alone, and is idempotent on re-run."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401 (FK target)
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        return sessionmaker(bind=eng)(), OfferItemDB
+
+    def test_ftl_moq_flag_dropped_and_idempotent(self):
+        import json
+        from api.admin import retest_cleanup_stale_flags
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(
+            uid="m1", job_id="t", brand="Martell", product_name="VSOP",
+            moq_unit="ftl", moq_cases=None,
+            error_flags=json.dumps(["moq_cases not found",
+                                    "Quantity: 1 FTL (case equivalent unknown)"]),
+        ))
+        db.commit()
+        r1 = retest_cleanup_stale_flags(apply=True, limit=100000, db=db)
+        assert r1["flags_dropped"] >= 1, r1
+        flags = json.loads(db.query(OfferItemDB).filter_by(uid="m1").first().error_flags)
+        assert "moq_cases not found" not in flags      # stale flag gone
+        assert any("FTL" in f for f in flags)          # real FTL note kept
+        # Second pass is a no-op.
+        r2 = retest_cleanup_stale_flags(apply=True, limit=100000, db=db)
+        assert r2["flags_dropped"] == 0, r2
+
+    def test_case_unit_moq_gap_is_retained(self):
+        import json
+        from api.admin import retest_cleanup_stale_flags
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(
+            uid="m2", job_id="t", brand="X", product_name="Y",
+            moq_unit="cases", moq_cases=None,
+            error_flags=json.dumps(["moq_cases not found"]),
+        ))
+        db.commit()
+        retest_cleanup_stale_flags(apply=True, limit=100000, db=db)
+        kept = json.loads(db.query(OfferItemDB).filter_by(uid="m2").first().error_flags)
+        assert "moq_cases not found" in kept            # genuine case-MOQ gap stays

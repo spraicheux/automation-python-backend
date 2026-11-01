@@ -179,7 +179,6 @@ async def get_benchmarks(
     days = _WINDOW_DAYS.get(window, 365)
     cutoff = datetime.utcnow() - timedelta(days=days) if days else None
 
-    today = datetime.utcnow().strftime('%Y-%m-%d')
     q = (db.query(OfferItemDB)
          .filter(OfferItemDB.price_per_unit_eur.isnot(None))
          # Zero / unusable prices must NOT contribute to a benchmark — a €0.00
@@ -192,11 +191,15 @@ async def get_benchmarks(
          # LOW and poisoned the delta (Samuel P1). Exclude it from the
          # benchmark entirely; it still shows in All Offers with its REVIEW
          # badge.
-         .filter(OfferItemDB.needs_manual_review.isnot(True))
-         # Exclude offers whose valid_until has already passed.
-         .filter(or_(OfferItemDB.valid_until.is_(None),
-                     OfferItemDB.valid_until == '',
-                     OfferItemDB.valid_until >= today)))
+         .filter(OfferItemDB.needs_manual_review.isnot(True)))
+         # NOTE: expired offers are DELIBERATELY retained here. The "12M Low" is a
+         # HISTORICAL benchmark — an offer made at €15 two months ago is a real
+         # historical data point and must set the historical low even once it has
+         # expired. Expiry is a CURRENT-availability fact, handled by Best Prices
+         # (headline/actionable), NOT by history (Samuel 2026-11-01: the NARS €15
+         # expired offer was wrongly absent from its own peer's 12M Low while it
+         # sat plainly in the export). Zero/POR and needs_manual_review stay
+         # excluded above — those are data-trust filters, not recency.
     if cutoff:
         q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) >= cutoff)
 

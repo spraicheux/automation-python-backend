@@ -1821,7 +1821,7 @@
       ? `<span title="${escapeAttr(_ageTitle)}" style="${_ageStyle}">${escapeHtml(ageInfo.text)}${_ageMarker}</span>${_ageInlineNote}`
       : nullCell();
     const ageCls = ageInfo ? (ageInfo.cls || '') : '';
-    const flags = classifyFlags(i.error_flags || []);
+    const flags = classifyFlags(visibleFlags(i));
     // Cross-category EAN conflict surfaced by /api/records as an informational
     // array of distinct category_slugs sharing this EAN across the DB. A valid
     // GS1 EAN identifies one physical product, so the same EAN appearing under
@@ -2066,6 +2066,11 @@
     'sub_category inferred from brand name',
     'quantity in bottles',
     'quantity_case not explicitly stated',
+    // An FTL (Full Truck Load) quantity/MOQ legitimately has no case equivalent —
+    // "case equivalent unknown" is expected for FTL, not a review item. Without
+    // this the word "unknown" pushed the note into NEEDS REVIEW even after the
+    // MOQ read "1 FTL" (Samuel 2026-11-01: Martell VSOP).
+    'full truck load',
   ];
   // Packaging filter key = CASE-PACK dimension ONLY (bottles per case).
   // Bottle size has its own filter (filter-bottle), so the packaging filter must
@@ -2077,6 +2082,23 @@
     if (upc && upc > 1) return `${Math.trunc(upc)}/case`;
     if (upc === 1) return `1/case`;
     return i.packaging || null;
+  }
+  // "moq_cases not found" / "moq_unit not found" are misleading once the MOQ is
+  // actually known in a non-case unit — "MOQ 1 FTL" (Martell) fully states the
+  // MOQ, so the absent CASE count is expected, not a review item. Strip those
+  // stale flags before classification (Samuel 2026-11-01: Martell showed
+  // "NEEDS REVIEW — moq_cases not found" right next to "MOQ 1 FTL").
+  const _MOQ_COMPLETE_UNITS = new Set(['ftl','pallets','pallet','plt','bottles','bottle','pieces','piece','pcs']);
+  function visibleFlags(i) {
+    const flags = i.error_flags || [];
+    const moqUnit = (i.moq_unit || '').toLowerCase().trim();
+    const moqKnown = _MOQ_COMPLETE_UNITS.has(moqUnit)
+      || i.moq_bottles != null || i.moq_cases != null;
+    if (!moqKnown) return flags;
+    return flags.filter(f => {
+      const s = String(f).toLowerCase();
+      return !(s.includes('moq_cases not found') || s.includes('moq_unit not found'));
+    });
   }
   function classifyFlags(flags) {
     const info = [], needs = [];
@@ -2158,12 +2180,16 @@
   }
 
   function drawerBodyHtml(i) {
-    const flags = classifyFlags(i.error_flags || []);
+    const flags = classifyFlags(visibleFlags(i));
     const puEur = fmtEur2Str(i.price_per_unit_eur);
     const pcEur = fmtEur2Str(i.price_per_case_eur);
     const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_unit) ?? '—'}` : null;
     const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_case) ?? '—'}` : null;
     const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
+    // Cosmetics are counted in pieces, never bottles — the price-hero label must
+    // match the quantity noun (Samuel 2026-11-01: NARS showed "100 pieces" but
+    // the price still read "per bottle").
+    const unitNoun = (i.category_slug || '').toLowerCase() === 'cosmetics' ? 'piece' : 'bottle';
 
     return `
       <!-- PRICE HERO -->
@@ -2172,7 +2198,7 @@
         <div class="price-hero">
           <div class="primary">
             <div class="big">${puEur}</div>
-            <div class="lbl">per bottle (EUR)</div>
+            <div class="lbl">per ${unitNoun} (EUR)</div>
           </div>
           <div class="secondary">
             <div class="med">${pcEur}</div>
@@ -2180,7 +2206,7 @@
           </div>
           ${(originalPuStr || originalPcStr || fxStr) ? `
             <div class="original">
-              ${originalPuStr ? `<div class="small">${originalPuStr} / bottle</div>` : ''}
+              ${originalPuStr ? `<div class="small">${originalPuStr} / ${unitNoun}</div>` : ''}
               ${originalPcStr ? `<div class="small">${originalPcStr} / case</div>` : ''}
               ${fxStr ? `<div class="fx">${fxStr}</div>` : ''}
             </div>
