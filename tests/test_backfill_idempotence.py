@@ -181,3 +181,50 @@ class TestMoqFtlStaleFlagCleanup:
         retest_cleanup_stale_flags(apply=True, limit=100000, db=db)
         kept = json.loads(db.query(OfferItemDB).filter_by(uid="m2").first().error_flags)
         assert "moq_cases not found" in kept            # genuine case-MOQ gap stays
+
+
+class TestOptionalMarkerNotesAreInformational:
+    """Samuel 2026-11-02 — "custom_status not found" / "refillable_status not
+    found" record that the source did not state an OPTIONAL commercial marker
+    (customs T1/T2, refillable REF/NRF). They are informational, not review
+    items. A row whose only flags are these must not be review-worthy — fixes
+    Martell VSOP (a cognac) showing NEEDS REVIEW for refillable_status."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401 (FK target)
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        return sessionmaker(bind=eng)(), OfferItemDB
+
+    def test_not_found_markers_are_not_review_worthy(self):
+        import json
+        from api.admin import sync_review_flags
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(
+            uid="w1", job_id="t", brand="Martell", product_name="VSOP",
+            category_slug="wines_spirits", needs_manual_review=True,
+            error_flags=json.dumps(["refillable_status not found",
+                                    "custom_status not found"]),
+        ))
+        db.commit()
+        sync_review_flags(category_slug="wines_spirits", apply=True, db=db)
+        row = db.query(OfferItemDB).filter_by(uid="w1").first()
+        assert not row.needs_manual_review   # demoted: both notes are informational
+
+    def test_genuine_defect_still_review_worthy(self):
+        import json
+        from api.admin import sync_review_flags
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(
+            uid="w2", job_id="t", brand="X", product_name="Y",
+            category_slug="wines_spirits", needs_manual_review=False,
+            error_flags=json.dumps(["cross-category EAN conflict"]),
+        ))
+        db.commit()
+        sync_review_flags(category_slug="wines_spirits", apply=True, db=db)
+        row = db.query(OfferItemDB).filter_by(uid="w2").first()
+        assert row.needs_manual_review       # a real defect still flags review

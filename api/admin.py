@@ -140,6 +140,11 @@ def strip_info_flags(
         # FTL quantity/MOQ has no case equivalent by nature — informational,
         # never a review item (Samuel 2026-11-01).
         "Full Truck Load",
+        # "<field> not found" notes for OPTIONAL commercial markers (customs
+        # T1/T2, refillable REF/NRF) are informational — the source simply did
+        # not state an optional field, not a defect (Samuel 2026-11-02).
+        "custom_status not found",
+        "refillable_status not found",
     )
 
     rows = (db.query(OfferItemDB)
@@ -403,6 +408,11 @@ def sync_review_flags(
         # FTL quantity/MOQ has no case equivalent by nature — informational,
         # never a review item (Samuel 2026-11-01).
         "Full Truck Load",
+        # "<field> not found" notes for OPTIONAL commercial markers (customs
+        # T1/T2, refillable REF/NRF) are informational — the source simply did
+        # not state an optional field, not a defect (Samuel 2026-11-02).
+        "custom_status not found",
+        "refillable_status not found",
     )
 
     rows = (db.query(OfferItemDB)

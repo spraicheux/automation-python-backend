@@ -1177,6 +1177,10 @@
     const payload = {
       product_name: gv('product_name'),
       brand: gv('brand'), category: gv('category'), sub_category: gv('sub_category'),
+      // Derive the trade category_slug from the chosen offer type so a manually
+      // entered offer lands in its category (and uses category-correct display,
+      // e.g. "per piece" for cosmetics) instead of "Other" / uncategorised.
+      category_slug: ({ spirits: 'wines_spirits', perfume: 'perfumes', cosmetics: 'cosmetics' })[document.getElementById('nf-category_type').value] || null,
       unit_volume_ml: gn('unit_volume_ml'), units_per_case: gn('units_per_case'),
       alcohol_percent: gn('alcohol_percent'), ean_code: gv('ean_code'),
       vintage: gv('vintage'),
@@ -2071,6 +2075,13 @@
     // this the word "unknown" pushed the note into NEEDS REVIEW even after the
     // MOQ read "1 FTL" (Samuel 2026-11-01: Martell VSOP).
     'full truck load',
+    // "<field> not found" notes for OPTIONAL commercial markers (customs T1/T2,
+    // refillable REF/NRF) record that the source did not state an optional field
+    // — informational, not a defect. Without this they fall through to the
+    // "default to material" branch and raise a false REVIEW pill on a
+    // backend-clean row (Samuel 2026-11-02: Martell VSOP, A11 states no REF/NRF).
+    'custom_status not found',
+    'refillable_status not found',
   ];
   // Packaging filter key = CASE-PACK dimension ONLY (bottles per case).
   // Bottle size has its own filter (filter-bottle), so the packaging filter must
