@@ -2227,6 +2227,17 @@
       </div>
 
       <!-- CATEGORY-SPECIFIC ATTRIBUTES -->
+      ${(i.category_slug === 'wines_spirits' || i.alcohol_percent != null || i.vintage) ? `
+      <div class="drawer-section">
+        <div class="drawer-cat-block">
+          <div class="h">Wines &amp; spirits attributes</div>
+          <div class="kv-grid three">
+            ${kv('Alcohol %', i.alcohol_percent != null ? `${Number(i.alcohol_percent)}%` : null, true, 'alcohol_percent')}
+            ${kv('Vintage', i.vintage || null, false, 'vintage')}
+          </div>
+        </div>
+      </div>
+      ` : ''}
       ${(i.category_slug === 'perfumes' || i.perfume_format || i.retail_state || i.gender) ? `
       <div class="drawer-section">
         <div class="drawer-cat-block">
