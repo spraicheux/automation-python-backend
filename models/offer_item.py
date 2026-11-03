@@ -209,6 +209,15 @@ class OfferItemDB(Base):
                 product_type=self.product_type,
                 size_weight_g=self.size_weight_g,
                 range_name=self.range_name,
+                # custom_status IS part of the peer identity (T1 vs T2 are
+                # distinct peers). api/records.get_benchmarks already includes it
+                # in the attribute-key fallback; to_dict omitted it, so for an
+                # EAN-less T1/T2 row the key the dashboard looks up
+                # (…|location|) did not match the benchmark key (…|location|t2)
+                # and the 12M-Low / drawer benchmark silently blanked
+                # (Samuel 2026-11-04: JW Red Label 24-Mar "no older historical"
+                # although an identical 16-Mar T2 offer existed).
+                custom_status=self.custom_status,
             ),
             "peer_qualified": is_peer_group_qualified(self.incoterm, self.location),
             "canonical_product_id": product_family_id(

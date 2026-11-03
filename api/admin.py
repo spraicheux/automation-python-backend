@@ -145,6 +145,11 @@ def strip_info_flags(
         # not state an optional field, not a defect (Samuel 2026-11-02).
         "custom_status not found",
         "refillable_status not found",
+        # Authorised compound-location split notes document an approved
+        # transformation, not a pending correction (Samuel 2026-11-04, Jameson).
+        "compound location",
+        "alternative-location row backfilled",
+        "alternative locations",
     )
 
     rows = (db.query(OfferItemDB)
@@ -413,6 +418,11 @@ def sync_review_flags(
         # not state an optional field, not a defect (Samuel 2026-11-02).
         "custom_status not found",
         "refillable_status not found",
+        # Authorised compound-location split notes document an approved
+        # transformation, not a pending correction (Samuel 2026-11-04, Jameson).
+        "compound location",
+        "alternative-location row backfilled",
+        "alternative locations",
     )
 
     rows = (db.query(OfferItemDB)

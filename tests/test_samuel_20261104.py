@@ -77,3 +77,66 @@ class TestDerivedUnitPricePrecision:
         u, c = self._eur(120, 18.0, 6)
         assert c == round(120 * 0.92, 4)         # 110.4
         assert u == round(18.0 * 0.92, 4)        # 16.56 — explicit unit kept
+
+
+class TestPeerKeyIncludesCustomStatus:
+    """Samuel 2026-11-04: an EAN-less T1/T2 row blanked its 12M-Low because
+    to_dict's peer_group_id omitted custom_status while get_benchmarks included
+    it (JW Red Label 24-Mar "no older historical" despite an identical 16-Mar)."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        return sessionmaker(bind=eng)(), OfferItemDB
+
+    def _pg(self, cs):
+        db, OfferItemDB = self._session()
+        r = OfferItemDB(uid=f"j_{cs}", job_id="t", brand="Johnnie Walker",
+                        product_name="Red Label", ean_code=None, unit_volume_ml=1000,
+                        units_per_case=6, incoterm="DAP", location="Loendersloot",
+                        custom_status=cs, price_per_unit_eur=6.7)
+        db.add(r); db.commit()
+        return r.to_dict()["peer_group_id"]
+
+    def test_ean_less_peer_key_includes_custom_status(self):
+        assert "|t2" in self._pg("T2")
+
+    def test_t1_and_t2_are_distinct_peers(self):
+        assert self._pg("T1") != self._pg("T2")
+
+
+class TestAuthorisedLocationSplitNotesAreInformational:
+    """Samuel 2026-11-04: Jameson's authorised compound-location split notes
+    documented an approved transformation but showed under Needs review."""
+
+    def _session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        return sessionmaker(bind=eng)(), OfferItemDB
+
+    def test_location_split_notes_not_review_worthy(self):
+        import json
+        from api.admin import sync_review_flags
+        db, OfferItemDB = self._session()
+        db.add(OfferItemDB(
+            uid="jm1", job_id="t", brand="Jameson", product_name="Irish Whiskey",
+            category_slug="wines_spirits", needs_manual_review=True,
+            error_flags=json.dumps([
+                "compound location (Loendersloot, Revera, Mentrex) split into 3 rows (Samuel 2026-10-28, authorised)",
+                "alternative-location row backfilled from source line Exwork Loendersloot or Revera or Mentrex (Samuel 2026-10-28, authorised)",
+                "source lists 3 alternative locations (Loendersloot, Revera, Mentrex); only Loendersloot persisted",
+                "sub_category inferred from brand name",
+            ])))
+        db.commit()
+        sync_review_flags(category_slug="wines_spirits", apply=True, db=db)
+        assert not db.query(OfferItemDB).filter_by(uid="jm1").first().needs_manual_review

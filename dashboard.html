@@ -2093,6 +2093,13 @@
     // backend-clean row (Samuel 2026-11-02: Martell VSOP, A11 states no REF/NRF).
     'custom_status not found',
     'refillable_status not found',
+    // Authorised compound-location split notes (Samuel 2026-11-04: Jameson
+    // showed "Needs review" for notes that only DOCUMENT an approved
+    // transformation — the "Exwork Loendersloot or Revera or Mentrex" split).
+    // These record what was done, not a pending correction → informational.
+    'compound location',
+    'alternative-location row backfilled',
+    'alternative locations',
   ];
   // Packaging filter key = CASE-PACK dimension ONLY (bottles per case).
   // Bottle size has its own filter (filter-bottle), so the packaging filter must
