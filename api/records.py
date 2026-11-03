@@ -123,6 +123,13 @@ def _parse_search_tokens(raw: str):
     # "EAN 3349668515714" and "GTIN: 3349668515714" both reduce to the bare
     # digits before tokenisation.
     raw = _EAN_PREFIX_RE.sub("", raw)
+    # Glue a volume written with a space to its unit ("50 ml" → "50ml",
+    # "5 cl" → "5cl", "1 L" → "1L") so the unit stays attached to its number
+    # through whitespace tokenisation. Samuel 2026-11-04: "50 ml" returned 0
+    # while "50ml" worked, because raw.split() separated "50" and "ml" into two
+    # text terms. The \b after the unit keeps real words intact ("liter",
+    # "label" are untouched).
+    raw = re.sub(r'(?i)(\d+(?:[.,]\d+)?)\s+(ml|cl|l)\b', r'\1\2', raw)
     text_terms, volume_ml, customs, units_per_case, vintage = [], None, None, None, None
     for tok in raw.split():
         if tok.upper() in ("T1", "T2"):

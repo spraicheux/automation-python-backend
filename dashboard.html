@@ -478,6 +478,7 @@
           <option value="short">≤ 2 weeks lead time</option>
           <option value="mid">3–4 weeks</option>
           <option value="long">5+ weeks</option>
+          <option value="expired">⛔ Expired (past valid-until)</option>
         </select>
         <select id="filter-custom-status" class="filter-select">
           <option value="">All Status</option>
@@ -1551,9 +1552,19 @@
         if (a == null || a < lo || a >= hi) return false;
       }
       if (filters.availability) {
-        const lt = (i.lead_time || '').toLowerCase();
-        const availTag = availabilityBucket(lt);
-        if (availTag !== filters.availability) return false;
+        if (filters.availability === 'expired') {
+          // Explicit-expiry filter (Samuel 2026-11-04): show only offers whose
+          // valid_until is in the past. Separate dimension from lead-time
+          // availability and from the >60-day "historical" age. Computed from
+          // valid_until the same way the backend does (string yyyy-mm-dd compare).
+          const vu = i.valid_until ? String(i.valid_until).slice(0, 10) : '';
+          const today = new Date().toISOString().slice(0, 10);
+          if (!(vu && vu < today)) return false;
+        } else {
+          const lt = (i.lead_time || '').toLowerCase();
+          const availTag = availabilityBucket(lt);
+          if (availTag !== filters.availability) return false;
+        }
       }
       return true;
     });
