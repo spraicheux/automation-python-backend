@@ -413,6 +413,7 @@
     <button class="nav-tab active" id="tab-offers" onclick="switchTab('offers')">All Offers</button>
     <button class="nav-tab" id="tab-bestprices" onclick="switchTab('bestprices')">Best Prices</button>
     <button class="nav-tab" id="tab-alerts" onclick="switchTab('alerts')">Alerts <span id="alert-badge" class="alert-badge" hidden>0</span></button>
+    <button class="nav-tab" id="tab-intake" onclick="switchTab('intake')">Intake <span id="intake-badge" class="alert-badge" hidden>0</span></button>
     <button class="nav-tab primary-tab" onclick="openUploadModal()">+ Upload file</button>
     <button class="nav-tab primary-tab" onclick="openNewOfferModal()">+ New offer</button>
     <div class="stat-chip" id="stat-sources"><b>—</b> Sources</div>
@@ -603,6 +604,14 @@
       <div class="load-more-wrap" id="bp-load-more-wrap" style="display:none">
         <button class="btn btn-outline" id="bp-load-more-btn" onclick="loadMoreBestPrices()">Load more</button>
       </div>
+    </div>
+
+    <div class="page" id="page-intake">
+      <div class="toolbar" style="justify-content:space-between;">
+        <div class="count"><b id="intake-count">—</b> recent intakes (email + WhatsApp) · live, auto-refreshing</div>
+        <button class="btn btn-outline" onclick="loadIntake()">Refresh</button>
+      </div>
+      <div class="alerts-list" id="intake-list"><div class="state-box"><div class="spinner"></div><p>Loading intake feed…</p></div></div>
     </div>
   </main>
 </div>
@@ -991,7 +1000,8 @@
 
   function switchTab(tab) {
     currentTab = tab;
-    ['offers','bestprices','alerts'].forEach(t => {
+    if (tab !== 'intake') { clearTimeout(_intakeTimer); _intakeTimer = null; }
+    ['offers','bestprices','alerts','intake'].forEach(t => {
       const tabBtn = document.getElementById('tab-' + t);
       const page = document.getElementById('page-' + t);
       if (tabBtn) tabBtn.classList.toggle('active', t === tab);
@@ -999,6 +1009,51 @@
     });
     if (tab === 'bestprices' && !document.getElementById('bp-list').dataset.loaded) loadBestPrices(true);
     if (tab === 'alerts') loadAlerts();
+    if (tab === 'intake') loadIntake();
+  }
+
+  // ─── Live intake feed (email + WhatsApp, received → processing → done/failed) ─
+  let _intakeTimer = null;
+  async function loadIntake() {
+    const listEl = document.getElementById('intake-list');
+    try {
+      const res = await fetch(`${API_BASE}/api/intake-status?limit=50`,
+        { headers: { 'Authorization': `Bearer ${currentToken}` } });
+      const data = await res.json();
+      const items = data.intakes || [];
+      document.getElementById('intake-count').textContent = items.length;
+      const active = items.filter(i => i.status === 'queued' || i.status === 'processing').length;
+      const badge = document.getElementById('intake-badge');
+      if (active > 0) { badge.textContent = active; badge.hidden = false; } else badge.hidden = true;
+      if (!items.length) {
+        listEl.innerHTML = `<div class="state-box"><p>No intakes yet. Incoming emails and WhatsApp messages appear here the moment they arrive, with live extraction status.</p></div>`;
+      } else {
+        listEl.innerHTML = items.map(intakeRowHtml).join('');
+      }
+    } catch (e) {
+      listEl.innerHTML = `<div class="state-box"><p>Could not load the intake feed.</p></div>`;
+    }
+    if (currentTab === 'intake') { clearTimeout(_intakeTimer); _intakeTimer = setTimeout(loadIntake, 5000); }
+  }
+
+  function intakeRowHtml(i) {
+    const colors = { queued: '#f59e0b', processing: '#3b82f6', done: '#16a34a', failed: '#ef4444' };
+    const st = (i.status || 'queued');
+    const c = colors[st] || '#64748b';
+    const chan = (i.channel || '—').toUpperCase();
+    const when = String(i.received_at || '').replace('T', ' ').replace('Z', '');
+    const prod = (i.products != null) ? ` · ${i.products} products` : '';
+    const sup = i.supplier_name ? `supplier: ${escapeHtml(i.supplier_name)}`
+              : (i.sender_name ? `from: ${escapeHtml(i.sender_name)}` : '');
+    const err = i.error ? `<div style="color:#ef4444;font-size:12px;margin-top:4px;">${escapeHtml(i.error)}</div>` : '';
+    return `<div class="alert-card" style="cursor:default;">
+      <span style="background:${c};color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;min-width:92px;text-align:center;letter-spacing:.3px;">${st.toUpperCase()}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(i.source_filename || '(no file)')} <span style="color:var(--text-dim);font-weight:400;">· ${chan}${prod}</span></div>
+        <div style="color:var(--text-dim);font-size:12px;">${sup}${sup && when ? ' · ' : ''}${when}</div>
+        ${err}
+      </div>
+    </div>`;
   }
 
   // ─── Alerts ────────────────────────────────────────────────────────────────
