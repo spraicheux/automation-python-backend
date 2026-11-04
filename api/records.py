@@ -248,7 +248,12 @@ async def get_benchmarks(
             custom_status=getattr(r, 'custom_status', None),
         )
         entry = peers.setdefault(key, {"samples": [], "all_qualified": True})
-        entry["samples"].append((r.price_per_unit_eur, r.uid))
+        # Effective date = offer_date, else created_at (same coalesce used by the
+        # window cutoff above). Carried per observation so the frontend can build
+        # a DATE-AWARE prior history for each offer.
+        _eff_dt = r.offer_date or r.created_at
+        entry["samples"].append(
+            (r.price_per_unit_eur, r.uid, _eff_dt.isoformat() if _eff_dt else None))
         # A peer group is "qualified" only when EVERY row it contains has
         # both a known incoterm and a known location. One unqualified row
         # poisons the whole group — otherwise a trusted NEW XM LOW could
@@ -266,10 +271,20 @@ async def get_benchmarks(
         # Sort ascending so [0] is the group min and [1] is the second-lowest
         # (used as prior-low when the current row IS the group min).
         samples.sort(key=lambda t: t[0])
-        low_price, low_uid = samples[0]
-        second_low_price, second_low_uid = (samples[1] if len(samples) > 1
-                                            else (None, None))
-        avg_price = sum(p for p, _ in samples) / len(samples)
+        low_price, low_uid = samples[0][0], samples[0][1]
+        second_low_price, second_low_uid = ((samples[1][0], samples[1][1])
+                                            if len(samples) > 1 else (None, None))
+        avg_price = sum(p for p, _, _ in samples) / len(samples)
+        # Per-observation list (date-ordered) so the frontend can compute a
+        # DATE-AWARE prior history for every offer: an offer's "XM Low" must only
+        # reflect peers dated BEFORE it, never a later (future) sibling offer
+        # (Samuel 2026-11-04 — the 24-Mar offer must not be the 16-Mar offer's
+        # historical reference, and an offer must not count itself). The
+        # whole-group aggregates below are retained for any roll-up caller.
+        obs = sorted(
+            [{"uid": u, "eur": round(p, 4), "date": d} for p, u, d in samples],
+            key=lambda o: (o["date"] is None, o["date"] or ""),
+        )
         out[k] = {
             "low_eur": round(low_price, 4),
             "low_uid": low_uid,
@@ -280,6 +295,7 @@ async def get_benchmarks(
             "second_low_uid": second_low_uid,
             "avg_eur": round(avg_price, 4),
             "samples": len(samples),
+            "obs": obs,
             # True only when every row in this group has known incoterm AND
             # known location. Callers must downgrade "NEW XM LOW" and other
             # confident signals when this is False.

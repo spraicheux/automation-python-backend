@@ -1353,33 +1353,39 @@
     const p = benchmarks[peerKey(item)];
     if (!p) return null;
     const cur = item.price_per_unit_eur;
-    if (cur == null || p.samples < 1) return { ...p, delta: null };
-    // "Prior" = observations in the peer group OTHER than this row. The
-    // XM Low the buyer wants to see is the historical low BEFORE this offer,
-    // not including the current row itself — otherwise a first-ever offer
-    // shows up as its own benchmark.
-    const priorSamples = Math.max(0, p.samples - 1);
-    let priorLowEur = null, priorLowUid = null;
+    // "Prior" history is strictly DATE-AWARE: only peer observations dated
+    // BEFORE this offer count, and never the offer itself. A later (future)
+    // sibling offer must never serve as this offer's historical reference
+    // (Samuel 2026-11-04 — the 24-Mar offer is not evidence for the 16-Mar
+    // offer; an offer never counts itself). The same prior set feeds the All
+    // Offers table AND the drawer, so their samples/low/avg always agree.
+    const obs = Array.isArray(p.obs) ? p.obs : [];
+    const selfMs = Date.parse(item.offer_date || item.created_at || '');
+    const effMs = (o) => Date.parse(o && o.date ? o.date : '');
+    const prior = obs.filter(o =>
+        o.uid !== item.uid && !Number.isNaN(effMs(o)) &&
+        !Number.isNaN(selfMs) && effMs(o) < selfMs);
+    const priorSamples = prior.length;
+    let priorLowEur = null, priorLowUid = null, priorAvgEur = null;
     if (priorSamples >= 1) {
-      if (p.low_uid && p.low_uid === item.uid) {
-        // This row is itself the group minimum → the real prior-low is 2nd lowest.
-        priorLowEur = p.second_low_eur ?? null;
-        priorLowUid = p.second_low_uid ?? null;
-      } else {
-        priorLowEur = p.low_eur ?? null;
-        priorLowUid = p.low_uid ?? null;
-      }
+      let lo = prior[0];
+      for (const o of prior) if (o.eur < lo.eur) lo = o;
+      priorLowEur = lo.eur;
+      priorLowUid = lo.uid;
+      priorAvgEur = prior.reduce((s, o) => s + o.eur, 0) / priorSamples;
     }
-    const delta = (priorLowEur != null) ? ((cur - priorLowEur) / priorLowEur) * 100 : null;
+    const delta = (cur != null && priorLowEur != null) ? ((cur - priorLowEur) / priorLowEur) * 100 : null;
     // NEW LOW = strictly beats the prior low, and there is a prior low to beat.
-    const isNewLow = priorLowEur != null && cur < priorLowEur - 0.001;
-    // First observation = no prior comparable offer exists yet.
+    const isNewLow = (cur != null && priorLowEur != null && cur < priorLowEur - 0.001);
+    // First observation = no prior comparable offer dated before this one.
     const isFirstObservation = priorSamples === 0 || priorLowEur == null;
-    const deltaAvg = p.avg_eur ? ((cur - p.avg_eur) / p.avg_eur) * 100 : null;
+    const deltaAvg = (cur != null && priorAvgEur) ? ((cur - priorAvgEur) / priorAvgEur) * 100 : null;
     return {
       ...p,
       prior_low_eur: priorLowEur,
       prior_low_uid: priorLowUid,
+      prior_avg_eur: priorAvgEur,
+      prior_obs: prior,
       delta,
       delta_avg: deltaAvg,
       is_new_low: isNewLow,
@@ -1767,7 +1773,7 @@
         // terms and cannot ground a trusted NEW LOW signal.
         const qualified = bench.is_qualified !== false;
         const qualNote = qualified ? '' : ' · commercial terms incomplete (some rows missing incoterm/location)';
-        const tip = `Prior ${benchmarkWindow} Low: €${bench.prior_low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${(bench.avg_eur || 0).toFixed(2)}${qualNote}`;
+        const tip = `Prior ${benchmarkWindow} Low: €${bench.prior_low_eur.toFixed(2)} · ${priorStr} in peer group · avg €${(bench.prior_avg_eur || 0).toFixed(2)}${qualNote}`;
         // Only navigate to the prior low when it is GENUINELY lower than this
         // offer — otherwise an equal-priced peer (e.g. the same standing offer
         // received twice from two source files) would present itself as this
@@ -2382,22 +2388,34 @@
   }
   function benchmarkBlock(i) {
     const b = getBenchmark(i);
-    if (!b || b.low_eur == null) {
-      return `<div class="bench-strip"><span class="b-empty">No older (historical) offers for this peer in the last ${benchmarkWindow} — current competing offers, if any, appear in Best Prices.</span></div>`;
+    // Date-aware: a strip only shows when a PRIOR offer (dated before this one)
+    // exists. The low/avg/samples here are the SAME prior-set figures the All
+    // Offers table shows — they can no longer disagree (Samuel 2026-11-04).
+    if (!b || b.is_first_observation || b.prior_low_eur == null) {
+      return `<div class="bench-strip"><span class="b-empty">No older (historical) offer dated before this one for this peer in the last ${benchmarkWindow} — current competing offers, if any, appear in Best Prices.</span></div>`;
     }
-    const cur = i.price_per_unit_eur;
     const dSign = (v) => v >= 0 ? '+' : '';
     const dCls = (v) => v <= 5 ? 'best' : (v <= 15 ? 'mid' : 'warn');
     const dAvgCls = (v) => v <= -5 ? 'best' : (v <= 5 ? 'mid' : 'warn');
-    const lowLink = b.low_uid && b.low_uid !== i.uid
-      ? `<a href="#" onclick="event.preventDefault(); openDrawerByUid('${escapeAttr(b.low_uid)}')">€${b.low_eur.toFixed(2)}</a>`
-      : `€${b.low_eur.toFixed(2)}`;
+    const lowLink = b.prior_low_uid && b.prior_low_uid !== i.uid
+      ? `<a href="#" onclick="event.preventDefault(); openDrawerByUid('${escapeAttr(b.prior_low_uid)}')">€${b.prior_low_eur.toFixed(2)}</a>`
+      : `€${b.prior_low_eur.toFixed(2)}`;
     const dLowHtml = (b.delta != null && !b.is_new_low)
       ? `<span class="b-delta ${dCls(b.delta)}">${dSign(b.delta)}${b.delta.toFixed(1)}%</span>`
       : (b.is_new_low ? `<span class="b-delta best">NEW ${benchmarkWindow} LOW</span>` : '');
+    const avgVal = (b.prior_avg_eur != null) ? `€${b.prior_avg_eur.toFixed(2)}` : '—';
     const dAvgHtml = (b.delta_avg != null)
       ? `<span class="b-delta ${dAvgCls(b.delta_avg)}">${dSign(b.delta_avg)}${b.delta_avg.toFixed(1)}%</span>`
       : '';
+    // The underlying prior offers, oldest first: date · €/unit, each linking to
+    // its own record so the benchmark's dates and sources are directly
+    // verifiable from the UI (Samuel 2026-11-04 asked for this).
+    const priorList = (b.prior_obs || [])
+      .slice().sort((a, c) => String(a.date || '').localeCompare(String(c.date || '')))
+      .map(o => {
+        const d = o.date ? String(o.date).slice(0, 10) : '—';
+        return `<a href="#" class="bench-src" style="font-size:12px;" onclick="event.preventDefault(); openDrawerByUid('${escapeAttr(o.uid)}')">${d} · €${Number(o.eur).toFixed(2)}</a>`;
+      }).join('');
     return `<div class="bench-strip">
       <div>
         <div class="b-lbl">${benchmarkWindow} Low</div>
@@ -2405,13 +2423,16 @@
       </div>
       <div>
         <div class="b-lbl">${benchmarkWindow} Avg</div>
-        <div class="b-val">€${b.avg_eur.toFixed(2)} ${dAvgHtml}</div>
+        <div class="b-val">${avgVal} ${dAvgHtml}</div>
       </div>
       <div style="margin-left:auto;">
         <div class="b-lbl">Samples</div>
-        <div class="b-val" style="font-size:14px;">${b.samples}</div>
-        <div class="b-meta">peers in ${benchmarkWindow}</div>
+        <div class="b-val" style="font-size:14px;">${b.prior_samples}</div>
+        <div class="b-meta">prior offers in ${benchmarkWindow}</div>
       </div>
+    </div>
+    <div class="bench-sources" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px;">
+      <span class="b-lbl">Prior offers:</span> ${priorList}
     </div>`;
   }
 

@@ -110,6 +110,99 @@ class TestPeerKeyIncludesCustomStatus:
         assert self._pg("T1") != self._pg("T2")
 
 
+class TestDateAwareBenchmark:
+    """Samuel 2026-11-04 (batch 2): the "XM Low" benchmark must be strictly
+    date-aware. An offer never counts itself, and a LATER (future) sibling
+    offer must never be a given offer's historical reference. Reproduces the
+    real JW Red Label and Jack Daniel's Blackberry peer groups from prod.
+
+    - JW 16-Mar / 24-Mar (both €6.70, T2, DAP Loendersloot, no EAN): 16-Mar has
+      no prior => FIRST; 24-Mar has exactly the 16-Mar row as its 1 prior low.
+    - Blackberry 12-Mar (no customs) is its OWN peer => FIRST. 16-Mar / 24-Mar
+      (both T2, €10.45) peer together: 16-Mar FIRST, 24-Mar 1 prior (16-Mar).
+    """
+
+    def _bench(self, rows):
+        import asyncio, datetime
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from core.database import Base
+        from models.offer_item import OfferItemDB
+        from models.source_file import SourceFileDB  # noqa: F401
+        from api.records import get_benchmarks
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        db = sessionmaker(bind=eng)()
+        for r in rows:
+            db.add(OfferItemDB(**r))
+        db.commit()
+        out = asyncio.run(get_benchmarks(window="ALL", db=db))
+        return out["peers"], rows
+
+    def _prior(self, obs, uid, date_iso):
+        # Mirror of dashboard.js getBenchmark: strictly BEFORE this offer's
+        # date, never itself.
+        return [o for o in obs
+                if o["uid"] != uid and o["date"] and o["date"] < date_iso]
+
+    def _make(self, uid, brand, product, cs, vol, incoterm, loc, price, date):
+        import datetime
+        d = datetime.datetime(*[int(x) for x in date.split("-")])
+        return dict(uid=uid, job_id="t", brand=brand, product_name=product,
+                    ean_code=None, unit_volume_ml=vol, units_per_case=6,
+                    incoterm=incoterm, location=loc, custom_status=cs,
+                    price_per_unit_eur=price, price_per_case_eur=price * 6,
+                    offer_date=d, needs_manual_review=False)
+
+    def test_jw_red_label_date_aware(self):
+        rows = [
+            self._make("jw16", "Johnnie Walker", "Red Label", "T2", 1000,
+                       "DAP", "Loendersloot", 6.70, "2026-3-16"),
+            self._make("jw24", "Johnnie Walker", "Red Label", "T2", 1000,
+                       "DAP", "Loendersloot", 6.70, "2026-3-24"),
+        ]
+        peers, _ = self._bench(rows)
+        # one peer, two observations
+        peer = [v for v in peers.values() if len(v["obs"]) == 2]
+        assert len(peer) == 1, peers
+        obs = peer[0]["obs"]
+        d16, d24 = "2026-03-16T00:00:00", "2026-03-24T00:00:00"
+        # 16-Mar: no prior => FIRST
+        assert self._prior(obs, "jw16", d16) == []
+        # 24-Mar: exactly the 16-Mar row, €6.70
+        p24 = self._prior(obs, "jw24", d24)
+        assert len(p24) == 1 and p24[0]["uid"] == "jw16" and p24[0]["eur"] == 6.70
+
+    def test_blackberry_customs_split_and_date_aware(self):
+        rows = [
+            self._make("bb12", "Jack Daniel's", "Blackberry", None, 700,
+                       "EXW", "Loendersloot", 10.45, "2026-3-12"),
+            self._make("bb16", "Jack Daniel's", "Blackberry", "T2", 700,
+                       "EXW", "Loendersloot", 10.45, "2026-3-16"),
+            self._make("bb24", "Jack Daniel's", "Blackberry", "T2", 700,
+                       "EXW", "Loendersloot", 10.45, "2026-3-24"),
+        ]
+        peers, _ = self._bench(rows)
+        # no-customs row is its OWN peer (1 obs); the two T2 rows peer (2 obs)
+        singletons = [v for v in peers.values() if len(v["obs"]) == 1]
+        pair = [v for v in peers.values() if len(v["obs"]) == 2]
+        assert len(singletons) == 1 and len(pair) == 1, peers
+        assert singletons[0]["obs"][0]["uid"] == "bb12"
+        obs = pair[0]["obs"]
+        d16, d24 = "2026-03-16T00:00:00", "2026-03-24T00:00:00"
+        assert self._prior(obs, "bb16", d16) == []          # FIRST in its peer
+        p24 = self._prior(obs, "bb24", d24)
+        assert len(p24) == 1 and p24[0]["uid"] == "bb16"     # 16-Mar is the ref
+
+    def test_offer_never_counts_itself(self):
+        # Single offer in a peer group => always FIRST, never its own benchmark.
+        rows = [self._make("solo", "Absolut", "Blue", "T1", 700,
+                           "FCA", "Rotterdam", 9.0, "2026-5-1")]
+        peers, _ = self._bench(rows)
+        obs = list(peers.values())[0]["obs"]
+        assert self._prior(obs, "solo", "2026-05-01T00:00:00") == []
+
+
 class TestAuthorisedLocationSplitNotesAreInformational:
     """Samuel 2026-11-04: Jameson's authorised compound-location split notes
     documented an approved transformation but showed under Needs review."""
