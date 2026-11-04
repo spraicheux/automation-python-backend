@@ -1046,7 +1046,8 @@
   }
 
   function intakeRowHtml(i) {
-    const colors = { queued: '#f59e0b', processing: '#3b82f6', done: '#16a34a', failed: '#ef4444' };
+    const colors = { queued: '#f59e0b', processing: '#3b82f6', done: '#16a34a',
+                     failed: '#ef4444', duplicate: '#8b5cf6', skipped: '#64748b' };
     const st = (i.status || 'queued');
     const c = colors[st] || '#64748b';
     const chan = (i.channel || '—').toUpperCase();
@@ -1054,7 +1055,8 @@
     const prod = (i.products != null) ? ` · ${i.products} products` : '';
     const sup = i.supplier_name ? `supplier: ${escapeHtml(i.supplier_name)}`
               : (i.sender_name ? `from: ${escapeHtml(i.sender_name)}` : '');
-    const err = i.error ? `<div style="color:#ef4444;font-size:12px;margin-top:4px;">${escapeHtml(i.error)}</div>` : '';
+    const errColor = (st === 'failed') ? '#ef4444' : 'var(--text-dim)';
+    const err = i.error ? `<div style="color:${errColor};font-size:12px;margin-top:4px;">${escapeHtml(i.error)}</div>` : '';
     return `<div class="alert-card" style="cursor:default;">
       <span style="background:${c};color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;min-width:92px;text-align:center;letter-spacing:.3px;">${st.toUpperCase()}</span>
       <div style="flex:1;min-width:0;">

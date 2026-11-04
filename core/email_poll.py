@@ -21,9 +21,11 @@ import hashlib
 import logging
 import re
 import traceback
+import uuid
 from typing import Any, Dict
 
 from core.redis_client import redis_manager
+from core.intake_log import record_intake, update_intake
 from core.ingest_service import (enqueue_offer, buffer_attachment,
                                  detect_supplier_from_text, DuplicateIngest)
 
@@ -96,12 +98,23 @@ def run_email_poll() -> Dict[str, Any]:
                             f"(text-only offer, no attachment)")
             else:
                 skipped += 1
+                record_intake(str(uuid.uuid4()), channel="email",
+                              source_filename=(subject or f"email-uid-{m.get('uid')}"),
+                              sender_name=m.get("from_name"), sender_email=m.get("from_email"),
+                              has_text=bool(body), status="skipped")
                 logger.info(f"email uid {m.get('uid')} from {m.get('from_email')} "
                             f"has no attachment and no substantive body — skipped")
         except DuplicateIngest as e:
             skipped += 1
+            dup_fn = (atts[0]["fileName"] if atts else _text_source_filename(m))
+            jid = str(uuid.uuid4())
+            record_intake(jid, channel="email", source_filename=dup_fn,
+                          sender_name=m.get("from_name"), sender_email=m.get("from_email"),
+                          supplier_name=supplier, attachment_count=len(atts),
+                          has_text=bool(body), status="duplicate")
+            update_intake(jid, error=f"already ingested ({e.detail.get('error')})")
             logger.info(f"email uid {m.get('uid')} duplicate "
-                        f"({e.detail.get('error')}) — skipped")
+                        f"({e.detail.get('error')}) — recorded as duplicate")
         except Exception as e:
             failed += 1
             logger.error(f"email uid {m.get('uid')} enqueue failed: {e}")

@@ -24,12 +24,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+import uuid
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request, Response, Query, Header
 from fastapi.responses import PlainTextResponse, JSONResponse
 
 from core.redis_client import redis_manager
+from core.intake_log import record_intake, update_intake
 from core.ingest_service import (enqueue_offer, media_attachment,
                                  detect_supplier_from_text, DuplicateIngest)
 
@@ -218,8 +220,17 @@ async def whatsapp_inbound(
                         f"{res['job_id']} ({plan['kwargs']['source_filename']})")
         except DuplicateIngest as e:
             skipped += 1
+            k = plan.get("kwargs", {})  # plan is set before enqueue_offer raises
+            jid = str(uuid.uuid4())
+            record_intake(jid, channel="whatsapp",
+                          source_filename=k.get("source_filename") or msg.get("id"),
+                          sender_name=k.get("sender_name"),
+                          supplier_name=k.get("supplier_name"),
+                          attachment_count=len(k.get("attachments") or []),
+                          has_text=bool(k.get("text_body")), status="duplicate")
+            update_intake(jid, error=f"already ingested ({e.detail.get('error')})")
             logger.info(f"wa {msg.get('id','?')}: duplicate "
-                        f"({e.detail.get('error')}) — skipped")
+                        f"({e.detail.get('error')}) — recorded as duplicate")
         except Exception as e:
             failed += 1
             logger.error(f"wa {msg.get('id','?')}: enqueue failed: {e}")
