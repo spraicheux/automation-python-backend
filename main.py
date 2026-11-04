@@ -91,6 +91,44 @@ async def start_email_poller():
         f"email poll scheduler started (every {interval}s)")
 
 
+@app.on_event("startup")
+async def start_credit_resumer():
+    """Auto-resume jobs parked for lack of OpenAI credits. Every ~2 min, if any
+    jobs are parked, probe OpenAI; once credits are back, re-queue them. Runs
+    regardless of IMAP config. A Redis lock keeps the 2 gunicorn workers from
+    probing/draining at once."""
+    import asyncio
+    log = logging.getLogger(__name__)
+
+    async def _loop():
+        from core.redis_client import redis_manager
+        from core.openai_health import pending_count, probe_openai, drain_pending_credit_jobs
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(30)
+        while True:
+            try:
+                if pending_count() > 0:
+                    lock_ok = True
+                    try:
+                        if redis_manager.use_redis and redis_manager.client:
+                            lock_ok = bool(redis_manager.client.set(
+                                "lock:credit_resume", "1", nx=True, ex=100))
+                    except Exception:
+                        lock_ok = True
+                    if lock_ok:
+                        ok = await loop.run_in_executor(None, probe_openai)
+                        if ok:
+                            n = await loop.run_in_executor(None, drain_pending_credit_jobs)
+                            if n:
+                                log.info(f"credit resumer: re-queued {n} parked job(s)")
+            except Exception as e:
+                log.error(f"credit resumer error: {e}")
+            await asyncio.sleep(120)
+
+    asyncio.create_task(_loop())
+    logging.getLogger(__name__).info("OpenAI credit-resume scheduler started")
+
+
 @app.get("/health", tags=["System"])
 async def health():
     return {

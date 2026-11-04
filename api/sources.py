@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/openai-status")
+async def openai_status():
+    """Live OpenAI health for the dashboard: ok True/False/None, the last error
+    (e.g. 'no credits remaining'), when it was last checked, and how many jobs
+    are currently parked waiting for credits. OpenAI exposes no dollar balance
+    via the API key, so this is a reliable OK / EXHAUSTED signal, not an amount."""
+    from core.openai_health import get_openai_status
+    return get_openai_status()
+
+
 @router.get("/intake-status")
 async def intake_status(limit: int = 50):
     """Live intake feed (Redis-backed): every inbound email/WhatsApp message the

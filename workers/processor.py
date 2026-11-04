@@ -6,6 +6,7 @@ import traceback
 import tempfile
 import logging
 from datetime import datetime
+from core.openai_health import OpenAICreditsExhausted
 from typing import Optional
 
 from core.file_download import resolve_attachment_bytes
@@ -1175,6 +1176,8 @@ async def process_offer(payload, job_id: str):
                     logger.info("Using extracted_data as single product")
                     all_products.append(extracted_data)
 
+            except OpenAICreditsExhausted:
+                raise
             except Exception as e:
                 logger.error(f"Error in text extraction for job {job_id}: {e}")
 
@@ -1254,6 +1257,8 @@ async def process_offer(payload, job_id: str):
                         except:
                             pass
 
+                except OpenAICreditsExhausted:
+                    raise
                 except Exception as e:
                     logger.error(f"Error processing attachment {attachment.fileName}: {e}")
                     continue
@@ -1884,6 +1889,10 @@ async def process_offer(payload, job_id: str):
         except Exception as _ev_err:
             logger.warning(f"R-12 event retention failed for job {job_id}: {_ev_err}")
 
+    except OpenAICreditsExhausted:
+        # Out of OpenAI credits — do NOT mark this job done/failed. Let it
+        # propagate so the worker parks it and auto-resumes when credits return.
+        raise
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"Critical error processing job {job_id}: {e}\n{error_trace}")

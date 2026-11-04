@@ -418,6 +418,7 @@
     <button class="nav-tab primary-tab" onclick="openNewOfferModal()">+ New offer</button>
     <div class="stat-chip" id="stat-sources"><b>—</b> Sources</div>
     <div class="stat-chip" id="stat-records"><b>—</b> Offers</div>
+    <div class="stat-chip" id="stat-openai" title="OpenAI API status (no dollar balance is available via the API)"><span id="openai-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#64748b;margin-right:6px;"></span><span id="openai-label">OpenAI</span></div>
     <button class="logout-btn" onclick="handleLogout()">Logout</button>
   </div>
 </header>
@@ -857,6 +858,8 @@
     loadSources();
     loadBenchmarks().then(() => loadRecords(true));
     updateCatPillCounts();
+    loadOpenaiStatus();
+    setInterval(loadOpenaiStatus, 30000);
 
     // Stay on the tab the user was viewing before a browser refresh.
     try {
@@ -1045,9 +1048,34 @@
     if (currentTab === 'intake') { clearTimeout(_intakeTimer); _intakeTimer = setTimeout(loadIntake, 5000); }
   }
 
+  async function loadOpenaiStatus() {
+    const dot = document.getElementById('openai-dot');
+    const label = document.getElementById('openai-label');
+    if (!dot || !label) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/openai-status`);
+      const d = await res.json();
+      if (d.ok === true) {
+        dot.style.background = '#16a34a';
+        label.textContent = 'OpenAI OK';
+        document.getElementById('stat-openai').title = 'OpenAI API reachable and has credits';
+      } else if (d.ok === false) {
+        dot.style.background = '#ef4444';
+        const pend = d.pending_jobs ? ` · ${d.pending_jobs} parked` : '';
+        label.textContent = 'OpenAI — NO CREDITS' + pend;
+        document.getElementById('stat-openai').title = (d.error || 'No OpenAI credits') + ' — jobs auto-resume when topped up';
+      } else {
+        dot.style.background = '#64748b';
+        label.textContent = 'OpenAI';
+      }
+    } catch (e) { /* leave as-is */ }
+  }
+
   function intakeRowHtml(i) {
     const colors = { queued: '#f59e0b', processing: '#3b82f6', done: '#16a34a',
-                     failed: '#ef4444', duplicate: '#8b5cf6', skipped: '#64748b' };
+                     failed: '#ef4444', duplicate: '#8b5cf6', skipped: '#64748b',
+                     no_credits: '#ef4444' };
+    const labels = { no_credits: 'NO CREDITS' };
     const st = (i.status || 'queued');
     const c = colors[st] || '#64748b';
     const chan = (i.channel || '—').toUpperCase();
@@ -1058,7 +1086,7 @@
     const errColor = (st === 'failed') ? '#ef4444' : 'var(--text-dim)';
     const err = i.error ? `<div style="color:${errColor};font-size:12px;margin-top:4px;">${escapeHtml(i.error)}</div>` : '';
     return `<div class="alert-card" style="cursor:default;">
-      <span style="background:${c};color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;min-width:92px;text-align:center;letter-spacing:.3px;">${st.toUpperCase()}</span>
+      <span style="background:${c};color:#fff;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;min-width:92px;text-align:center;letter-spacing:.3px;">${(labels[st] || st.toUpperCase())}</span>
       <div style="flex:1;min-width:0;">
         <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(i.source_filename || '(no file)')} <span style="color:var(--text-dim);font-weight:400;">· ${chan}${prod}</span></div>
         <div style="color:var(--text-dim);font-size:12px;">${sup}${sup && when ? ' · ' : ''}${when}</div>

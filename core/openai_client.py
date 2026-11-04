@@ -1076,9 +1076,16 @@ async def extract_offer(text: str) -> dict:
                     temperature=0.0,
                     max_tokens=16000
                 )
+                from core.openai_health import mark_openai_ok
+                mark_openai_ok()
                 return (response.choices[0].message.content,
                         response.choices[0].finish_reason, None)
             except Exception as _call_exc:
+                from core.openai_health import (is_credit_error, mark_openai_exhausted,
+                                                OpenAICreditsExhausted)
+                if is_credit_error(_call_exc):
+                    mark_openai_exhausted(_call_exc)
+                    raise OpenAICreditsExhausted(str(_call_exc))
                 return (None, None, _call_exc)
 
     _chunk_responses = await asyncio.gather(
@@ -1597,8 +1604,15 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 frequency_penalty=0.0,
                                 presence_penalty=0.0
                             )
+                            from core.openai_health import mark_openai_ok
+                            mark_openai_ok()
                             return (response.choices[0].message.content, None)
                         except Exception as _xlsx_call_exc:
+                            from core.openai_health import (is_credit_error, mark_openai_exhausted,
+                                                            OpenAICreditsExhausted)
+                            if is_credit_error(_xlsx_call_exc):
+                                mark_openai_exhausted(_xlsx_call_exc)
+                                raise OpenAICreditsExhausted(str(_xlsx_call_exc))
                             return (None, _xlsx_call_exc)
 
                 _xlsx_main = await asyncio.gather(*[_fetch_xlsx_main(j) for j in _xlsx_jobs])
@@ -2250,8 +2264,15 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                                 frequency_penalty=0.0,
                                 presence_penalty=0.0
                             )
+                            from core.openai_health import mark_openai_ok
+                            mark_openai_ok()
                             return (response.choices[0].message.content, None)
                         except Exception as _pdf_call_exc:
+                            from core.openai_health import (is_credit_error, mark_openai_exhausted,
+                                                            OpenAICreditsExhausted)
+                            if is_credit_error(_pdf_call_exc):
+                                mark_openai_exhausted(_pdf_call_exc)
+                                raise OpenAICreditsExhausted(str(_pdf_call_exc))
                             return (None, _pdf_call_exc)
 
                 _pdf_main = await asyncio.gather(*[_fetch_pdf_main(j) for j in _pdf_jobs])

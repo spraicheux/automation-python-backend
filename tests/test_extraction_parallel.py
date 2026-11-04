@@ -84,6 +84,38 @@ def test_extract_from_file_xlsx_batches_concurrent_order_preserved(tmp_path):
     assert len(out["products"]) >= 18, f"too few products: {len(out['products'])}"
 
 
+def test_credit_error_propagates_not_swallowed():
+    """A credits-exhausted OpenAI error must raise OpenAICreditsExhausted out of
+    extraction (so the job is parked), NOT be swallowed into 0 products/done."""
+    from core.openai_health import OpenAICreditsExhausted
+
+    def fake(**k):
+        raise RuntimeError("Error code: 429 - insufficient_quota, "
+                           "credit_balance_exhausted: You have no credits remaining")
+
+    oc.client.chat.completions.create = AsyncMock(side_effect=fake)
+    text = "\n".join(f"Absolut Vodka ref{i} 700ml 6/case 10.0 EUR" for i in range(60))
+    with pytest.raises(OpenAICreditsExhausted):
+        asyncio.run(oc.extract_offer(text))
+
+
+def test_normal_error_does_not_park(tmp_path):
+    """A non-credit error must NOT raise OpenAICreditsExhausted (it degrades to
+    0 products for that unit, as before)."""
+    from core.openai_health import OpenAICreditsExhausted
+
+    def fake(**k):
+        raise RuntimeError("some transient network blip")
+
+    oc.client.chat.completions.create = AsyncMock(side_effect=fake)
+    text = "\n".join(f"Absolut Vodka ref{i} 700ml 6/case 10.0 EUR" for i in range(60))
+    try:
+        out = asyncio.run(oc.extract_offer(text))
+        assert out["products"] == []          # degraded, not parked
+    except OpenAICreditsExhausted:
+        raise AssertionError("non-credit error wrongly treated as credits-exhausted")
+
+
 def test_extract_from_file_pdf_pages_concurrent_order_preserved(tmp_path):
     reportlab = pytest.importorskip("reportlab")  # noqa: F841
     from reportlab.pdfgen import canvas

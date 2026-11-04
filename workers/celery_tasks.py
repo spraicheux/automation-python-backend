@@ -19,6 +19,7 @@ from core.celery_app import celery_app
 from workers.processor import process_offer
 from core.redis_client import redis_manager
 from core.intake_log import update_intake
+from core.openai_health import OpenAICreditsExhausted, queue_pending_credit_job
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,15 @@ def process_document_task(self, job_id: str, payload_dict: dict):
             logger.error(f"Job {job_id} finished but no result was found in RedisManager.")
             update_intake(job_id, status="done", products=0)
 
+    except OpenAICreditsExhausted as exc:
+        # Out of OpenAI credits — park the job (don't mark done/failed). The
+        # in-app scheduler re-queues it automatically once credits are back.
+        logger.warning(f"Job {job_id} parked — OpenAI out of credits: {exc}")
+        redis_manager.set_job_status(job_id, "no_credits")
+        update_intake(job_id, status="no_credits",
+                      error="OpenAI out of credits — will auto-retry when topped up")
+        queue_pending_credit_job(job_id, payload_dict)
+        return
     except SoftTimeLimitExceeded:
         # 10-minute soft limit hit — extraction was too slow. Mark failed and stop.
         logger.error(f"Celery soft time limit exceeded for JobID: {job_id}. Marking failed, no retry.")
