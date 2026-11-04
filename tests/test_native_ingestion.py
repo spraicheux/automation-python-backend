@@ -34,11 +34,13 @@ class TestWhatsAppPlan:
     def test_document_message_plans_enqueue(self):
         from api.whatsapp import _plan_message
         p = _plan_message(self._doc(), self._contacts())
-        assert p["status"] == "media"
+        assert p["status"] == "ingest"
         k = p["kwargs"]
         assert k["source_channel"] == "whatsapp"
         assert k["source_message_id"] == "wamid.AAA"
         assert k["sender_name"] == "ACME Spirits"
+        assert k["sender_email"] is None            # WhatsApp has no email
+        assert k["subject"] == ""
         assert k["text_body"] == "March offer"
         assert len(k["attachments"]) == 1
         att = k["attachments"][0]
@@ -46,6 +48,28 @@ class TestWhatsAppPlan:
         assert att["data"] == {"id": "MEDIA123"}        # bytes fetched lazily
         assert "pricelist.pdf" in k["source_filename"]
         assert k["source_filename"].startswith("wa-")
+
+    def test_supplier_from_text_not_sender(self):
+        # Supplier must come from the caption text, NEVER the sender name.
+        from api.whatsapp import _plan_message
+        msg = self._doc()
+        msg["document"]["caption"] = "OFFER FROM AKAY IRELAND\nGrey Goose 1L"
+        k = _plan_message(msg, self._contacts())["kwargs"]
+        assert k["supplier_name"] == "AKAY IRELAND"   # not "ACME Spirits" (sender)
+        # No supplier marker → supplier is None, never the sender.
+        k2 = _plan_message(self._doc(), self._contacts())["kwargs"]
+        assert k2["supplier_name"] is None
+
+    def test_text_only_message_ingested(self):
+        from api.whatsapp import _plan_message
+        msg = {"id": "wamid.TX", "from": "33783776470", "type": "text",
+               "text": {"body": "SUPPLIER: MILANAKO\nGrey Goose 1L @ 17.50 EUR x 600"}}
+        p = _plan_message(msg, self._contacts())
+        assert p["status"] == "ingest"
+        k = p["kwargs"]
+        assert k["attachments"] == []
+        assert "Grey Goose" in k["text_body"]
+        assert k["supplier_name"] == "MILANAKO"
 
     def test_same_wamid_gives_same_filename(self):
         # 360dialog redelivery of the SAME wamid → identical source_filename →
@@ -78,7 +102,7 @@ class TestWhatsAppPlan:
         msg = {"id": "wamid.I", "from": "x", "type": "image",
                "image": {"id": "M", "mime_type": "image/jpeg"}}
         p = _plan_message(msg, {})
-        assert p["status"] == "media"
+        assert p["status"] == "ingest"
         assert p["kwargs"]["attachments"][0]["fileName"].endswith(".jpg")
 
     def test_collect_messages_entry_envelope(self):
@@ -96,6 +120,45 @@ class TestWhatsAppPlan:
                    "messages": [{"id": "c", "type": "text"}]}
         msgs, contacts = _collect_messages(payload)
         assert len(msgs) == 1 and contacts == {"2": "M"}
+
+
+# ─── supplier detection (Make rules) ──────────────────────────────────────────
+
+class TestSupplierDetection:
+    def test_explicit_supplier_marker(self):
+        from core.ingest_service import detect_supplier_from_text
+        assert detect_supplier_from_text("SUPPLIER: Akay Ireland\nprices...") == "Akay Ireland"
+
+    def test_offer_from_takes_all_words(self):
+        from core.ingest_service import detect_supplier_from_text
+        assert detect_supplier_from_text("OFFER FROM AKAY IRELAND") == "AKAY IRELAND"
+        assert detect_supplier_from_text("Offre de Maison Dupont") == "Maison Dupont"
+
+    def test_marker_wins_over_pattern(self):
+        from core.ingest_service import detect_supplier_from_text
+        txt = "Offer from Beta Trading\nSUPPLIER: Alpha Spirits"
+        assert detect_supplier_from_text(txt) == "Alpha Spirits"
+
+    def test_subject_fallback(self):
+        from core.ingest_service import detect_supplier_from_text
+        # body has nothing, subject carries it
+        assert detect_supplier_from_text("here are prices", "Offer from Vinex SA") == "Vinex SA"
+
+    def test_none_when_absent_and_no_email_capture(self):
+        from core.ingest_service import detect_supplier_from_text
+        assert detect_supplier_from_text("Grey Goose 1L @ 17.50") is None
+        # "From: an email" must not be captured as a supplier name
+        assert detect_supplier_from_text("From: john@gmail.com") is None
+
+
+class TestIntakeLog:
+    def test_record_update_list_noop_without_redis(self, monkeypatch):
+        # With no redis, all three are safe no-ops (never raise).
+        import core.intake_log as il
+        monkeypatch.setattr(il, "_r", lambda: None)
+        il.record_intake("j1", channel="email", source_filename="a.pdf")
+        il.update_intake("j1", status="done", products=5)
+        assert il.list_intakes() == []
 
 
 # ─── IMAP email ───────────────────────────────────────────────────────────────

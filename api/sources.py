@@ -12,6 +12,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+@router.get("/intake-status")
+async def intake_status(limit: int = 50):
+    """Live intake feed (Redis-backed): every inbound email/WhatsApp message the
+    instant it arrives, with status received/queued → processing → done | failed
+    and the error on failure. Lets the dashboard show a file immediately while
+    extraction is still running, and surfaces failed files."""
+    from core.intake_log import list_intakes
+    items = list_intakes(limit=limit)
+    counts = {}
+    for it in items:
+        counts[it.get("status")] = counts.get(it.get("status"), 0) + 1
+    return {"total": len(items), "counts": counts, "intakes": items}
+
+
 @router.get("/sources")
 async def get_sources(
     skip: int = 0,

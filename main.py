@@ -60,6 +60,37 @@ async def startup_event():
         logging.getLogger(__name__).error(f"DB init failed on startup: {e}")
 
 
+@app.on_event("startup")
+async def start_email_poller():
+    """Beat-independent IMAP poll. Prod starts from a Procfile with no celery
+    beat, so we run the poll from the web app (which is always up). The Redis
+    single-flight lock in run_email_poll makes it safe across the 2 gunicorn
+    workers (and alongside beat, if it ever runs). Only active when IMAP_HOST
+    is configured. imaplib is blocking, so it runs in a thread executor."""
+    import os
+    import asyncio
+
+    if not os.getenv("IMAP_HOST"):
+        return
+    interval = float(os.getenv("IMAP_POLL_SECONDS", "120"))
+    log = logging.getLogger(__name__)
+
+    async def _loop():
+        from core.email_poll import run_email_poll
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(20)  # let the app finish booting
+        while True:
+            try:
+                await loop.run_in_executor(None, run_email_poll)
+            except Exception as e:
+                log.error(f"email poll loop error: {e}")
+            await asyncio.sleep(interval)
+
+    asyncio.create_task(_loop())
+    logging.getLogger(__name__).info(
+        f"email poll scheduler started (every {interval}s)")
+
+
 @app.get("/health", tags=["System"])
 async def health():
     return {

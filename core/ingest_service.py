@@ -41,6 +41,56 @@ class DuplicateIngest(Exception):
         super().__init__(detail.get("message", "duplicate"))
 
 
+# ─── supplier detection (mirrors the Make normalization prompts) ──────────────
+# Supplier is derived ONLY from the message/email text (and, for email, the
+# subject) using explicit markers/patterns — NEVER from the sender, the
+# filename, or the attachment. If nothing matches, supplier is None (no
+# fallback), exactly as the Make scenario produced it.
+
+_SUPPLIER_LINE = re.compile(r'^\s*supplier\s*:\s*(.+)$', re.IGNORECASE)
+_SUPPLIER_PATTERNS = [
+    re.compile(r'\boffer\s+from\s+(.+)$', re.IGNORECASE),
+    re.compile(r'\boffre\s+de\s+(.+)$', re.IGNORECASE),
+    re.compile(r'\boffree\s+de\s+(.+)$', re.IGNORECASE),
+    re.compile(r'^\s*from\s*:\s*(.+)$', re.IGNORECASE),
+]
+
+
+def _clean_supplier(name: str) -> Optional[str]:
+    name = (name or "").strip().strip('"\'')
+    name = re.sub(r'[\.,;:]+$', '', name).strip()
+    # Reject an email address or an obviously-not-a-name capture.
+    if not name or "@" in name or len(name) > 120:
+        return None
+    return name
+
+
+def detect_supplier_from_text(*texts: Optional[str]) -> Optional[str]:
+    """Detect a supplier name from one or more text blocks (e.g. body then
+    subject), honoring the Make rules: an explicit `SUPPLIER:` marker wins,
+    otherwise the `OFFER FROM` / `Offre de` / `From:` patterns, taking ALL
+    words that follow. Returns None when nothing is clearly identifiable."""
+    blocks = [t for t in texts if t]
+    # Pass 1: explicit SUPPLIER: marker, anywhere.
+    for t in blocks:
+        for line in t.splitlines():
+            m = _SUPPLIER_LINE.match(line)
+            if m:
+                name = _clean_supplier(m.group(1))
+                if name:
+                    return name
+    # Pass 2: OFFER FROM / Offre de / From: patterns.
+    for t in blocks:
+        for line in t.splitlines():
+            for pat in _SUPPLIER_PATTERNS:
+                m = pat.search(line)
+                if m:
+                    name = _clean_supplier(m.group(1))
+                    if name:
+                        return name
+    return None
+
+
 # ─── filename + dedup (one copy, shared by all channels) ──────────────────────
 
 def generate_source_filename(source_filename, attachments, supplier_email,
@@ -201,12 +251,25 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
     IngestRequest(**payload_dict)
 
     redis_manager.set_job_status(job_id, "processing")
+
+    # Instant, dashboard-visible intake record (received → processing → done/failed).
+    try:
+        from core.intake_log import record_intake
+        record_intake(job_id, channel=source_channel,
+                      source_filename=dedup_filename, sender_name=sender_name,
+                      sender_email=sender_email, supplier_name=supplier_name,
+                      attachment_count=len(attachments),
+                      has_text=bool(text_body), status="queued")
+    except Exception as e:  # visibility must never block ingest
+        logger.warning(f"intake record failed for {job_id}: {e}")
+
     # Lazy import breaks the cycle: workers.celery_tasks → (poller) → this module.
     from workers.celery_tasks import process_document_task
     process_document_task.delay(job_id, payload_dict)
 
     logger.info(
         f"Enqueued offer job {job_id} via {source_channel or 'unknown'} "
-        f"({len(attachments)} attachment(s), file={dedup_filename})")
+        f"({len(attachments)} attachment(s), text={bool(text_body)}, "
+        f"file={dedup_filename})")
     return {"status": "accepted", "job_id": job_id,
             "source_filename": dedup_filename}

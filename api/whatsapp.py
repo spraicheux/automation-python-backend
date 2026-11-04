@@ -30,12 +30,14 @@ from fastapi import APIRouter, Request, Response, Query, Header
 from fastapi.responses import PlainTextResponse, JSONResponse
 
 from core.redis_client import redis_manager
-from core.ingest_service import enqueue_offer, media_attachment, DuplicateIngest
+from core.ingest_service import (enqueue_offer, media_attachment,
+                                 detect_supplier_from_text, DuplicateIngest)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _MEDIA_TYPES = {"document", "image", "video", "audio"}
+_MIN_TEXT_OFFER_CHARS = 25         # ignore greetings / one-word texts
 _SEEN_PREFIX = "wa:seen:"          # + wamid
 _SEEN_TTL = 7 * 24 * 3600          # a week is plenty to cover retries
 
@@ -98,45 +100,62 @@ def _collect_messages(payload: Dict[str, Any]) -> (List[Dict[str, Any]], Dict[st
 
 def _plan_message(msg: Dict[str, Any], contacts: Dict[str, str]) -> Dict[str, Any]:
     """Pure mapping of one inbound WhatsApp message to an enqueue plan.
-    Returns {"status": "media"|"skip"|"error", "wamid", ...}. No side effects
-    (no seen-set, no enqueue) so it is unit-testable."""
+    Returns {"status": "ingest"|"skip"|"error", "wamid", ...}. No side effects
+    (no seen-set, no enqueue) so it is unit-testable.
+
+    Make rules honored: supplier comes ONLY from the message text (caption/body),
+    never from the sender; sender_email is always None for WhatsApp; subject "".
+    Media messages carry the file; substantive text-only messages are ingested
+    as text offers; greetings and non-media/non-text are skipped.
+    """
     wamid = msg.get("id") or ""
     mtype = msg.get("type")
     sender = msg.get("from") or ""
     sender_name = contacts.get(sender) or sender or None
-
-    if mtype not in _MEDIA_TYPES:
-        return {"status": "skip", "wamid": wamid, "reason": f"type={mtype}"}
-
-    media = msg.get(mtype) or {}
-    media_id = media.get("id")
-    if not media_id:
-        return {"status": "error", "wamid": wamid, "reason": "no media id"}
-
-    mime = media.get("mime_type") or ""
-    orig = media.get("filename")
-    if not orig:
-        ext = _EXT_BY_MIME.get(mime.split(";")[0].strip(), "bin")
-        orig = f"{mtype}.{ext}"
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", orig)
     short = re.sub(r"[^A-Za-z0-9]", "", wamid)[-12:] or "nowamid"
-    source_filename = f"wa-{short}-{safe}"
 
-    return {
-        "status": "media",
-        "wamid": wamid,
-        "sender": sender,
-        "kwargs": dict(
-            source_channel="whatsapp",
-            source_message_id=wamid,
-            source_filename=source_filename,
-            sender_name=sender_name,
-            supplier_name=sender_name,
-            text_body=media.get("caption"),
-            attachments=[media_attachment(orig, mime, media_id)],
-            check_content_hash=False,
-        ),
-    }
+    if mtype in _MEDIA_TYPES:
+        media = msg.get(mtype) or {}
+        media_id = media.get("id")
+        if not media_id:
+            return {"status": "error", "wamid": wamid, "reason": "no media id"}
+        mime = media.get("mime_type") or ""
+        orig = media.get("filename")
+        if not orig:
+            ext = _EXT_BY_MIME.get(mime.split(";")[0].strip(), "bin")
+            orig = f"{mtype}.{ext}"
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", orig)
+        caption = media.get("caption")
+        return {
+            "status": "ingest", "wamid": wamid, "sender": sender,
+            "kwargs": dict(
+                source_channel="whatsapp", source_message_id=wamid,
+                source_filename=f"wa-{short}-{safe}",
+                sender_name=sender_name, sender_email=None,
+                supplier_name=detect_supplier_from_text(caption),
+                supplier_email=None, subject="", text_body=caption,
+                attachments=[media_attachment(orig, mime, media_id)],
+                check_content_hash=False,
+            ),
+        }
+
+    if mtype == "text":
+        body = (msg.get("text") or {}).get("body") or ""
+        if len(body.strip()) < _MIN_TEXT_OFFER_CHARS:
+            return {"status": "skip", "wamid": wamid, "reason": "short text"}
+        return {
+            "status": "ingest", "wamid": wamid, "sender": sender,
+            "kwargs": dict(
+                source_channel="whatsapp", source_message_id=wamid,
+                source_filename=f"wa-{short}-text.txt",
+                sender_name=sender_name, sender_email=None,
+                supplier_name=detect_supplier_from_text(body),
+                supplier_email=None, subject="", text_body=body,
+                attachments=[], check_content_hash=False,
+            ),
+        }
+
+    return {"status": "skip", "wamid": wamid, "reason": f"type={mtype}"}
 
 
 @router.get("/webhook/whatsapp")
@@ -188,7 +207,7 @@ async def whatsapp_inbound(
                 failed += 1
                 logger.error(f"wa {plan['wamid'] or '?'}: {plan['reason']}")
                 continue
-            # media
+            # ingest (media or substantive text)
             if _already_seen(plan["wamid"]):
                 skipped += 1
                 logger.info(f"wa {plan['wamid']}: already seen — skipped (retry)")
