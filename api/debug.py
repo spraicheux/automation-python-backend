@@ -80,6 +80,17 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/intake-clear")
+async def intake_clear(status: str = "", filename: str = "", all: bool = False):
+    """Remove entries from the live Intake feed — e.g. stale 'processing' /
+    'queued' rows left behind when a worker was restarted mid-run. Filter by
+    status (comma list), source_filename substring, or all=true."""
+    from core.intake_log import clear_intakes
+    statuses = [s.strip() for s in status.split(",") if s.strip()] or None
+    n = clear_intakes(statuses=statuses, filename=(filename or None), clear_all=all)
+    return {"cleared": n}
+
+
 @router.get("/debug/job/{job_id}")
 async def debug_job(job_id: str):
     status = redis_manager.get_job_status(job_id)

@@ -86,6 +86,40 @@ def update_intake(job_id: str, *, status: Optional[str] = None,
         logger.warning(f"update_intake failed for {job_id}: {e}")
 
 
+def clear_intakes(statuses: Optional[List[str]] = None,
+                  filename: Optional[str] = None,
+                  clear_all: bool = False) -> int:
+    """Remove intake-feed entries. Matches by status (e.g. stale
+    'processing'/'queued' left by a killed worker), by source_filename
+    substring, or all. Returns how many were removed."""
+    r = _r()
+    if not r:
+        return 0
+    removed = 0
+    try:
+        ids = r.zrange(_INDEX, 0, -1)
+        for jid in ids:
+            jid = jid.decode() if isinstance(jid, bytes) else jid
+            raw = r.get(_ENTRY + jid)
+            if not raw:
+                r.zrem(_INDEX, jid)
+                continue
+            entry = json.loads(raw)
+            match = clear_all
+            if not match and statuses and entry.get("status") in statuses:
+                match = True
+            if not match and filename and filename.lower() in (entry.get("source_filename") or "").lower():
+                match = True
+            if match:
+                r.delete(_ENTRY + jid)
+                r.zrem(_INDEX, jid)
+                removed += 1
+        return removed
+    except Exception as e:
+        logger.warning(f"clear_intakes failed: {e}")
+        return removed
+
+
 def list_intakes(limit: int = 50) -> List[Dict[str, Any]]:
     r = _r()
     if not r:
