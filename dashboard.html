@@ -858,6 +858,14 @@
     loadBenchmarks().then(() => loadRecords(true));
     updateCatPillCounts();
 
+    // Stay on the tab the user was viewing before a browser refresh.
+    try {
+      const saved = localStorage.getItem('oi_tab');
+      if (saved && saved !== 'offers' && document.getElementById('page-' + saved)) {
+        switchTab(saved);
+      }
+    } catch (e) {}
+
     document.getElementById('source-search').addEventListener('input', filterSourceList);
     document.getElementById('sidebar-toggle').addEventListener('click', () =>
       document.getElementById('sidebar').classList.toggle('collapsed')
@@ -1000,6 +1008,7 @@
 
   function switchTab(tab) {
     currentTab = tab;
+    try { localStorage.setItem('oi_tab', tab); } catch (e) {}
     if (tab !== 'intake') { clearTimeout(_intakeTimer); _intakeTimer = null; }
     ['offers','bestprices','alerts','intake'].forEach(t => {
       const tabBtn = document.getElementById('tab-' + t);

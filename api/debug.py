@@ -5,6 +5,62 @@ from core.redis_client import redis_manager
 router = APIRouter()
 
 
+@router.get("/debug/imap-check")
+async def imap_check():
+    """Diagnose the email poll: is IMAP configured, does it connect, how many
+    messages are in the folder, what UID have we polled up to, and how many are
+    pending (arrived after our high-water mark). No secrets are returned."""
+    import imaplib
+    out = {"configured": {}, "connect": None, "folder": None,
+           "mailbox_messages": None, "max_uid": None, "stored_last_uid": None,
+           "uidvalidity": None, "stored_uidvalidity": None,
+           "pending_above_last_uid": None, "error": None}
+    host = os.getenv("IMAP_HOST")
+    user = os.getenv("IMAP_USER")
+    pw = os.getenv("IMAP_PASSWORD")
+    port = int(os.getenv("IMAP_PORT", "993"))
+    folder = os.getenv("IMAP_FOLDER", "INBOX")
+    out["configured"] = {"IMAP_HOST": bool(host), "IMAP_USER": bool(user),
+                         "IMAP_PASSWORD": bool(pw), "IMAP_PORT": port,
+                         "IMAP_FOLDER": folder,
+                         "host_preview": (host or "")[:24]}
+    if not (host and user and pw):
+        out["error"] = "IMAP not fully configured (missing host/user/password)"
+        return out
+    try:
+        ssl = os.getenv("IMAP_SSL", "1") != "0"
+        conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
+        try:
+            conn.login(user, pw)
+            out["connect"] = "ok"
+            typ, data = conn.select(folder, readonly=True)
+            out["folder"] = {"name": folder, "select": typ}
+            if typ == "OK":
+                out["mailbox_messages"] = int(data[0]) if data and data[0] else 0
+                tv, vd = conn.response("UIDVALIDITY")
+                if vd and vd[0]:
+                    out["uidvalidity"] = vd[0].decode() if isinstance(vd[0], bytes) else str(vd[0])
+                typ2, sdata = conn.uid("search", None, "ALL")
+                uids = [int(x) for x in sdata[0].split()] if sdata and sdata[0] else []
+                out["max_uid"] = max(uids) if uids else 0
+                r = redis_manager.client if (redis_manager.use_redis and redis_manager.client) else None
+                if r:
+                    lu = r.get(f"imap:last_uid:{user}")
+                    sv = r.get(f"imap:uidvalidity:{user}")
+                    out["stored_last_uid"] = int(lu) if lu else 0
+                    out["stored_uidvalidity"] = (sv.decode() if isinstance(sv, bytes) else sv) if sv else None
+                    out["pending_above_last_uid"] = len([u for u in uids if u > (int(lu) if lu else 0)])
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+    except Exception as e:
+        out["connect"] = "failed"
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 @router.get("/debug/job/{job_id}")
 async def debug_job(job_id: str):
     status = redis_manager.get_job_status(job_id)
