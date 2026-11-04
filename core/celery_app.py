@@ -57,7 +57,10 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
     worker_max_tasks_per_child=10,
-    worker_concurrency=1,
+    # Process multiple files at once (any file type). Env-tunable and reversible
+    # without a code change; 2 is safe on the B1 box (extraction is I/O-bound,
+    # waiting on OpenAI). Set CELERY_WORKER_CONCURRENCY=1 to revert to serial.
+    worker_concurrency=int(os.getenv("CELERY_WORKER_CONCURRENCY", "2")),
 )
 
 # Local / isolated-run escape hatch: when CELERY_TASK_ALWAYS_EAGER=1, tasks run

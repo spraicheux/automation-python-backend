@@ -61,6 +61,25 @@ async def imap_check():
     return out
 
 
+@router.get("/debug/purge-queue")
+async def purge_queue():
+    """Flush the Celery broker queue — used after an App Service restart so a
+    task that was killed mid-run (and would otherwise be redelivered) and any
+    other queued jobs are dropped, per the no-ghost-duplicates rule."""
+    from core.celery_app import celery_app
+    out = {}
+    try:
+        with celery_app.connection_for_write() as conn:
+            out["celery_queue_purged"] = conn.default_channel.queue_purge("celery")
+    except Exception as e:
+        out["queue_purge_error"] = str(e)
+    try:
+        out["control_purge"] = celery_app.control.purge()
+    except Exception as e:
+        out["control_purge_error"] = str(e)
+    return out
+
+
 @router.get("/debug/job/{job_id}")
 async def debug_job(job_id: str):
     status = redis_manager.get_job_status(job_id)

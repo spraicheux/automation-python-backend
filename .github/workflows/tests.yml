@@ -46,4 +46,5 @@ jobs:
                  tests/test_phase3_acceptance_v4.py \
                  tests/test_samuel_20261104.py \
                  tests/test_native_ingestion.py \
+                 tests/test_extraction_parallel.py \
                  -v --tb=short

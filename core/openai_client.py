@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import base64
 import pandas as pd
@@ -1017,10 +1018,16 @@ async def extract_offer(text: str) -> dict:
 
     all_products = []
 
-    for idx, chunk in enumerate(text_chunks):
-        logger.info(f"[extract_offer] ----- Chunk {idx + 1}/{len(text_chunks)} START — length: {len(chunk)} chars -----")
-        logger.info(f"[extract_offer] Chunk {idx + 1} content preview (first 200 chars): {chunk[:200]!r}")
+    # ── Concurrency: fire every chunk's OpenAI call in parallel (bounded by a
+    # semaphore), THEN run the existing per-chunk parsing / salvage / cleaning
+    # sequentially below. ONLY the network wait is parallelized — none of the
+    # extraction logic changes, and asyncio.gather preserves input order, so the
+    # aggregated products are exactly what the old one-at-a-time loop produced.
+    # It just removes the dead time spent waiting on each call before the next.
+    _chunk_concurrency = max(1, int(os.getenv("EXTRACT_CHUNK_CONCURRENCY", "6")))
+    _chunk_sem = asyncio.Semaphore(_chunk_concurrency)
 
+    def _build_chunk_prompt(idx, chunk):
         _block_hint = ""
         _expected_in_chunk = chunk_block_counts[idx] if idx < len(chunk_block_counts) else 0
         if _expected_in_chunk >= 1:
@@ -1035,8 +1042,7 @@ async def extract_offer(text: str) -> dict:
                 f"THAT product's own block — NEVER copy a reference from a different "
                 f"block (Samuel R-13/R-14). Do NOT drop or merge blocks."
             )
-
-        prompt = f"""
+        return f"""
         You are extracting commercial product offers from text (Wines &
         Spirits, Perfumes, or Cosmetics — identify category per Rule 0.23).
         Return COMPACT JSON ONLY (no indentation, no extra whitespace, no newlines inside the JSON), no explanation.
@@ -1058,18 +1064,36 @@ async def extract_offer(text: str) -> dict:
         {chunk}
         """
 
-        try:
+    async def _fetch_chunk(idx, chunk):
+        prompt = _build_chunk_prompt(idx, chunk)
+        async with _chunk_sem:
             logger.info(f"[extract_offer] Chunk {idx + 1}: Calling OpenAI API — model=gpt-4o, max_tokens=16000, temperature=0.0")
-            response = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-                max_tokens=16000
-            )
+            try:
+                response = await client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=16000
+                )
+                return (response.choices[0].message.content,
+                        response.choices[0].finish_reason, None)
+            except Exception as _call_exc:
+                return (None, None, _call_exc)
 
-            content = response.choices[0].message.content
-            finish_reason = response.choices[0].finish_reason
+    _chunk_responses = await asyncio.gather(
+        *[_fetch_chunk(i, ch) for i, ch in enumerate(text_chunks)]
+    )
+
+    for idx, chunk in enumerate(text_chunks):
+        logger.info(f"[extract_offer] ----- Chunk {idx + 1}/{len(text_chunks)} START — length: {len(chunk)} chars -----")
+        logger.info(f"[extract_offer] Chunk {idx + 1} content preview (first 200 chars): {chunk[:200]!r}")
+
+        content, finish_reason, _fetch_exc = _chunk_responses[idx]
+
+        try:
+            if _fetch_exc is not None:
+                raise _fetch_exc
             logger.info(f"[extract_offer] Chunk {idx + 1}: OpenAI response received — response length: {len(content)} chars, finish_reason: {finish_reason!r}")
             logger.info(f"[extract_offer] Chunk {idx + 1}: Raw AI response preview (first 500 chars): {content[:500]!r}")
 
@@ -1431,6 +1455,16 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     if _ean_header_row >= 0 else 0
                 )
 
+                # ── Parallelize the per-batch OpenAI calls (bounded). Build every
+                # batch's prompt first (skipping pure-metadata batches exactly as
+                # before), fire the main calls concurrently, then run the EXISTING
+                # per-batch processing below completely unchanged. asyncio.gather
+                # preserves input order, so products aggregate exactly as the old
+                # one-batch-at-a-time loop — only the dead wait time is removed.
+                _xlsx_concurrency = max(1, int(os.getenv("EXTRACT_XLSX_CONCURRENCY", "6")))
+                _xlsx_sem = asyncio.Semaphore(_xlsx_concurrency)
+
+                _xlsx_jobs = []
                 for batch_start in range(0, total_rows, batch_size):
                     batch_end = min(batch_start + batch_size, total_rows)
                     batch_df = df.iloc[batch_start:batch_end]
@@ -1531,32 +1565,53 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     """
 
                     logger.info(f"[extract_from_file] Batch {batch_num}: prompt length: {len(batch_text)} chars")
+                    _xlsx_jobs.append({
+                        "batch_num": batch_num, "batch_df": batch_df,
+                        "data_rows": data_rows, "batch_text": batch_text,
+                    })
+
+                async def _fetch_xlsx_main(job):
+                    batch_df = job["batch_df"]
+                    batch_text = job["batch_text"]
+                    async with _xlsx_sem:
+                        logger.info(f"[extract_from_file] Batch {job['batch_num']}: Calling OpenAI API — model=gpt-4o, max_tokens=16000")
+                        try:
+                            response = await client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
+                                            f"This Excel file is already classified as {_doc_category!r}; every row you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
+                                            f"Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. "
+                                            f"ALWAYS correct brand names to their official spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
+                                        )
+                                    },
+                                    {"role": "user", "content": batch_text}
+                                ],
+                                response_format={"type": "json_object"},
+                                temperature=0.0,
+                                max_tokens=16000,
+                                top_p=1.0,
+                                frequency_penalty=0.0,
+                                presence_penalty=0.0
+                            )
+                            return (response.choices[0].message.content, None)
+                        except Exception as _xlsx_call_exc:
+                            return (None, _xlsx_call_exc)
+
+                _xlsx_main = await asyncio.gather(*[_fetch_xlsx_main(j) for j in _xlsx_jobs])
+
+                for _jidx, _job in enumerate(_xlsx_jobs):
+                    batch_num = _job["batch_num"]
+                    batch_df = _job["batch_df"]
+                    data_rows = _job["data_rows"]
+                    content, _xlsx_main_exc = _xlsx_main[_jidx]
 
                     try:
-                        logger.info(f"[extract_from_file] Batch {batch_num}: Calling OpenAI API — model=gpt-4o, max_tokens=16000")
-                        response = await client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
-                                        f"This Excel file is already classified as {_doc_category!r}; every row you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
-                                        f"Return COMPLETE JSON with 'products' array containing EXACTLY {len(batch_df)} products. NEVER skip rows. Create a product for every row even if data is missing, using logical defaults. "
-                                        f"ALWAYS correct brand names to their official spelling (e.g. Ballantine → Ballantine's, Jack Daniel → Jack Daniel's)."
-                                    )
-                                },
-                                {"role": "user", "content": batch_text}
-                            ],
-                            response_format={"type": "json_object"},
-                            temperature=0.0,
-                            max_tokens=16000,
-                            top_p=1.0,
-                            frequency_penalty=0.0,
-                            presence_penalty=0.0
-                        )
-
-                        content = response.choices[0].message.content
+                        if _xlsx_main_exc is not None:
+                            raise _xlsx_main_exc
                         logger.info(f"[extract_from_file] Batch {batch_num}: OpenAI response received — length: {len(content)} chars")
                         logger.info(f"[extract_from_file] Batch {batch_num}: Raw AI response preview (first 500 chars): {content[:500]!r}")
 
@@ -2113,6 +2168,17 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
 
                 all_pdf_products = []
 
+                # ── Parallelize the per-page OpenAI calls (bounded). Build every
+                # page's prompt first, fire the main calls concurrently, then run
+                # the EXISTING per-page processing below completely unchanged.
+                # asyncio.gather preserves input order, so products aggregate
+                # exactly as the old one-page-at-a-time loop did — only the dead
+                # time waiting on each call is removed.
+                _pdf_concurrency = max(1, int(os.getenv("EXTRACT_PDF_CONCURRENCY", "6")))
+                _pdf_sem = asyncio.Semaphore(_pdf_concurrency)
+                import re as _re_pdf
+
+                _pdf_jobs = []
                 for batch_idx in range(total_pdf_batches):
                     start_page = batch_idx * PAGES_PER_BATCH
                     end_page = min(start_page + PAGES_PER_BATCH, total_pages)
@@ -2128,7 +2194,6 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     # Count barcode-like tokens in the page text as a
                     # heuristic target so the LLM has a concrete number to
                     # hit and doesn't silently drop half a dense page.
-                    import re as _re_pdf
                     _bar_hits = _re_pdf.findall(r"\d{8,14}\s+[\d.]+", combined_text)
                     _expected_hint = len(_bar_hits)
 
@@ -2153,33 +2218,55 @@ Normalize brand names to their commercial spelling (e.g. Ballantine → Ballanti
 PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
 {combined_text}
 """
+                    _pdf_jobs.append({
+                        "batch_num": batch_num, "start_page": start_page,
+                        "end_page": end_page, "combined_text": combined_text,
+                        "_expected_hint": _expected_hint, "prompt": prompt,
+                    })
+
+                async def _fetch_pdf_main(job):
+                    async with _pdf_sem:
+                        logger.info(f"[extract_from_file] PDF Batch {job['batch_num']}: calling OpenAI — model=gpt-4o, max_tokens=16000")
+                        try:
+                            response = await client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
+                                            f"This PDF is already classified as {_doc_category!r}; every product you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
+                                            "Return ONLY valid JSON with a 'products' array. "
+                                            "Skip standalone column-header lines and standalone footer text, but never drop a real product just because the page also contains headers or footers. "
+                                            "ALWAYS correct brand names to their official commercial spelling."
+                                        )
+                                    },
+                                    {"role": "user", "content": job["prompt"]}
+                                ],
+                                response_format={"type": "json_object"},
+                                temperature=0.0,
+                                max_tokens=16000,
+                                top_p=1.0,
+                                frequency_penalty=0.0,
+                                presence_penalty=0.0
+                            )
+                            return (response.choices[0].message.content, None)
+                        except Exception as _pdf_call_exc:
+                            return (None, _pdf_call_exc)
+
+                _pdf_main = await asyncio.gather(*[_fetch_pdf_main(j) for j in _pdf_jobs])
+
+                for batch_idx, _job in enumerate(_pdf_jobs):
+                    batch_num = _job["batch_num"]
+                    start_page = _job["start_page"]
+                    end_page = _job["end_page"]
+                    combined_text = _job["combined_text"]
+                    _expected_hint = _job["_expected_hint"]
+                    content, _pdf_main_exc = _pdf_main[batch_idx]
 
                     try:
-                        logger.info(f"[extract_from_file] PDF Batch {batch_num}: calling OpenAI — model=gpt-4o, max_tokens=16000")
-                        response = await client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        f"You are a specialised {_doc_category.replace('_', ' & ')} data-extraction expert. "
-                                        f"This PDF is already classified as {_doc_category!r}; every product you emit MUST carry category_slug={_doc_category!r} and use only the fields relevant to that category. "
-                                        "Return ONLY valid JSON with a 'products' array. "
-                                        "Skip standalone column-header lines and standalone footer text, but never drop a real product just because the page also contains headers or footers. "
-                                        "ALWAYS correct brand names to their official commercial spelling."
-                                    )
-                                },
-                                {"role": "user", "content": prompt}
-                            ],
-                            response_format={"type": "json_object"},
-                            temperature=0.0,
-                            max_tokens=16000,
-                            top_p=1.0,
-                            frequency_penalty=0.0,
-                            presence_penalty=0.0
-                        )
-
-                        content = response.choices[0].message.content
+                        if _pdf_main_exc is not None:
+                            raise _pdf_main_exc
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: response received — {len(content)} chars")
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: preview: {content[:400]!r}")
 
