@@ -1,117 +1,19 @@
-from uuid import uuid4
+import hashlib
 import logging
-import re
 
 from fastapi import APIRouter, Body, HTTPException
 from fastapi import UploadFile, File, Form, Request
 from typing import List, Optional
 
 from schemas.ingest import IngestRequest
-from workers.celery_tasks import process_document_task
-from core.redis_client import redis_manager
+from core.ingest_service import (
+    enqueue_offer,
+    buffer_attachment,
+    DuplicateIngest,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def generate_source_filename(
-    source_filename,
-    attachments,
-    supplier_email,
-    supplier_name,
-    source_message_id,
-    job_id
-):
-    if source_filename:
-        return source_filename
-
-    if attachments:
-        return attachments[0].get("fileName")
-
-    base = supplier_email or supplier_name or "unknown_source"
-
-    base = re.sub(r"[^a-zA-Z0-9@._-]", "_", base).lower()
-
-    unique_part = source_message_id or job_id
-
-    return f"{base}_{unique_part}.txt"
-
-
-def _check_duplicate_filename(filename: str) -> None:
-    if not filename:
-        return
-
-    try:
-        from core.database import get_session_factory
-        from models.offer_item import OfferItemDB
-
-        db = get_session_factory()()
-        try:
-            existing = (
-                db.query(OfferItemDB.uid)
-                .filter(OfferItemDB.source_filename == filename)
-                .first()
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": "duplicate_file",
-                        "message": f"File '{filename}' already processed.",
-                        "filename": filename,
-                    },
-                )
-        finally:
-            db.close()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Duplicate check failed: {e}")
-
-
-def _check_duplicate_content_hash(content_hash: str) -> None:
-    """
-    Reject re-uploads of the exact same file bytes, even when the caller
-    renamed the file. Content-hash lives on source_files (Phase 3 M1).
-    A genuinely new supplier offer file has different bytes → different
-    hash → passes; only bit-identical re-uploads are refused here.
-    """
-    if not content_hash:
-        return
-    try:
-        from core.database import get_session_factory
-        from models.source_file import SourceFileDB
-
-        db = get_session_factory()()
-        try:
-            existing = (
-                db.query(SourceFileDB.source_filename)
-                .filter(SourceFileDB.content_hash == content_hash)
-                .first()
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": "duplicate_content",
-                        "message": (
-                            f"File contents already ingested "
-                            f"(previously as {existing[0]!r}). "
-                            "Re-upload of the exact same bytes is refused. "
-                            "If this is a genuinely new supplier offer, "
-                            "the file bytes must differ."
-                        ),
-                        "existing_filename": existing[0],
-                        "content_hash": content_hash,
-                    },
-                )
-        finally:
-            db.close()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Content-hash duplicate check failed: {e}")
 
 
 @router.post("/ingest")
@@ -130,98 +32,69 @@ async def ingest(
     text_body: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
 ):
-    job_id = str(uuid4())
     content_type = request.headers.get("content-type", "")
+
+    # ── JSON body (Make-style trigger, or any upstream that already has the
+    #    attachment bytes/media ids) ───────────────────────────────────────────
     if "application/json" in content_type:
         if payload is None:
             return {"error": "Invalid JSON body"}
 
         validated_payload = IngestRequest(**payload)
+        try:
+            # Historical behaviour of the JSON path: filename dedup only
+            # (content-hash is stored but not deduped here).
+            result = enqueue_offer(
+                source_channel=validated_payload.source_channel,
+                source_message_id=validated_payload.source_message_id,
+                source_filename=validated_payload.source_filename,
+                supplier_email=validated_payload.supplier_email,
+                supplier_name=validated_payload.supplier_name,
+                sender_email=validated_payload.sender_email,
+                sender_name=validated_payload.sender_name,
+                subject=validated_payload.subject,
+                text_body=validated_payload.text_body,
+                attachments=[a.dict() for a in (validated_payload.attachments or [])],
+                content_hash=validated_payload.content_hash,
+                check_content_hash=False,
+            )
+        except DuplicateIngest as e:
+            raise HTTPException(status_code=400, detail=e.detail)
 
-        dedup_filename = generate_source_filename(
-            source_filename=validated_payload.source_filename,
-            attachments=validated_payload.attachments,
-            supplier_email=validated_payload.supplier_email,
-            supplier_name=validated_payload.supplier_name,
-            source_message_id=validated_payload.source_message_id,
-            job_id=job_id
-        )
+        return {**result, "mode": "json"}
 
-        _check_duplicate_filename(dedup_filename)
-
-        payload_dict = validated_payload.model_dump()
-        payload_dict["source_filename"] = dedup_filename
-
-        redis_manager.set_job_status(job_id, "processing")
-        process_document_task.delay(job_id, payload_dict)
-
-        return {
-            "status": "accepted",
-            "job_id": job_id,
-            "mode": "json",
-            "source_filename": dedup_filename
-        }
-
-    import hashlib
-
+    # ── multipart upload (direct file drop) ─────────────────────────────────────
     attachments = []
     content_hash = None  # sha256 of the first (usually only) attachment
 
     if files:
         for file in files:
             file_bytes = await file.read()
-
             if not file_bytes or not file.filename or file.filename.lower() in ("empty", ""):
                 logger.info(f"Skipping empty file: {file.filename}")
                 continue
-
             if content_hash is None:
                 content_hash = hashlib.sha256(file_bytes).hexdigest()
+            attachments.append(
+                buffer_attachment(file.filename, file.content_type, file_bytes)
+            )
 
-            attachments.append({
-                "fileName": file.filename,
-                "contentType": file.content_type,
-                "checksum": hashlib.sha256(file_bytes).hexdigest(),
-                "contentId": None,
-                "fileSize": len(file_bytes),
-                "data": {
-                    "type": "Buffer",
-                    "data": list(file_bytes)
-                }
-            })
+    try:
+        result = enqueue_offer(
+            source_channel=source_channel,
+            source_message_id=source_message_id,
+            source_filename=source_filename,
+            supplier_email=supplier_email,
+            supplier_name=supplier_name,
+            sender_email=sender_email,
+            sender_name=sender_name,
+            subject=subject,
+            text_body=text_body,
+            attachments=attachments,
+            content_hash=content_hash,
+            check_content_hash=True,
+        )
+    except DuplicateIngest as e:
+        raise HTTPException(status_code=400, detail=e.detail)
 
-    dedup_filename = generate_source_filename(
-        source_filename=source_filename,
-        attachments=attachments,
-        supplier_email=supplier_email,
-        supplier_name=supplier_name,
-        source_message_id=source_message_id,
-        job_id=job_id
-    )
-
-    _check_duplicate_filename(dedup_filename)
-    _check_duplicate_content_hash(content_hash)
-
-    payload_dict = {
-        "source_channel": source_channel,
-        "source_message_id": source_message_id,
-        "source_filename": dedup_filename,
-        "supplier_email": supplier_email,
-        "supplier_name": supplier_name,
-        "sender_email": sender_email,
-        "sender_name": sender_name,
-        "subject": subject,
-        "text_body": text_body,
-        "attachments": attachments,
-        "content_hash": content_hash,
-    }
-
-    redis_manager.set_job_status(job_id, "processing")
-    process_document_task.delay(job_id, payload_dict)
-
-    return {
-        "status": "accepted",
-        "job_id": job_id,
-        "mode": "multipart",
-        "source_filename": dedup_filename
-    }
+    return {**result, "mode": "multipart"}

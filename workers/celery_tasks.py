@@ -91,3 +91,78 @@ def process_document_task(self, job_id: str, payload_dict: dict):
 
 def backoff(retries: int) -> int:
     return 30 * (2 ** retries)
+
+
+def _poll_lock(name: str, ttl: int) -> bool:
+    """Best-effort single-flight lock so overlapping scheduled polls (e.g. a
+    poll queued behind a long ingest) don't double-read the mailbox. Returns
+    True if we acquired it. If Redis is unavailable we proceed (dedup still
+    protects us)."""
+    try:
+        if redis_manager.use_redis and redis_manager.client:
+            return bool(redis_manager.client.set(name, "1", nx=True, ex=ttl))
+    except Exception as e:
+        logger.warning(f"poll lock {name} unavailable: {e}")
+    return True
+
+
+@celery_app.task(name="workers.celery_tasks.poll_email_offers")
+def poll_email_offers():
+    """Pull new offer emails from the IMAP mailbox and enqueue each for
+    processing. Runs on the Celery beat schedule. Per-message failures are
+    logged and skipped so one bad email never stops the rest; duplicates
+    (same filename or same bytes) are refused by core.ingest_service."""
+    import hashlib
+    from core.imap_client import fetch_new_messages, ImapConfigError
+    from core.ingest_service import enqueue_offer, buffer_attachment, DuplicateIngest
+
+    if not _poll_lock("lock:poll_email_offers", ttl=110):
+        logger.info("email poll already running; skipping this tick")
+        return
+
+    try:
+        messages = fetch_new_messages()
+    except ImapConfigError as e:
+        logger.warning(f"email poll skipped — {e}")
+        return
+    except Exception as e:
+        logger.error(f"email poll failed to fetch: {e}\n{traceback.format_exc()}")
+        return
+
+    enqueued = skipped = failed = 0
+    for m in messages:
+        atts = m.get("attachments") or []
+        if not atts:
+            logger.info(f"email uid {m['uid']} from {m.get('from_email')} has no "
+                        f"attachment — skipping (not an offer file)")
+            skipped += 1
+            continue
+        try:
+            built = [buffer_attachment(a["fileName"], a["contentType"], a["bytes"])
+                     for a in atts]
+            content_hash = hashlib.sha256(atts[0]["bytes"]).hexdigest()
+            res = enqueue_offer(
+                source_channel="email",
+                source_message_id=m.get("message_id") or f"imap-uid-{m['uid']}",
+                sender_email=m.get("from_email"),
+                sender_name=m.get("from_name"),
+                supplier_email=m.get("from_email"),
+                subject=m.get("subject"),
+                text_body=m.get("text_body"),
+                attachments=built,
+                content_hash=content_hash,
+                check_content_hash=True,
+            )
+            enqueued += 1
+            logger.info(f"email uid {m['uid']} enqueued job {res['job_id']} "
+                        f"({len(built)} file(s): {[a['fileName'] for a in atts]})")
+        except DuplicateIngest as e:
+            skipped += 1
+            logger.info(f"email uid {m['uid']} duplicate "
+                        f"({e.detail.get('error')}) — skipped")
+        except Exception as e:
+            failed += 1
+            logger.error(f"email uid {m['uid']} enqueue failed: {e}")
+
+    logger.info(f"email poll done: {len(messages)} new, {enqueued} enqueued, "
+                f"{skipped} skipped, {failed} failed")

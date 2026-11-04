@@ -66,3 +66,18 @@ celery_app.conf.update(
 if os.getenv("CELERY_TASK_ALWAYS_EAGER") == "1":
     celery_app.conf.task_always_eager = True
     celery_app.conf.task_eager_propagates = True
+
+# Email intake runs on the Celery beat schedule (a single scheduler process —
+# unlike an in-app timer, which would double-fire across the 2 gunicorn
+# workers). Only registered when IMAP is configured, so the beat stays quiet
+# otherwise. `expires` drops a poll that could not run within its interval
+# (e.g. queued behind a long ingest) instead of letting ticks pile up.
+if os.getenv("IMAP_HOST"):
+    _IMAP_POLL_SECONDS = float(os.getenv("IMAP_POLL_SECONDS", "120"))
+    celery_app.conf.beat_schedule = {
+        "poll-email-offers": {
+            "task": "workers.celery_tasks.poll_email_offers",
+            "schedule": _IMAP_POLL_SECONDS,
+            "options": {"expires": _IMAP_POLL_SECONDS},
+        }
+    }

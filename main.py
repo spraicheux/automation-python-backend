@@ -20,6 +20,7 @@ from api.offers_write import router as offers_write_router
 from api.alerts import router as alerts_router
 from api.events import router as events_router
 from api.admin import router as admin_router
+from api.whatsapp import router as whatsapp_router
 
 
 app = FastAPI(
@@ -46,6 +47,7 @@ app.include_router(offers_write_router, prefix="/api", tags=["Offers-Write"])
 app.include_router(alerts_router, prefix="/api", tags=["Alerts"])
 app.include_router(events_router, prefix="/api", tags=["Events"])
 app.include_router(admin_router, prefix="/api", tags=["Admin"])
+app.include_router(whatsapp_router, prefix="/api", tags=["WhatsApp"])
 
 
 @app.on_event("startup")
