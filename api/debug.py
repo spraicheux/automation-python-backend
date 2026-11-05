@@ -1,8 +1,15 @@
 import os
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Depends, Header, HTTPException
 from core.redis_client import redis_manager
 
 router = APIRouter()
+
+
+def _require_admin(x_admin_token: str = Header(None)):
+    """Gate endpoints that return file contents, so saved offer files are not
+    publicly downloadable."""
+    if x_admin_token != os.getenv("ADMIN_TOKEN", "valid-token"):
+        raise HTTPException(status_code=401, detail="admin token required")
 
 
 @router.get("/debug/imap-check")
@@ -80,7 +87,7 @@ async def purge_queue():
     return out
 
 
-@router.get("/debug/download-saved")
+@router.get("/debug/download-saved", dependencies=[Depends(_require_admin)])
 async def download_saved(pattern: str):
     """Download a saved offer file (from durable storage) by name substring, so
     the exact bytes the extractor processed can be inspected locally."""
@@ -100,7 +107,7 @@ async def download_saved(pattern: str):
                         media_type="application/octet-stream")
 
 
-@router.get("/debug/inspect-saved-xlsx")
+@router.get("/debug/inspect-saved-xlsx", dependencies=[Depends(_require_admin)])
 async def inspect_saved_xlsx(pattern: str, rows: int = 45):
     """Read a saved XLSX exactly as the extractor sees it (pandas) AND with
     openpyxl number formats, so percent cells (40% kept as 0.4), dates, and the
