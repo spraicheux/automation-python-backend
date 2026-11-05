@@ -129,6 +129,39 @@ async def start_credit_resumer():
     logging.getLogger(__name__).info("OpenAI credit-resume scheduler started")
 
 
+@app.on_event("startup")
+async def start_job_sweeper():
+    """Self-healing recovery for stranded jobs. Every ~2 min, re-enqueue any
+    intake row stuck 'queued' because its broker hand-off never landed (how
+    files silently went missing), and clear stale errors on resumed/done rows.
+    A Redis lock keeps the 2 gunicorn workers from sweeping at once."""
+    import asyncio
+    log = logging.getLogger(__name__)
+
+    async def _loop():
+        from core.redis_client import redis_manager
+        from core.job_recovery import sweep_stuck_jobs
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(45)  # after boot, and offset from the other loops
+        while True:
+            try:
+                lock_ok = True
+                try:
+                    if redis_manager.use_redis and redis_manager.client:
+                        lock_ok = bool(redis_manager.client.set(
+                            "lock:job_sweep", "1", nx=True, ex=100))
+                except Exception:
+                    lock_ok = True
+                if lock_ok:
+                    await loop.run_in_executor(None, sweep_stuck_jobs)
+            except Exception as e:
+                log.error(f"job sweeper error: {e}")
+            await asyncio.sleep(120)
+
+    asyncio.create_task(_loop())
+    logging.getLogger(__name__).info("job-recovery sweeper started")
+
+
 @app.get("/health", tags=["System"])
 async def health():
     return {

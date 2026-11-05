@@ -278,7 +278,11 @@ class TestIngestService:
         captured = {}
 
         class FakeTask:
-            def delay(self, job_id, payload):
+            def apply_async(self, args=None, **kwargs):
+                captured["job_id"] = args[0]
+                captured["payload"] = args[1]
+
+            def delay(self, job_id, payload):  # kept for other callers
                 captured["job_id"] = job_id
                 captured["payload"] = payload
 

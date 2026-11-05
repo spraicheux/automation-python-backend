@@ -164,8 +164,14 @@ def drain_pending_credit_jobs() -> int:
             if not raw:
                 break
             item = json.loads(raw)
-            update_intake(item["job_id"], status="queued", error=None)
+            update_intake(item["job_id"], status="queued", clear_error=True)
             process_document_task.delay(item["job_id"], item["payload"])
+            # Flag delivered so the job_recovery sweeper won't also re-enqueue it.
+            try:
+                from core.ingest_service import mark_delivered
+                mark_delivered(item["job_id"])
+            except Exception:
+                pass
             n += 1
         if n:
             logger.info(f"drained {n} credit-parked job(s) back into the queue")

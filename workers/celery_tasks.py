@@ -79,10 +79,12 @@ def process_document_task(self, job_id: str, payload_dict: dict):
             status = result.get("status")
             total = len(result.get("products", []))
             logger.info(f"Job {job_id} finished processing with status: {status} ({total} products written to Excel)")
-            update_intake(job_id, status="done", products=total)
+            # clear_error: a job that was parked 'OpenAI out of credits' and then
+            # resumed must not keep showing the stale outage error once it's done.
+            update_intake(job_id, status="done", products=total, clear_error=True)
         else:
             logger.error(f"Job {job_id} finished but no result was found in RedisManager.")
-            update_intake(job_id, status="done", products=0)
+            update_intake(job_id, status="done", products=0, clear_error=True)
 
     except OpenAICreditsExhausted as exc:
         # Out of OpenAI credits — park the job (don't mark done/failed). The

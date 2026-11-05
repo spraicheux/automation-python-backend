@@ -41,6 +41,35 @@ class DuplicateIngest(Exception):
         super().__init__(detail.get("message", "duplicate"))
 
 
+# ─── broker-delivery flag ─────────────────────────────────────────────────────
+# Set the instant a job is successfully handed to the Celery broker. The
+# job_recovery sweeper uses it to tell a genuine orphan (recorded "queued" but
+# the enqueue never reached the broker — how files silently went missing) from
+# a job that IS in the broker and just waiting its turn. Only jobs WITHOUT this
+# flag are safe to re-enqueue, so recovery can never double-run a live job.
+_DELIVERED_KEY = "intake:delivered:"
+_DELIVERED_TTL = 7 * 24 * 3600
+
+
+def mark_delivered(job_id: str) -> None:
+    from core.redis_client import redis_manager
+    try:
+        if redis_manager.use_redis and redis_manager.client:
+            redis_manager.client.set(_DELIVERED_KEY + job_id, "1", ex=_DELIVERED_TTL)
+    except Exception:
+        pass
+
+
+def was_delivered(job_id: str) -> bool:
+    from core.redis_client import redis_manager
+    try:
+        if redis_manager.use_redis and redis_manager.client:
+            return bool(redis_manager.client.get(_DELIVERED_KEY + job_id))
+    except Exception:
+        pass
+    return False
+
+
 # ─── supplier detection (mirrors the Make normalization prompts) ──────────────
 # Supplier is derived ONLY from the message/email text (and, for email, the
 # subject) using explicit markers/patterns — NEVER from the sender, the
@@ -286,9 +315,31 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
     except Exception as e:  # visibility must never block ingest
         logger.warning(f"intake record failed for {job_id}: {e}")
 
+    # Hand the job to the Celery worker. A transient broker/Redis blip must NOT
+    # silently orphan the job at "queued" (which is exactly how files went
+    # missing): retry the enqueue a few times, flag it delivered on success, and
+    # if it still fails mark the intake FAILED (visible) instead of leaving a
+    # fake "queued". The payload is already saved, so the job_recovery sweeper
+    # re-enqueues it either way — no file is ever lost.
     # Lazy import breaks the cycle: workers.celery_tasks → (poller) → this module.
     from workers.celery_tasks import process_document_task
-    process_document_task.delay(job_id, payload_dict)
+    try:
+        process_document_task.apply_async(
+            args=[job_id, payload_dict],
+            retry=True,
+            retry_policy={"max_retries": 3, "interval_start": 0.3,
+                          "interval_step": 0.5, "interval_max": 2.0},
+        )
+        mark_delivered(job_id)
+    except Exception as e:
+        logger.error(f"enqueue to worker failed for {job_id} ({dedup_filename}): {e}")
+        try:
+            from core.intake_log import update_intake
+            update_intake(job_id, status="failed",
+                          error="could not reach the processing queue — will auto-retry")
+        except Exception:
+            pass
+        # Deliberately not re-raised: the saved payload + sweeper recover it.
 
     logger.info(
         f"Enqueued offer job {job_id} via {source_channel or 'unknown'} "

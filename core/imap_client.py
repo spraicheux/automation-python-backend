@@ -34,6 +34,7 @@ import email
 import imaplib
 import logging
 import os
+import re
 from email.header import decode_header, make_header
 from email.utils import parseaddr
 from typing import Any, Dict, List, Optional
@@ -86,10 +87,29 @@ def _state_key(base: str, mailbox: str) -> str:
     return f"{base}:{mailbox}"
 
 
+def _is_inline_signature_image(part, filename: str, disposition: str) -> bool:
+    """True for an embedded body image — an Outlook signature logo
+    (image001.gif/png), a tracking pixel, a CID-referenced inline image. These
+    are part of the body, NOT offer files: treating one as the attachment
+    corrupts the filename, the dedup hash and wastes a vision call, and pushes
+    the real offers (in the body) to the side. A genuinely-attached image
+    (Content-Disposition: attachment) is kept."""
+    if part.get_content_maintype() != "image":
+        return False
+    if "attachment" in disposition:
+        return False
+    content_id = part.get("Content-ID") or part.get("Content-Id")
+    is_inline = "inline" in disposition
+    looks_like_sig = bool(re.match(
+        r"^image\d+\.(gif|png|jpe?g|bmp|tiff?)$", filename or "", re.IGNORECASE))
+    return bool(is_inline or content_id or looks_like_sig)
+
+
 def _extract_attachments(msg) -> List[Dict[str, Any]]:
     """Every real attachment part, decoded. Captures PDFs, spreadsheets,
     images and any file with a name or an attachment disposition — so a
-    multi-file offer email loses nothing."""
+    multi-file offer email loses nothing. Inline body images (signature logos
+    like image001.gif) are skipped: they are not offer files."""
     out: List[Dict[str, Any]] = []
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
@@ -97,6 +117,10 @@ def _extract_attachments(msg) -> List[Dict[str, Any]]:
         filename = _decode(part.get_filename())
         disposition = (part.get("Content-Disposition") or "").lower()
         if not filename and "attachment" not in disposition:
+            continue
+        if _is_inline_signature_image(part, filename, disposition):
+            logger.info(f"skipping inline/embedded image {filename!r} "
+                        f"(signature/logo, not an offer file)")
             continue
         try:
             payload = part.get_payload(decode=True)
@@ -114,6 +138,27 @@ def _extract_attachments(msg) -> List[Dict[str, Any]]:
             "bytes": payload,
         })
     return out
+
+
+def _html_to_text(html: str) -> str:
+    """Flatten an HTML email body into readable lines. Offers often live in an
+    HTML <table>, so rows and cells become newlines/tabs (preserving one offer
+    per line) before tags are stripped — otherwise a whole table collapses into
+    one blob and the per-line extractor misses offers."""
+    if not html:
+        return ""
+    import html as _htmlmod
+    s = html
+    s = re.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", " ", s)
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)\s*>", "\n", s)
+    s = re.sub(r"(?i)</(td|th)\s*>", "\t", s)
+    s = re.sub(r"(?s)<[^>]+>", " ", s)
+    s = _htmlmod.unescape(s)
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
 
 
 def _extract_text_body(msg) -> str:
@@ -140,7 +185,16 @@ def _extract_text_body(msg) -> str:
             plain = text
         elif ctype == "text/html" and not html:
             html = text
-    return (plain or html).strip()
+    plain = (plain or "").strip()
+    html = (html or "").strip()
+    # Prefer a substantive plain-text alternative; otherwise flatten the HTML
+    # (the offers may only exist in the HTML table).
+    if plain and len(plain) >= 40:
+        return plain
+    converted = _html_to_text(html)
+    if len(converted) >= len(plain):
+        return converted
+    return plain
 
 
 def fetch_new_messages() -> List[Dict[str, Any]]:

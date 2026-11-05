@@ -80,6 +80,43 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/worker")
+async def worker_status():
+    """Is the Celery worker alive, how backed-up is it, and how many jobs are
+    waiting in the broker? Answers 'are queued jobs stuck or just waiting?' in
+    one call: broker_queue_len is how many tasks sit unclaimed; workers lists
+    each live worker with its active (running) and reserved (prefetched) task
+    counts. No worker replying to ping ⇒ the worker is down."""
+    from core.celery_app import celery_app
+    out = {"broker_queue_len": None, "workers": None, "ping": None, "error": None}
+    try:
+        with celery_app.connection_for_read() as conn:
+            out["broker_queue_len"] = conn.default_channel.client.llen("celery")
+    except Exception as e:
+        out["error"] = f"queue len: {e}"
+    try:
+        insp = celery_app.control.inspect(timeout=3)
+        out["ping"] = insp.ping()
+        active = insp.active() or {}
+        reserved = insp.reserved() or {}
+        out["workers"] = {
+            w: {"active": len(active.get(w, [])), "reserved": len(reserved.get(w, []))}
+            for w in set(list(active) + list(reserved) + list(out["ping"] or {}))
+        }
+    except Exception as e:
+        out["error"] = f"{out['error'] + '; ' if out['error'] else ''}inspect: {e}"
+    return out
+
+
+@router.get("/debug/sweep-now")
+async def sweep_now():
+    """Run the orphan-recovery sweep immediately (instead of waiting for the
+    ~2-min scheduler): re-enqueue any job stranded 'queued' whose broker
+    hand-off never landed, and clear stale errors on resumed/done rows."""
+    from core.job_recovery import sweep_stuck_jobs
+    return sweep_stuck_jobs()
+
+
 @router.get("/debug/clear-pending-credits")
 async def clear_pending_credits():
     """Drop parked (NO CREDITS) jobs so they will NOT auto-resume — used when

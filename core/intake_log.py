@@ -67,7 +67,13 @@ def record_intake(job_id: str, *, channel: Optional[str],
 
 
 def update_intake(job_id: str, *, status: Optional[str] = None,
-                  products: Optional[int] = None, error: Optional[Any] = None) -> None:
+                  products: Optional[int] = None, error: Optional[Any] = None,
+                  clear_error: bool = False) -> None:
+    """Update a live intake row. `error=None` means "leave the error as-is"
+    (so a plain status bump doesn't wipe a previously-recorded failure); pass
+    clear_error=True to explicitly remove a stale error — e.g. when a parked
+    'OpenAI out of credits' job resumes and completes, so the done row doesn't
+    keep showing the old outage message."""
     r = _r()
     if not r:
         return
@@ -78,7 +84,9 @@ def update_intake(job_id: str, *, status: Optional[str] = None,
             entry["status"] = status
         if products is not None:
             entry["products"] = products
-        if error is not None:
+        if clear_error:
+            entry["error"] = None
+        elif error is not None:
             entry["error"] = str(error)[:500]
         entry["updated_at"] = _now()
         r.set(_ENTRY + job_id, json.dumps(entry), ex=_TTL)

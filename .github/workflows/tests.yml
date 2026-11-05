@@ -47,4 +47,5 @@ jobs:
                  tests/test_samuel_20261104.py \
                  tests/test_native_ingestion.py \
                  tests/test_extraction_parallel.py \
+                 tests/test_job_recovery.py \
                  -v --tb=short
