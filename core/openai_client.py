@@ -2920,6 +2920,14 @@ def clean_product_data(product: dict) -> dict:
         # both consume them, but they were absent from this whitelist so
         # clean_product_data was silently stripping them out.
         'quantity_unit': None,
+        # Preserve the quantity in its ORIGINAL unit without conversion
+        # (client §2 — "3 pallets", "9600 bottles", "24 pieces" must survive).
+        # These were absent from the whitelist, so the loop below silently
+        # stripped the value the structured extractor put here, leaving only
+        # quantity_unit and a blank quantity in the table / offer details.
+        'quantity_bottles': None,
+        'quantity_pallets': None,
+        'quantity_ftl': None,
         'range_name': "Not Found",
         'category_slug': None,   # normalised slug: wines_spirits|perfumes|cosmetics
         'perfume_format': None,  # EDT | EDP | Parfum | Cologne | EDC | EDF
@@ -2946,6 +2954,8 @@ def clean_product_data(product: dict) -> dict:
                     'quantity_case', 'price_per_unit', 'price_per_unit_eur',
                     'price_per_case', 'price_per_case_eur', 'alcohol_percent', 'moq_cases',
                     'size_weight_g',  # Phase 3 M1 — cosmetics (solid weight in grams)
+                    # client §2 — original-unit quantities (no conversion)
+                    'quantity_bottles', 'quantity_pallets', 'quantity_ftl',
                 ]
 
                 if field in numeric_keys:

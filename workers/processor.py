@@ -1610,6 +1610,12 @@ async def process_offer(payload, job_id: str):
                         'units_per_case': _safe_float(merged_data.get('units_per_case')),
                         'cases_per_pallet': merged_data.get('cases_per_pallet'),
                         'quantity_case': merged_data.get('quantity_case'),
+                        # client §2 — carry the original-unit quantity through
+                        # to the DB row (was dropped here, so "3 pallets" /
+                        # "9600 bottles" / "24 pieces" showed blank).
+                        'quantity_bottles': merged_data.get('quantity_bottles'),
+                        'quantity_pallets': merged_data.get('quantity_pallets'),
+                        'quantity_ftl': merged_data.get('quantity_ftl'),
                         'gift_box': merged_data.get('gift_box'),
                         'refillable_status': merged_data.get('refillable_status') or "",
                         'currency': merged_data.get('currency') or "EUR",
@@ -1891,6 +1897,10 @@ async def process_offer(payload, job_id: str):
                     'units_per_case': _safe_float(extracted_data.get('units_per_case')),
                     'cases_per_pallet': extracted_data.get('cases_per_pallet'),
                     'quantity_case': extracted_data.get('quantity_case'),
+                    # client §2 — preserve original-unit quantity (no conversion)
+                    'quantity_bottles': extracted_data.get('quantity_bottles'),
+                    'quantity_pallets': extracted_data.get('quantity_pallets'),
+                    'quantity_ftl': extracted_data.get('quantity_ftl'),
                     'gift_box': extracted_data.get('gift_box'),
                     'refillable_status': extracted_data.get('refillable_status') or "",
                     'currency': extracted_data.get('currency') or "EUR",
