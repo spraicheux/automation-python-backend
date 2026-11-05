@@ -26,6 +26,29 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=90.0, max_retr
 # ──────────────────────────────────────────────────────────────────────────────
 SHARED_EXTRACTION_RULES = """
 ══════════════════════════════════════════════════════════════════════
+RULE 0.0 — COMMERCIAL LINE INTEGRITY (NEVER MIX DATA BETWEEN PRODUCTS)
+══════════════════════════════════════════════════════════════════════
+Each offer is SELF-CONTAINED. Many emails list one product block after
+another, often delimited by a reference line (e.g. "REF · 2026-01971",
+"ELIXEMARKET REF", "Item 3"). Extract every field ONLY from inside that
+product's own block.
+
+ • NEVER copy a price, quantity, incoterm, location, delivery term or date
+   from a neighbouring product. If a block states a quantity but NO price,
+   leave price null. If it states a price but NO quantity, leave quantity
+   null. A missing field is null — it is NEVER the next product's value.
+ • "3,200 cs" with no price → quantity_case=3200, price null.
+   "€42.48/cs" with no quantity → price_per_case=42.48, quantity null.
+ • Two delivery terms + two prices on ONE line (e.g.
+   "4,76eur exw Germany, DAP Riga 4,80eur") = TWO rows: one EXW Germany
+   @4.76 and one DAP Riga @4.80. NEVER merge locations into "Germany OR
+   Riga" or keep only one. (See Rule 6 — one row per incoterm.)
+ • Quantity "30 pallets per 112cs" / "30 pallets × 112 cases" means 30
+   pallets, 112 CASES PER PALLET → quantity_pallets=30, cases_per_pallet=112
+   (total 3360 cases). The "112cs" is cases-per-pallet, NEVER units_per_case.
+ • Decimals may use a comma: "4,76" = 4.76, "1,60eur" = 1.60.
+
+══════════════════════════════════════════════════════════════════════
 RULE 0 — 5 GOLDEN RULES (READ FIRST, APPLY TO EVERY PRODUCT)
 ══════════════════════════════════════════════════════════════════════
 

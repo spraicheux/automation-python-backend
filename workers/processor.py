@@ -711,6 +711,46 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     return safe_data
 
 
+# ─── incoterm / location separation ───────────────────────────────────────────
+_VALID_INCOTERMS = {"EXW", "FOB", "CIF", "CFR", "CNF", "DAP", "DDP", "CPT",
+                    "FCA", "DAT", "DPU", "FAS", "CIP"}
+_LOAD_TYPES = {"FTL", "LTL", "FCL", "LCL"}
+_INCO_PREFIX_RE = re.compile(
+    r"^\s*(EXW|EXWORKS?|EX|CNF|CFR|CIF|FOB|DAP|DDP|CPT|FCA|CIP|DPU|FAS|DAT)\b[\s:.\-]*(.*)$",
+    re.IGNORECASE)
+
+
+def _normalize_incoterm_location(safe_data: dict) -> None:
+    """Keep incoterm, load-type and location in their own fields (Samuel FBC):
+      * FTL/LTL/FCL/LCL are LOAD types, not incoterms — never store them as the
+        incoterm (FTL also implies a full-truck quantity).
+      * a location that carries an incoterm prefix ("CNF Riga", "Ex Loen",
+        "EXW Loendersloot") is split into incoterm + place.
+      * "Ex"/"Exworks" normalise to EXW.
+    """
+    inco = str(safe_data.get("incoterm") or "").strip()
+    inco_u = inco.upper()
+    if inco_u in _LOAD_TYPES:
+        if inco_u == "FTL" and not safe_data.get("quantity_ftl"):
+            safe_data["quantity_ftl"] = 1
+        safe_data["incoterm"] = None
+        inco_u = ""
+    elif inco_u in ("EX", "EXWORK", "EXWORKS"):
+        safe_data["incoterm"] = "EXW"
+        inco_u = "EXW"
+
+    loc = str(safe_data.get("location") or "").strip()
+    if loc:
+        m = _INCO_PREFIX_RE.match(loc)
+        if m:
+            tok = m.group(1).upper()
+            tok = "EXW" if tok in ("EX", "EXWORK", "EXWORKS") else tok
+            if not safe_data.get("incoterm"):
+                safe_data["incoterm"] = tok
+            rest = m.group(2).strip(" .,-")
+            safe_data["location"] = rest or None
+
+
 # ─── MOQ / QUANTITY normalization ──────────────────────────────────────────────
 def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
     """
@@ -1297,17 +1337,29 @@ async def process_offer(payload, job_id: str):
             # items — matches admin._canon_key. Perfume_format, shade,
             # and product_type are still NOT in the key: a null-vs-
             # populated mismatch for those does not create a new SKU.
+            def _s(v):
+                return str(v).strip().lower() if v is not None else ""
             def _canon_key(p):
+                # Collapse ONLY true extractor duplicates (same product emitted
+                # twice, or from body + attachment). Two rows that differ in any
+                # commercial field below are DISTINCT offers and must both
+                # survive — a supplier legitimately lists the same SKU at a
+                # different warehouse, incoterm, price, quantity, date, lot or
+                # customs status (Samuel's "Cas école" dedup test: 3 Jameson at
+                # Loendersloot/Revera/Mentrex, 3 Blackberry at different dates).
+                # Mirrors the display fingerprint in api/records.get_records.
                 return (
-                    (p.get("brand") or "").strip().lower(),
-                    (p.get("product_name") or "").strip().lower(),
-                    p.get("unit_volume_ml") or 0,
+                    _s(p.get("brand")), _s(p.get("product_name")),
+                    p.get("unit_volume_ml") or 0, p.get("units_per_case") or 0,
                     (p.get("ean_code") or "").strip().lstrip("0"),
-                    p.get("price_per_unit") or 0,
-                    (p.get("retail_state") or "").strip().lower(),
-                    # Supplier reference distinguishes same-EAN/same-price line
-                    # items with different conditions (e.g. "Clean EU" vs "Deco").
-                    (p.get("supplier_reference") or "").strip().lower(),
+                    p.get("price_per_unit") or 0, p.get("price_per_case") or 0,
+                    _s(p.get("currency")), _s(p.get("retail_state")),
+                    _s(p.get("supplier_reference")), _s(p.get("product_reference")),
+                    _s(p.get("incoterm")), _s(p.get("location")),
+                    p.get("quantity_case") or 0, p.get("quantity_bottles") or 0,
+                    p.get("quantity_pallets") or 0, _s(p.get("quantity_unit")),
+                    _s(p.get("offer_date")), _s(p.get("valid_until")),
+                    _s(p.get("custom_status")), _s(p.get("vintage")),
                 )
             def _completeness(p):
                 return sum(1 for v in (p.get("gender"), p.get("retail_state"),
@@ -1502,6 +1554,7 @@ async def process_offer(payload, job_id: str):
                     # ── Currency normalisation & EUR conversion ──────────────
                     _snap_duplicated_row_per_unit(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
+                    _normalize_incoterm_location(safe_data)
 
                     # ── MOQ / quantity unit-aware normalization (RULE 0.3) ───
                     _flag_bucket = list(safe_data.get('error_flags') or [])
@@ -1749,6 +1802,7 @@ async def process_offer(payload, job_id: str):
                 _parse_supersedes_ref(safe_data)
 
                 safe_data = _normalize_currency_and_prices(safe_data)
+                _normalize_incoterm_location(safe_data)
 
                 _sup_name  = safe_data.get('supplier_name')
                 _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
