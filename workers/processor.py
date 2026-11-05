@@ -985,6 +985,17 @@ def _date_from_filename(filename: str, fallback_year: int) -> Optional[datetime]
         # Reject future dates (e.g. a DD.MM whose inferred year overshoots).
         return dt if (dt is not None and dt <= now) else None
 
+    # 0. ISO YYYY-MM-DD / YYYY.MM.DD / YYYY_MM_DD — unambiguous, and MUST win
+    #    over the D.M patterns below (which would read 2026-11-05 as 11 May and
+    #    stamp every row with the wrong offer date — Samuel QA 2026-11-05).
+    m = re.search(r'(?<!\d)(\d{4})[.\-_](\d{1,2})[.\-_](\d{1,2})(?!\d)', name)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+        try:
+            return _ok(datetime(y, mo, d))
+        except ValueError:
+            pass
+
     # 1. D.M.YYYY or D-M-YYYY (e.g. 09.06.2026, 18.9.2026)
     m = re.search(r'(?<!\d)(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})(?!\d)', name)
     if m:

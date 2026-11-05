@@ -1316,6 +1316,40 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.error(f"[extract_from_file] File does NOT exist at path: {file_path!r}")
                     return {"error": f"File not found: {file_path}"}
 
+                # ── Deterministic path for cleanly-labelled spreadsheets ──────
+                # The LLM mis-maps labelled columns (unit price → case price,
+                # % ABV → fraction, per-row date columns ignored, 2nd sheet
+                # dropped — Samuel's QA file 2026-11-05). When a sheet has a
+                # recognisable header we map columns → fields ourselves, correctly
+                # typed, across ALL sheets, and hand them to the same
+                # clean_product_data. Messy / unlabelled sheets return None here
+                # and fall through to the LLM path unchanged.
+                try:
+                    from core.xlsx_structured import extract_structured_products
+                    _structured = extract_structured_products(file_path)
+                except Exception as _se:
+                    logger.warning(f"[extract_from_file] structured extractor error: {_se}")
+                    _structured = None
+                if _structured:
+                    logger.info(
+                        f"[extract_from_file] STRUCTURED path — {len(_structured)} "
+                        f"product(s) from labelled columns (bypassing LLM column "
+                        f"interpretation)")
+                    _structured_clean = []
+                    for _p in _structured:
+                        _p.pop('_structured_source', None)
+                        try:
+                            _structured_clean.append(clean_product_data(_p))
+                        except Exception as _ce:
+                            logger.warning(f"[extract_from_file] clean failed for a structured row: {_ce}")
+                            _structured_clean.append(_p)
+                    logger.info(f"[extract_from_file] ===== END EXCEL (structured) — returning {len(_structured_clean)} products =====")
+                    return {
+                        'products': _structured_clean,
+                        'total_products': len(_structured_clean),
+                        'source_type': 'excel_structured',
+                    }
+
                 logger.info(f"[extract_from_file] Reading Excel with pandas...")
 
                 try:

@@ -87,6 +87,33 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/job-payload", dependencies=[Depends(_require_admin)])
+async def job_payload(job_id: str):
+    """Return a job's saved payload (the exact email/WhatsApp text the extractor
+    received, plus attachment metadata) so we can see two-column layouts,
+    forwarded supplier blocks, etc. Attachment bytes are summarised, not dumped."""
+    from core.job_store import load_job_payload
+    p = load_job_payload(job_id)
+    if not p:
+        return {"error": "no saved payload", "job_id": job_id}
+    atts = []
+    for a in (p.get("attachments") or []):
+        d = a.get("data") or {}
+        atts.append({"fileName": a.get("fileName"), "contentType": a.get("contentType"),
+                     "fileSize": a.get("fileSize"),
+                     "carrier": ("path" if "path" in d else "id" if "id" in d
+                                 else "buffer" if d.get("type") == "Buffer" else "?"),
+                     "path": d.get("path")})
+    return {
+        "job_id": job_id,
+        "source_channel": p.get("source_channel"),
+        "sender_name": p.get("sender_name"), "sender_email": p.get("sender_email"),
+        "supplier_name": p.get("supplier_name"), "subject": p.get("subject"),
+        "text_body": p.get("text_body"),
+        "attachments": atts,
+    }
+
+
 @router.get("/debug/download-saved", dependencies=[Depends(_require_admin)])
 async def download_saved(pattern: str):
     """Download a saved offer file (from durable storage) by name substring, so
