@@ -375,7 +375,25 @@ def is_valid_offer(offer_dict: dict) -> bool:
                 )
                 for f in flags):
             return True
-        logger.debug(f"Offer {name} rejected: No price data found.")
+        # No price, but keep the offer when it carries another commercial signal
+        # — a quantity, an EAN or a supplier reference. Suppliers legitimately
+        # list stock "price on request" (Samuel ElixeMarket: Havana 3,200 cs,
+        # Bacardi 1,000 cs, JD & Coca-Cola 3,000 cs — all price-less). Benchmarks
+        # and Best Prices already exclude null/zero prices, so these appear in
+        # the catalogue without skewing any comparison.
+        has_qty = any(offer_dict.get(k) for k in (
+            'quantity_case', 'quantity_bottles', 'quantity_pallets', 'quantity_ftl'))
+        has_ref = bool(offer_dict.get('ean_code') or offer_dict.get('supplier_reference')
+                       or offer_dict.get('product_reference'))
+        if has_qty or has_ref:
+            if isinstance(flags, list):
+                _m = 'Price on request retained — no price stated in source'
+                if _m not in flags:
+                    flags.append(_m)
+                    offer_dict['error_flags'] = flags
+            offer_dict['needs_manual_review'] = True
+            return True
+        logger.debug(f"Offer {name} rejected: no price and no quantity/reference.")
         return False
 
     return True

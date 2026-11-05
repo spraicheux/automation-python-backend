@@ -1303,6 +1303,116 @@ async def extract_offer(text: str) -> dict:
     return {"products": all_products}
 
 
+_EXCEL_CTS = {
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'application/vnd.ms-excel.sheet.macroenabled.12',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.macroenabled.12',
+    'application/vnd.oasis.opendocument.spreadsheet',
+}
+_IMG_EXTS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'webp', 'heic', 'heif', 'jfif'}
+_EXCEL_EXTS = {'xlsx', 'xls', 'xlsm', 'xlsb', 'ods'}
+_WORD_EXTS = {'docx', 'doc', 'odt', 'rtf'}
+
+
+def _detect_file_kind(file_path: str, content_type: str) -> str:
+    """Route a file to pdf / image / excel / csv / word / text / unknown using
+    its magic bytes FIRST, then extension, then the declared content_type.
+    A client can send any type with a generic content_type (WhatsApp and many
+    email clients use application/octet-stream), so the bytes are authoritative."""
+    ct = (content_type or '').split(';')[0].strip().lower()
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    head = b''
+    try:
+        with open(file_path, 'rb') as f:
+            head = f.read(512)
+    except Exception:
+        pass
+
+    # 1. MAGIC BYTES — authoritative. A client's content_type is often generic
+    #    (application/octet-stream) or simply wrong, so the file's own signature
+    #    wins over both the declared type and the extension.
+    if head[:5] == b'%PDF-':
+        return 'pdf'
+    if (head[:8] == b'\x89PNG\r\n\x1a\n' or head[:3] == b'\xff\xd8\xff'
+            or head[:6] in (b'GIF87a', b'GIF89a') or head[:2] == b'BM'
+            or head[:4] in (b'II*\x00', b'MM\x00*')
+            or (head[:4] == b'RIFF' and head[8:12] == b'WEBP')
+            or head[4:12] in (b'ftypheic', b'ftypheif', b'ftypmif1')):
+        return 'image'
+    if head[:4] == b'PK\x03\x04':  # OOXML/ODF zip — peek to tell xlsx from docx
+        try:
+            import zipfile
+            with zipfile.ZipFile(file_path) as z:
+                names = z.namelist()
+            if any(n.startswith('xl/') for n in names):
+                return 'excel'
+            if any(n.startswith('word/') for n in names):
+                return 'word'
+            if any('spreadsheet' in n for n in names):
+                return 'excel'
+            if any(n.startswith('ppt/') for n in names):
+                return 'unknown'  # slideshow — not an offer carrier
+        except Exception:
+            pass
+        return 'excel'
+    if head[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':  # legacy OLE2 (.xls/.doc)
+        return 'word' if ext in _WORD_EXTS or 'word' in ct or 'msword' in ct else 'excel'
+
+    # 2. EXTENSION
+    if ext == 'pdf':
+        return 'pdf'
+    if ext in _IMG_EXTS:
+        return 'image'
+    if ext in ('csv', 'tsv', 'tab'):
+        return 'csv'
+    if ext in _EXCEL_EXTS:
+        return 'excel'
+    if ext in _WORD_EXTS:
+        return 'word'
+    if ext in ('txt', 'text', 'eml', 'msg', 'html', 'htm', 'md', 'markdown', 'json', 'log'):
+        return 'text'
+
+    # 3. DECLARED CONTENT-TYPE (least trusted)
+    if ct == 'application/pdf':
+        return 'pdf'
+    if ct.startswith('image/'):
+        return 'image'
+    if ct in ('text/csv', 'text/tab-separated-values', 'application/csv'):
+        return 'csv'
+    if ct in _EXCEL_CTS:
+        return 'excel'
+    if 'wordprocessingml' in ct or ct == 'application/msword' or ct == 'application/vnd.oasis.opendocument.text':
+        return 'word'
+    if ct.startswith('text/'):
+        return 'text'
+
+    # 4. LAST RESORT — do the bytes look like text?
+    if head:
+        sample = head[:256]
+        nontext = sum(1 for b in sample if b < 9 or (13 < b < 32))
+        return 'text' if nontext / max(1, len(sample)) < 0.10 else 'unknown'
+    return 'text'
+
+
+def _extract_docx_text(file_path: str) -> str:
+    """Plain text from a .docx (OOXML), no extra dependency — read
+    word/document.xml and turn paragraph/tab/row tags into newlines/tabs."""
+    try:
+        import zipfile
+        import html as _html
+        with zipfile.ZipFile(file_path) as z:
+            xml = z.read('word/document.xml').decode('utf-8', 'replace')
+        xml = re.sub(r'(?i)</w:p>', '\n', xml)
+        xml = re.sub(r'(?i)<w:tab[ /]', '\t', xml)
+        xml = re.sub(r'(?i)</w:tr>', '\n', xml)
+        xml = re.sub(r'<[^>]+>', '', xml)
+        return _html.unescape(xml).strip()
+    except Exception as e:
+        logger.warning(f"[extract_from_file] docx text extraction failed: {e}")
+        return ""
+
+
 async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]:
     logger.info(f"[extract_from_file] ===== START =====")
     logger.info(f"[extract_from_file] file_path: {file_path!r}")
@@ -1322,12 +1432,28 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
     try:
         text_content = ""
 
-        if content_type in [
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/vnd.ms-excel',
-            'application/vnd.ms-excel.sheet.macroEnabled.12',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.macroEnabled.12'
-        ] or file_path.lower().endswith(('.xlsx', '.xls', '.xlsm')):
+        kind = _detect_file_kind(file_path, content_type)
+        logger.info(f"[extract_from_file] Detected file kind: {kind!r} "
+                    f"(content_type={content_type!r}, name={os.path.basename(file_path)!r})")
+
+        # A CSV / TSV is tabular — convert to a temp .xlsx and run the exact same
+        # spreadsheet path (deterministic column mapping + LLM fallback).
+        if kind == 'csv':
+            try:
+                import tempfile as _tmp
+                _sep = '\t' if (file_path.lower().endswith(('.tsv', '.tab'))
+                                or (content_type or '').lower().startswith('text/tab')) else None
+                _df_csv = pd.read_csv(file_path, sep=_sep, engine='python', dtype=object)
+                _xlsx_tmp = _tmp.NamedTemporaryFile(delete=False, suffix='.xlsx').name
+                _df_csv.to_excel(_xlsx_tmp, index=False)
+                logger.info(f"[extract_from_file] CSV → temp xlsx ({len(_df_csv)} rows) for tabular extraction")
+                file_path = _xlsx_tmp
+                kind = 'excel'
+            except Exception as _csv_e:
+                logger.warning(f"[extract_from_file] CSV→xlsx failed ({_csv_e}); treating as text")
+                kind = 'text'
+
+        if kind == 'excel':
             logger.info(f"[extract_from_file] Detected file type: EXCEL")
             try:
                 if os.path.exists(file_path):
@@ -2207,7 +2333,7 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                 text_content = f"Excel file - error reading: {str(e)}"
                 return {"error": f"Excel read error: {str(e)}"}
 
-        elif content_type == 'application/pdf':
+        elif kind == 'pdf':
             # ── PDF: process in page batches for accuracy ──────────────────
             logger.info(f"[extract_from_file] Detected file type: PDF — will process in page batches")
             PAGES_PER_BATCH = 1  # one page per AI call — dense supplier
@@ -2583,12 +2709,28 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                 return {"error": f"PDF read error: {str(e)}"}
 
-        elif 'image' in content_type:
+        elif kind == 'image':
             logger.info(f"[extract_from_file] Detected file type: IMAGE (content_type={content_type!r})")
             try:
                 with open(file_path, "rb") as image_file:
-                    base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-                logger.info(f"[extract_from_file] Image base64 encoded — length: {len(base64_image)} chars")
+                    _img_bytes = image_file.read()
+                    base64_image = base64.b64encode(_img_bytes).decode('utf-8')
+                # Vision needs a real image mime; the declared content_type may be
+                # application/octet-stream (WhatsApp) even for a real PNG/JPG.
+                _img_mime = content_type if (content_type or '').startswith('image/') else None
+                if not _img_mime:
+                    if _img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                        _img_mime = 'image/png'
+                    elif _img_bytes[:6] in (b'GIF87a', b'GIF89a'):
+                        _img_mime = 'image/gif'
+                    elif _img_bytes[:2] == b'BM':
+                        _img_mime = 'image/bmp'
+                    elif _img_bytes[:4] == b'RIFF' and _img_bytes[8:12] == b'WEBP':
+                        _img_mime = 'image/webp'
+                    else:
+                        _img_mime = 'image/jpeg'
+                content_type = _img_mime
+                logger.info(f"[extract_from_file] Image base64 encoded — length: {len(base64_image)} chars, mime={_img_mime}")
                 logger.info(f"[extract_from_file] Calling OpenAI vision API for image extraction...")
 
                 response = await client.chat.completions.create(
@@ -2620,6 +2762,20 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 logger.error(f"[extract_from_file] Image processing FAILED: {e}")
                 logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
                 return {"error": f"Image processing error: {str(e)}"}
+
+        elif kind == 'word':
+            logger.info(f"[extract_from_file] Detected file type: WORD/document")
+            text_content = _extract_docx_text(file_path)
+            if not text_content:
+                return {"error": "Could not read text from this document — needs manual review",
+                        "unsupported_filetype": True, "products": []}
+            # sets text_content → falls through to the shared extract_offer call below
+
+        elif kind == 'unknown':
+            logger.warning(f"[extract_from_file] UNSUPPORTED file type "
+                           f"(content_type={content_type!r}, name={os.path.basename(file_path)!r})")
+            return {"error": "Unsupported file type — needs manual review",
+                    "unsupported_filetype": True, "products": []}
 
         else:
             logger.info(f"[extract_from_file] Detected file type: TEXT (content_type={content_type!r})")
