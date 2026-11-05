@@ -80,6 +80,67 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/download-saved")
+async def download_saved(pattern: str):
+    """Download a saved offer file (from durable storage) by name substring, so
+    the exact bytes the extractor processed can be inspected locally."""
+    import os, glob
+    from fastapi.responses import FileResponse
+    from core.file_store import _dir
+    if not pattern or len(pattern) < 3:
+        return {"error": "pattern too short (min 3 chars)"}
+    d = _dir()
+    matches = sorted(f for f in glob.glob(os.path.join(d, "*"))
+                     if pattern.lower() in os.path.basename(f).lower())
+    if not matches:
+        return {"error": "no saved file matches", "pattern": pattern, "dir": d,
+                "available": [os.path.basename(f) for f in glob.glob(os.path.join(d, "*"))][:50]}
+    path = matches[0]
+    return FileResponse(path, filename=os.path.basename(path),
+                        media_type="application/octet-stream")
+
+
+@router.get("/debug/inspect-saved-xlsx")
+async def inspect_saved_xlsx(pattern: str, rows: int = 45):
+    """Read a saved XLSX exactly as the extractor sees it (pandas) AND with
+    openpyxl number formats, so percent cells (40% kept as 0.4), dates, and the
+    real price/units columns are visible. Read-only diagnosis."""
+    import os, glob
+    from core.file_store import _dir
+    if not pattern or len(pattern) < 3:
+        return {"error": "pattern too short (min 3 chars)"}
+    d = _dir()
+    matches = sorted(f for f in glob.glob(os.path.join(d, "*"))
+                     if pattern.lower() in os.path.basename(f).lower())
+    if not matches:
+        return {"error": "no saved file matches", "pattern": pattern,
+                "available": [os.path.basename(f) for f in glob.glob(os.path.join(d, "*"))][:50]}
+    path = matches[0]
+    out = {"file": os.path.basename(path)}
+    try:
+        import pandas as pd
+        xls = pd.ExcelFile(path)
+        out["sheet_names"] = xls.sheet_names
+        df = pd.read_excel(path, sheet_name=xls.sheet_names[0], header=None, dtype=object)
+        out["pandas_shape"] = list(df.shape)
+        out["pandas_rows"] = [[("" if pd.isna(v) else str(v)) for v in row]
+                              for row in df.head(rows).values.tolist()]
+    except Exception as e:
+        out["pandas_error"] = str(e)
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        cells = []
+        for r in ws.iter_rows(min_row=1, max_row=rows):
+            cells.append([{"v": (c.value.isoformat() if hasattr(c.value, "isoformat") else c.value),
+                           "fmt": c.number_format} for c in r])
+        out["openpyxl_cells"] = cells
+    except Exception as e:
+        out["openpyxl_error"] = str(e)
+    return out
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are
