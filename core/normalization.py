@@ -132,6 +132,36 @@ def clean_product_key(key: str | None) -> str:
     return k
 
 
+def reconcile_error_flags(flags, *, price_per_case=None, units_per_case=None):
+    """Drop stale / contradictory notes whose condition no longer holds after
+    corrections (client §5 — "regenerate or remove stale notes").
+
+    - "price_per_unit calculated from price_per_case / units_per_case" is FALSE
+      when either the case price or the case pack is absent — the per-unit price
+      could not have been derived from them (Edo: both null, note was a leftover
+      from the earlier units_per_case=112 packaging bug).
+    - "price ambiguous — assumed per case" is FALSE when there is no case price,
+      or when a "Price on request" note is also present — a no-price offer
+      cannot also carry a price "assumed per case" (Jack Daniel's & Coca-Cola).
+    """
+    if not isinstance(flags, list):
+        return flags
+    ppc_missing = price_per_case in (None, "", 0, 0.0)
+    upc_missing = units_per_case in (None, "", 0, 0.0)
+    por_present = any(isinstance(f, str) and "Price on request" in f for f in flags)
+
+    def _keep(f):
+        if not isinstance(f, str):
+            return True
+        if "calculated from price_per_case" in f and (ppc_missing or upc_missing):
+            return False
+        if "price ambiguous" in f and (ppc_missing or por_present):
+            return False
+        return True
+
+    return [f for f in flags if _keep(f)]
+
+
 def build_product_key(brand: str | None, product_name: str | None,
                       unit_volume_ml=None, units_per_case=None) -> str:
     """Deterministic product identity key: BRAND_NAME_<size>ML_<pack>.

@@ -86,6 +86,16 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
             offer_dict["supplier_name"] = _canonical_supplier_name(
                 db, offer_dict.get("supplier_name"))
 
+            # client §5 — drop stale / contradictory notes that no longer hold
+            # (e.g. "calculated from price_per_case/units_per_case" when neither
+            # is populated; "price ambiguous" alongside "Price on request").
+            _ef = offer_dict.get("error_flags")
+            if isinstance(_ef, list):
+                from core.normalization import reconcile_error_flags
+                offer_dict["error_flags"] = reconcile_error_flags(
+                    _ef, price_per_case=offer_dict.get("price_per_case"),
+                    units_per_case=offer_dict.get("units_per_case"))
+
             source_filename = offer_dict.get("source_filename") or None
             if source_filename:
                 duplicate = db.query(SourceFileDB).filter(
@@ -339,6 +349,12 @@ def _detect_dropped_alt_locations(safe_data: dict) -> None:
     # Keep only the parts that LOOK like a location token (letters, spaces,
     # dashes; no digits; short-to-medium length).
     locs = [p for p in parts if _LOC_TOKEN_RE.match(p)]
+    # client §5 — a token that itself begins with an incoterm ("DAP Riga") is a
+    # SEPARATE delivery option that lands as its own row via the multi-incoterm
+    # split (Edo: EXW Germany + DAP Riga), NOT a dropped alternative of THIS
+    # row. Excluding it stops the false "only X persisted — re-ingest to recover
+    # alternatives" note when both options are in fact present as sibling rows.
+    locs = [p for p in locs if not _INCOTERM_RE.match(p.strip())]
     if len(locs) < 2:
         return
     # Case-fold match so "LOENDERSLOOT" and "Loendersloot" count as the

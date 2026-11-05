@@ -1520,13 +1520,25 @@ def renormalize_identity(
 
     Dry-run by default. Returns up to 40 before/after samples. Safe to re-run.
     """
-    from core.normalization import depollute_identity, build_product_key
+    from core.normalization import depollute_identity, build_product_key, reconcile_error_flags
+    import json as _json
     rows = db.query(OfferItemDB).all()
+
+    # client §5 — a "re-ingest to recover alternatives" note is FALSE once the
+    # alternative delivery option is present as a sibling row. Group by
+    # supplier+product+quantity and record every distinct (incoterm, location);
+    # a group with ≥2 distinct combos already carries its alternatives.
+    sib = {}
+    for r in rows:
+        k = ((r.supplier_name or "").lower(), (r.product_name or "").lower(),
+             r.quantity_case)
+        sib.setdefault(k, set()).add(((r.incoterm or "").upper(), (r.location or "").lower()))
+
     changes = []
     for r in rows:
         before = {"product_name": r.product_name, "brand": r.brand,
                   "product_key": r.product_key, "packaging": r.packaging,
-                  "label_language": r.label_language}
+                  "label_language": r.label_language, "error_flags": r.error_flags}
         b2, p2 = depollute_identity(r.brand, r.product_name)
         new_key = build_product_key(b2, p2, r.unit_volume_ml, r.units_per_case)
         new_pkg = r.packaging
@@ -1536,8 +1548,25 @@ def renormalize_identity(
         new_label = r.label_language
         if clear_default_label and (r.label_language or "").strip().upper() == "EN":
             new_label = None
+        # error_flags: reconcile price notes, then drop a stale "recover
+        # alternatives" note when the group already has ≥2 incoterm/locations.
+        new_flags_json = r.error_flags
+        try:
+            _flags = _json.loads(r.error_flags) if r.error_flags else []
+        except Exception:
+            _flags = []
+        if isinstance(_flags, list):
+            _flags = reconcile_error_flags(_flags, price_per_case=r.price_per_case,
+                                           units_per_case=r.units_per_case)
+            k = ((r.supplier_name or "").lower(), (r.product_name or "").lower(),
+                 r.quantity_case)
+            if len(sib.get(k, set())) >= 2:
+                _flags = [f for f in _flags if not (isinstance(f, str)
+                          and "recover alternatives" in f)]
+            new_flags_json = _json.dumps(_flags)
         after = {"product_name": p2, "brand": b2, "product_key": new_key,
-                 "packaging": new_pkg, "label_language": new_label}
+                 "packaging": new_pkg, "label_language": new_label,
+                 "error_flags": new_flags_json}
         if after != before:
             changes.append({"uid": r.uid, "before": before, "after": after})
             if apply:
@@ -1546,6 +1575,7 @@ def renormalize_identity(
                 r.product_key = new_key
                 r.packaging = new_pkg
                 r.label_language = new_label
+                r.error_flags = new_flags_json
     if apply:
         db.commit()
     return {"applied": apply, "rows_scanned": len(rows),
