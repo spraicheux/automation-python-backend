@@ -990,8 +990,15 @@ async def extract_offer(text: str) -> dict:
 
     # Detect explicit per-product markers in the body (not header)
     import re as _re_block
+    # Matches "Supplier reference: A01", "SKU-123", and vendor reference lines
+    # like "ELIXEMARKET REF · 2026-01971" / "REF # 2026-02006" — an optional
+    # leading word (the vendor), the REF/Reference/SKU token, a separator
+    # (: - · # .), then a code. The · separator and leading word are what the
+    # old pattern missed, so ElixeMarket's 8 blocks were never isolated.
     _BLOCK_MARKER_RE = _re_block.compile(
-        r'(?mi)^\s*(?:Supplier\s+reference|Reference|Ref|Ref\s*No|SKU|P\.?Code)\s*[:\-]\s*\S+'
+        r'(?mi)^[>\s]*(?:[A-Za-z][\w&]*\s+){0,2}'
+        r'(?:Supplier\s+reference|Reference|Ref\s*No|Ref|SKU|P\.?Code|Item)'
+        r'\s*[:\-·#.]\s*[A-Za-z0-9]\S*'
     )
     marker_positions = [m.start() for m in _BLOCK_MARKER_RE.finditer(body_text)]
 
@@ -1003,20 +1010,15 @@ async def extract_offer(text: str) -> dict:
         boundaries = marker_positions + [len(body_text)]
         blocks = [body_text[boundaries[i]:boundaries[i + 1]]
                   for i in range(len(boundaries) - 1)]
-        # Pack blocks into chunks so no chunk exceeds ~LINES_PER_CHUNK lines.
-        current_blocks: list[str] = []
-        current_lines = 0
+        # ONE product block per chunk. Packing several blocks into a chunk let
+        # the LLM borrow a price/quantity/incoterm from a neighbour when a block
+        # omitted one (Samuel ElixeMarket: Havana had only a quantity, Aperol
+        # only a price → everything shifted). One block per call makes each
+        # product self-contained, so a missing field stays null. Calls run in
+        # parallel (asyncio.gather below), so this is not slower in wall-clock.
         for blk in blocks:
-            blk_lines = blk.count('\n') + 1
-            if current_blocks and current_lines + blk_lines > LINES_PER_CHUNK:
-                text_chunks.append(header_block + ''.join(current_blocks))
-                chunk_block_counts.append(len(current_blocks))
-                current_blocks, current_lines = [], 0
-            current_blocks.append(blk)
-            current_lines += blk_lines
-        if current_blocks:
-            text_chunks.append(header_block + ''.join(current_blocks))
-            chunk_block_counts.append(len(current_blocks))
+            text_chunks.append(header_block + blk)
+            chunk_block_counts.append(1)
         logger.info(
             f"[extract_offer] BLOCK-AWARE chunking: {len(marker_positions)} "
             f"product markers → {len(text_chunks)} chunk(s), "
