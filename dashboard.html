@@ -540,7 +540,7 @@
               <th>Supplier</th>
               <th class="sortable" data-sort="quantity_case_desc">Qty</th>
               <th class="sortable" data-sort="price_per_unit_eur_asc" style="text-align:right;">€/Unit</th>
-              <th style="text-align:right;" title="Historical low €/Unit within selected window (same brand, product, volume, pack, incoterm)"><span id="th-low">12M Low</span></th>
+              <th style="text-align:right;" title="Lowest €/Unit across ALL suppliers in the same peer group — same brand, product, size, case pack, incoterm, location and customs status (T1/T2) — within the selected window. Non-EUR prices are converted with the FX rate/date/source shown on each offer."><span id="th-low">12M Low</span></th>
               <th style="text-align:right;" title="% delta vs the low above"><span id="th-delta">Δ 12M Low</span></th>
               <th class="sortable" data-sort="price_per_case_eur_asc" style="text-align:right;">€/Case</th>
               <th>Incoterm</th>
@@ -1454,9 +1454,16 @@
     const obs = Array.isArray(p.obs) ? p.obs : [];
     const selfMs = Date.parse(item.offer_date || item.created_at || '');
     const effMs = (o) => Date.parse(o && o.date ? o.date : '');
+    // client §7 — anchor the window to THIS offer's date on BOTH bounds: a
+    // prior observation must be dated before this offer (never a future
+    // sibling) AND within `window` days BEFORE it, so a historical offer is
+    // compared against its own 12-month window, not one anchored to today.
+    const _wd = {'1M':30,'3M':90,'6M':180,'12M':365,'24M':730,'ALL':null}[benchmarkWindow];
+    const windowMs = _wd == null ? null : _wd * 86400000;
     const prior = obs.filter(o =>
         o.uid !== item.uid && !Number.isNaN(effMs(o)) &&
-        !Number.isNaN(selfMs) && effMs(o) < selfMs);
+        !Number.isNaN(selfMs) && effMs(o) < selfMs &&
+        (windowMs == null || effMs(o) >= selfMs - windowMs));
     const priorSamples = prior.length;
     let priorLowEur = null, priorLowUid = null, priorAvgEur = null;
     if (priorSamples >= 1) {
@@ -2448,6 +2455,7 @@
             ${kv('Customs status (T1/T2)', i.custom_status ? statusBadge(i.custom_status) : null, true)}
             ${kv('FX rate', i.fx_rate, true)}
             ${kv('FX date', i.fx_date)}
+            ${kv('FX source', i.fx_source)}
           </div>
           ${(i.product_name_raw || i.brand_raw) ? `
           <div style="margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted);">

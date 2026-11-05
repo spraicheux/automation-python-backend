@@ -160,6 +160,10 @@ _WINDOW_DAYS = {"1M": 30, "3M": 90, "6M": 182, "12M": 365, "24M": 730, "ALL": No
 @router.get("/benchmarks")
 async def get_benchmarks(
     window: str = Query("12M", description="Time window: 1M | 3M | 6M | 12M | 24M | ALL"),
+    as_of: Optional[str] = Query(None, description="Anchor the window to this ISO "
+        "date (offer being examined) instead of today; offers AFTER it are "
+        "excluded. Client §7 — a historical offer's benchmark must reflect what "
+        "was known at its own date, not future offers."),
     db: Session = Depends(get_db),
 ):
     """
@@ -184,7 +188,19 @@ async def get_benchmarks(
     """
     window = window.upper() if window else "12M"
     days = _WINDOW_DAYS.get(window, 365)
-    cutoff = datetime.utcnow() - timedelta(days=days) if days else None
+    # client §7 — anchor the window to the examined offer's date when as_of is
+    # given, else to today. The window is [anchor - days, anchor]; offers made
+    # AFTER the anchor are excluded so a historical offer is compared only
+    # against what existed at or before its own date.
+    anchor = datetime.utcnow()
+    if as_of:
+        for _fmt in (None,):  # fromisoformat handles date and datetime
+            try:
+                anchor = datetime.fromisoformat(str(as_of)[:19])
+                break
+            except Exception:
+                anchor = datetime.utcnow()
+    cutoff = anchor - timedelta(days=days) if days else None
 
     q = (db.query(OfferItemDB)
          .filter(OfferItemDB.price_per_unit_eur.isnot(None))
@@ -209,6 +225,9 @@ async def get_benchmarks(
          # excluded above — those are data-trust filters, not recency.
     if cutoff:
         q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) >= cutoff)
+    if as_of:
+        # Exclude offers made AFTER the examined offer's date (client §7).
+        q = q.filter(func.coalesce(OfferItemDB.offer_date, OfferItemDB.created_at) <= anchor)
 
     rows = q.all()
     peers = {}
@@ -306,6 +325,10 @@ async def get_benchmarks(
         "window": window,
         "window_days": days,
         "since": cutoff.isoformat() if cutoff else None,
+        # client §7 — the date the window is anchored to (the examined offer's
+        # date when as_of was given, else today) so the scope is traceable.
+        "anchored_to": anchor.isoformat(),
+        "as_of": as_of or None,
         "peers": out,
         "peer_count": len(out),
     }
