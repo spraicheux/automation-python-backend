@@ -1401,11 +1401,9 @@
     for (const s of sources) {
       const name = s.source_filename || s.sender_name || s.supplier_name || '(unnamed)';
       const date = s.created_at ? new Date(s.created_at).toLocaleDateString('en-GB') : '';
-      const _exp = s.expected_row_count, _imp = s.imported_row_count ?? s.product_count ?? 0;
-      const _incomplete = s.import_incomplete;
-      const _rowInfo = _exp != null
-        ? `<span class="source-row-counts ${_incomplete ? 'incomplete' : ''}" title="${_imp} imported / ${_exp} expected${_incomplete ? ' — incomplete import' : ''}">${_imp}/${_exp}${_incomplete ? ' ⚠' : ''}</span>`
-        : `<span class="source-badge">${_imp}</span>`;
+      const _imp = s.imported_row_count ?? s.product_count ?? 0;
+      // Plain product count only — the "imported/expected ⚠" badge was removed.
+      const _rowInfo = `<span class="source-badge">${_imp}</span>`;
       html += `<div class="source-item ${s.id === activeSourceId ? 'active' : ''}" onclick="selectSource('${s.id}', '${escapeAttr(name)}')">
         <div class="source-item-name">${escapeHtml(name)}</div>
         <div class="source-item-meta"><span>${date}</span>${_rowInfo}</div>
