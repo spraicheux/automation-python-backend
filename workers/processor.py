@@ -250,7 +250,7 @@ def _backfill_customs_from_text(safe_data: dict) -> None:
         safe_data["product_name"] = _strip_customs_token(name)
 
 
-_INCOTERM_RE = re.compile(r"\b(EXW|DAP|DDP|FOB|CIF|CFR|CPT|FCA|DAT|FAS|EXWORK)\b", re.IGNORECASE)
+_INCOTERM_RE = re.compile(r"\b(EXW|DAP|DDP|FOB|CIF|CFR|CNF|CPT|FCA|DAT|DPU|FAS|CIP|EXWORK)\b", re.IGNORECASE)
 _LOC_SPLIT_RE = re.compile(r"\s*(?:/|,|\bor\b|\band\b|&)\s*", re.IGNORECASE)
 _LOC_TOKEN_RE = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' .\-]{1,30}$")
 
@@ -437,6 +437,18 @@ def _resolve_supplier_name(ai_name, payload) -> str:
         return str(pname)
     if ai_name not in _missing and not _is_placeholder_supplier(ai_name, src):
         return str(ai_name)
+    # Fallback: derive the supplier from the message body / subject at PROCESS
+    # time. Covers (a) reprocessed jobs whose saved payload predates improved
+    # detection, and (b) forwarded emails where the original supplier sits in
+    # the body ("De: FBC Trades <…>") — distinct from the person forwarding.
+    try:
+        from core.ingest_service import detect_supplier_from_text
+        derived = detect_supplier_from_text(getattr(payload, 'text_body', None),
+                                            getattr(payload, 'subject', None))
+        if derived and not _is_placeholder_supplier(derived, src):
+            return str(derived)
+    except Exception:
+        pass
     return "Not Found"
 
 

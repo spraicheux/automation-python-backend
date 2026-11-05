@@ -76,19 +76,27 @@ def was_delivered(job_id: str) -> bool:
 # filename, or the attachment. If nothing matches, supplier is None (no
 # fallback), exactly as the Make scenario produced it.
 
-_SUPPLIER_LINE = re.compile(r'^\s*supplier\s*:\s*(.+)$', re.IGNORECASE)
+_SUPPLIER_LINE = re.compile(r'^[>\s]*supplier\s*:\s*(.+)$', re.IGNORECASE)
 _SUPPLIER_PATTERNS = [
     re.compile(r'\boffer\s+from\s+(.+)$', re.IGNORECASE),
     re.compile(r'\boffre\s+de\s+(.+)$', re.IGNORECASE),
     re.compile(r'\boffree\s+de\s+(.+)$', re.IGNORECASE),
-    re.compile(r'^\s*from\s*:\s*(.+)$', re.IGNORECASE),
+    # Forwarded-email headers inside the body — "From:" (EN), "De:" (FR),
+    # "Von:" (DE). A leading ">" quote marker is common on a forward. The
+    # original supplier lives here, distinct from the person forwarding.
+    re.compile(r'^[>\s]*from\s*:\s*(.+)$', re.IGNORECASE),
+    re.compile(r'^[>\s]*de\s*:\s*(.+)$', re.IGNORECASE),
+    re.compile(r'^[>\s]*von\s*:\s*(.+)$', re.IGNORECASE),
 ]
 
 
 def _clean_supplier(name: str) -> Optional[str]:
     name = (name or "").strip().strip('"\'')
+    # "FBC Trades <connect@mail.fbctradeholdings.com>" → "FBC Trades": keep the
+    # display name, drop the <email>. A bare "<email>" (no name) becomes "".
+    name = re.sub(r'<[^>]*>', '', name).strip().strip('"\'')
     name = re.sub(r'[\.,;:]+$', '', name).strip()
-    # Reject an email address or an obviously-not-a-name capture.
+    # Reject a left-over email address or an obviously-not-a-name capture.
     if not name or "@" in name or len(name) > 120:
         return None
     return name
