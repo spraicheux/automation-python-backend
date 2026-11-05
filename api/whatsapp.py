@@ -214,7 +214,35 @@ async def whatsapp_inbound(
                 skipped += 1
                 logger.info(f"wa {plan['wamid']}: already seen — skipped (retry)")
                 continue
-            res = enqueue_offer(**plan["kwargs"])
+
+            kwargs = plan["kwargs"]
+            # Download the 360dialog media NOW and persist it, so it's never lost
+            # and survives the media's expiry. Also lets us content-hash dedup.
+            _atts = kwargs.get("attachments") or []
+            if _atts and (_atts[0].get("data") or {}).get("id"):
+                try:
+                    import hashlib as _h
+                    from schemas.ingest import Attachment
+                    from core.file_download import resolve_attachment_bytes
+                    from core.file_store import save_file
+                    from core.ingest_service import file_attachment
+                    _att = _atts[0]
+                    _data = await resolve_attachment_bytes(Attachment(**_att))
+                    if _data:
+                        _path = save_file(_att["fileName"], _data)
+                        if _path:
+                            _ck = _h.sha256(_data).hexdigest()
+                            kwargs["attachments"] = [file_attachment(
+                                _att["fileName"], _att["contentType"], _path,
+                                len(_data), checksum=_ck)]
+                            kwargs["content_hash"] = _ck
+                            kwargs["check_content_hash"] = True
+                            logger.info(f"wa {plan['wamid']}: media saved ({len(_data)} bytes) {_path}")
+                except Exception as _dl_exc:
+                    logger.warning(f"wa {plan['wamid']}: media pre-download failed, "
+                                   f"deferring to lazy fetch: {_dl_exc}")
+
+            res = enqueue_offer(**kwargs)
             enqueued += 1
             logger.info(f"wa {plan['wamid']} from {plan['sender']}: enqueued job "
                         f"{res['job_id']} ({plan['kwargs']['source_filename']})")

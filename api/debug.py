@@ -80,6 +80,54 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/reprocess")
+async def reprocess(job_id: str, force: bool = False):
+    """Re-run a job from its saved payload/file (nothing re-sent). Without force,
+    dedup applies (an already-ingested file is refused as duplicate); force=true
+    re-runs regardless. Only works for jobs created after file-storage shipped."""
+    from core.job_store import load_job_payload, save_job_payload
+    payload = load_job_payload(job_id)
+    if not payload:
+        return {"error": "no saved payload for this job_id (expired, or predates file storage)",
+                "job_id": job_id}
+    import uuid
+    from workers.celery_tasks import process_document_task
+    from core.intake_log import record_intake
+    if force:
+        new_job = str(uuid.uuid4())
+        redis_manager.set_job_status(new_job, "processing")
+        record_intake(new_job, channel=payload.get("source_channel"),
+                      source_filename=payload.get("source_filename"),
+                      sender_name=payload.get("sender_name"),
+                      sender_email=payload.get("sender_email"),
+                      supplier_name=payload.get("supplier_name"),
+                      attachment_count=len(payload.get("attachments") or []),
+                      has_text=bool(payload.get("text_body")), status="queued")
+        save_job_payload(new_job, payload)
+        process_document_task.delay(new_job, payload)
+        return {"reprocessing": True, "forced": True, "old_job_id": job_id, "new_job_id": new_job}
+    # Dedup-respecting path
+    from core.ingest_service import enqueue_offer, DuplicateIngest
+    try:
+        res = enqueue_offer(
+            source_channel=payload.get("source_channel"),
+            source_message_id=payload.get("source_message_id"),
+            source_filename=payload.get("source_filename"),
+            supplier_email=payload.get("supplier_email"),
+            supplier_name=payload.get("supplier_name"),
+            sender_email=payload.get("sender_email"),
+            sender_name=payload.get("sender_name"),
+            subject=payload.get("subject"),
+            text_body=payload.get("text_body"),
+            attachments=payload.get("attachments") or [],
+            content_hash=payload.get("content_hash"),
+            check_content_hash=bool(payload.get("content_hash")),
+        )
+        return {"reprocessing": True, "old_job_id": job_id, **res}
+    except DuplicateIngest as e:
+        return {"skipped": "already ingested", "detail": e.detail}
+
+
 @router.get("/debug/intake-clear")
 async def intake_clear(status: str = "", filename: str = "", all: bool = False):
     """Remove entries from the live Intake feed — e.g. stale 'processing' /

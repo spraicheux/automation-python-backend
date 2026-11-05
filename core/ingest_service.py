@@ -196,6 +196,21 @@ def media_attachment(file_name: str, content_type: Optional[str], media_id: str,
     }
 
 
+def file_attachment(file_name: str, content_type: Optional[str], path: str,
+                    file_size: int = 0, checksum: str = "") -> Dict[str, Any]:
+    """An attachment whose bytes live in durable server storage (core.file_store).
+    The job carries only the path, so payloads stay tiny and the file survives
+    restarts / deploys / credit outages and can be retried anytime."""
+    return {
+        "fileName": file_name,
+        "contentType": content_type or "application/octet-stream",
+        "checksum": checksum or "",
+        "contentId": None,
+        "fileSize": file_size,
+        "data": {"path": path},
+    }
+
+
 # ─── the single enqueue path ──────────────────────────────────────────────────
 
 def enqueue_offer(*, source_channel: Optional[str] = None,
@@ -251,6 +266,14 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
     IngestRequest(**payload_dict)
 
     redis_manager.set_job_status(job_id, "processing")
+
+    # Remember the payload (tiny now — it references saved files) so the job can
+    # be re-queued later: credit-resume, /reprocess, or after any failure.
+    try:
+        from core.job_store import save_job_payload
+        save_job_payload(job_id, payload_dict)
+    except Exception as e:
+        logger.warning(f"save_job_payload failed for {job_id}: {e}")
 
     # Instant, dashboard-visible intake record (received → processing → done/failed).
     try:

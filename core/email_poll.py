@@ -26,7 +26,8 @@ from typing import Any, Dict
 
 from core.redis_client import redis_manager
 from core.intake_log import record_intake, update_intake
-from core.ingest_service import (enqueue_offer, buffer_attachment,
+from core.file_store import save_file
+from core.ingest_service import (enqueue_offer, buffer_attachment, file_attachment,
                                  detect_supplier_from_text, DuplicateIngest)
 
 logger = logging.getLogger(__name__)
@@ -74,8 +75,19 @@ def run_email_poll() -> Dict[str, Any]:
         try:
             supplier = detect_supplier_from_text(body, subject)  # text only, never sender
             if atts:
-                built = [buffer_attachment(a["fileName"], a["contentType"], a["bytes"])
-                         for a in atts]
+                # Persist each attachment to durable storage and reference it,
+                # so nothing is lost and the job can be retried. Fall back to an
+                # inline Buffer if the save fails.
+                built = []
+                for a in atts:
+                    _p = save_file(a["fileName"], a["bytes"])
+                    if _p:
+                        import hashlib as _h
+                        built.append(file_attachment(
+                            a["fileName"], a["contentType"], _p, len(a["bytes"]),
+                            checksum=_h.sha256(a["bytes"]).hexdigest()))
+                    else:
+                        built.append(buffer_attachment(a["fileName"], a["contentType"], a["bytes"]))
                 content_hash = hashlib.sha256(atts[0]["bytes"]).hexdigest()
                 res = enqueue_offer(
                     source_channel="email", source_message_id=msg_id,

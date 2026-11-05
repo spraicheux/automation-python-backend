@@ -151,6 +151,33 @@ class TestSupplierDetection:
         assert detect_supplier_from_text("From: john@gmail.com") is None
 
 
+class TestFileStorage:
+    def test_save_load_and_resolve_from_path(self, tmp_path, monkeypatch):
+        import asyncio
+        monkeypatch.setenv("OFFER_FILE_DIR", str(tmp_path))
+        from core.file_store import save_file, load_file, file_exists
+        from core.ingest_service import file_attachment
+        from core.file_download import resolve_attachment_bytes
+        from schemas.ingest import Attachment
+
+        p = save_file("offer.xlsx", b"durable-bytes")
+        assert p and file_exists(p)
+        assert load_file(p) == b"durable-bytes"
+        att = file_attachment("offer.xlsx", "application/x", p, 13)
+        assert att["data"] == {"path": p}
+        data = asyncio.run(resolve_attachment_bytes(Attachment(**att)))
+        assert data == b"durable-bytes"   # job references the file, not the bytes
+
+    def test_missing_saved_file_raises(self, monkeypatch):
+        import asyncio
+        from core.ingest_service import file_attachment
+        from core.file_download import resolve_attachment_bytes
+        from schemas.ingest import Attachment
+        att = file_attachment("x.pdf", "application/pdf", "/no/such/file.pdf", 0)
+        with pytest.raises(Exception):
+            asyncio.run(resolve_attachment_bytes(Attachment(**att)))
+
+
 class TestIntakeLog:
     def test_record_update_list_noop_without_redis(self, monkeypatch):
         # With no redis, all three are safe no-ops (never raise).

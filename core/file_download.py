@@ -30,6 +30,18 @@ async def resolve_attachment_bytes(attachment: Attachment) -> bytes:
         logger.info(f"Buffer size: {len(data)} bytes")
         return data
 
+    # Durable server-saved file (persisted on arrival) — used for retries,
+    # credit-resume, and so WhatsApp media survives 360dialog expiry.
+    if attachment.data.get("path"):
+        from core.file_store import load_file
+        _p = attachment.data["path"]
+        _bytes = load_file(_p)
+        if _bytes:
+            logger.info(f"Loaded saved offer file {_p} ({len(_bytes)} bytes)")
+            return _bytes
+        logger.error(f"Saved offer file missing: {_p}")
+        raise RuntimeError(f"saved offer file not found: {_p}")
+
     # 2️⃣ 360dialog-backed WhatsApp media download requires the API key.
     if not D360_API_KEY:
         logger.error("D360_API_KEY is NOT set — needed for WhatsApp media lookup")
