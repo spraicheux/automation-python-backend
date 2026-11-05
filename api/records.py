@@ -387,7 +387,9 @@ async def get_records(
                 # (price history) and must both show — otherwise the table (30)
                 # under-counts the stored rows (31) and disagrees with the
                 # sidebar (client §3: QA01 vs QA02 collapsed).
-                func.coalesce(OfferItemDB.offer_date, ''),
+                # offer_date is a DateTime column — no coalesce('') (type
+                # mismatch). PARTITION BY already groups NULLs together.
+                OfferItemDB.offer_date,
                 func.coalesce(OfferItemDB.quantity_bottles, 0),
                 func.coalesce(OfferItemDB.quantity_pallets, 0),
             ),
