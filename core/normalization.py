@@ -132,6 +132,50 @@ def clean_product_key(key: str | None) -> str:
     return k
 
 
+def build_product_key(brand: str | None, product_name: str | None,
+                      unit_volume_ml=None, units_per_case=None) -> str:
+    """Deterministic product identity key: BRAND_NAME_<size>ML_<pack>.
+
+    Built the SAME way for every ingest path (structured XLSX and free-text
+    LLM) so the key never depends on what the model happened to emit. Rules
+    the client flagged (§4):
+      • Brand is ALWAYS included, so a bare "VSOP" from one brand can never
+        group with another brand's VSOP (Martell vs Rémy vs Hennessy).
+      • The pack token is units_per_case (bottles per case) ONLY — never
+        cases_per_pallet. A logistics value like "112 cases/pallet" must not
+        enter identity ("112CS" on the Edo Johnnie Walker key).
+      • Size / pack are omitted when unknown rather than faked, so an unknown
+        pack simply yields a shorter key, not a wrong one.
+    Customs / refillable tokens (T1/T2, RF/NRF) are stripped by
+    clean_product_key afterwards.
+    """
+    b = (brand or "").strip()
+    p = (product_name or "").strip()
+    parts: list[str] = []
+    if b and b.lower() != "not found":
+        parts.append(b)
+    if p and p.lower() != "not found" and p.lower() != b.lower():
+        parts.append(p)
+    if not parts:
+        parts.append(p or b or "UNKNOWN")
+    try:
+        vol = float(unit_volume_ml) if unit_volume_ml not in (None, "", "Not Found") else None
+    except (TypeError, ValueError):
+        vol = None
+    if vol and vol > 0:
+        parts.append(f"{int(vol)}ML" if vol == int(vol) else f"{vol}ML")
+    try:
+        upc = float(units_per_case) if units_per_case not in (None, "", "Not Found") else None
+    except (TypeError, ValueError):
+        upc = None
+    if upc and upc > 1:  # a pack of 1 (loose) adds nothing to identity
+        parts.append(f"{int(upc)}" if upc == int(upc) else f"{upc}")
+    raw = "_".join(parts)
+    key = re.sub(r"[ /&.]+", "_", raw)
+    key = re.sub(r"_+", "_", key).strip("_").upper()
+    return clean_product_key(key)
+
+
 def depollute_identity(brand: str | None, product_name: str | None):
     """Strip category descriptors from brand/name and replace a name that is
     only a category word with the brand, so one product keeps one identity.
@@ -141,7 +185,13 @@ def depollute_identity(brand: str | None, product_name: str | None):
     the UI fall back to the product_key. Returns (brand, product_name)."""
     b_in, p_in = (brand or ""), (product_name or "")
     b = _strip_category_prefix(b_in).strip()
-    p = p_in
+    # client §4 — trade tokens (customs T1/T2, refillable RF/NRF, gift-box
+    # GBX/NGBX) belong in custom_status / refillable_status / gift_box, NOT in
+    # the product description. Strip them from the name (and brand) so a
+    # Jim Beam row never reads "White RF T1" and a Rémy VSOP never reads
+    # "VSOP GBX". They are preserved in their own structured fields upstream.
+    b = _strip_trade_tokens(b)
+    p = _strip_trade_tokens(p_in)
     # A name that is blank, "Not Found", only a category descriptor, or only a
     # pack/size token (e.g. "12x", "6x70cl", "12x1L" — the case prefix captured
     # as the name) is not a usable product name → fall back to the brand.
@@ -151,6 +201,20 @@ def depollute_identity(brand: str | None, product_name: str | None):
         p = b or b_in
     p = _strip_category_prefix(p).strip()
     return (b or b_in or brand), (p or b or p_in or product_name)
+
+
+# Trade tokens that leak into product_name/brand from free-text offers. Matched
+# as whole tokens, case-insensitive: customs T1/T2, refillable RF/NRF, gift-box
+# GBX/NGBX. Kept narrow so a real word is never clipped.
+_TRADE_TOKEN_RE = re.compile(r'(?i)(?<![A-Za-z0-9])(?:T[12]|N?RF|N?GBX)(?![A-Za-z0-9])')
+
+
+def _strip_trade_tokens(s: str | None) -> str:
+    if not s:
+        return s or ""
+    out = _TRADE_TOKEN_RE.sub(' ', str(s))
+    out = re.sub(r'\s{2,}', ' ', out).strip(" ,-")
+    return out.strip()
 
 
 # A product name that is nothing but a pack/size token: "12x", "6 x", "12x70cl",

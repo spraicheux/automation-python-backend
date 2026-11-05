@@ -1304,7 +1304,9 @@ def _apply_offer_defaults(data: dict) -> dict:
         'source_channel': "",
         'source_message_id': "",
         'source_filename': "",
-        'label_language': "EN",
+        # client §4 — label language must come from the source, never a blanket
+        # "EN" default (every row was reading EN regardless of the document).
+        'label_language': None,
         'processing_version': "1.0.0",  # will be overridden in OfferItem
 
         # optional fields (should become None when missing)
@@ -1578,9 +1580,17 @@ async def process_offer(payload, job_id: str):
 
                     _dp_brand, _dp_name = depollute_identity(
                         merged_data.get('brand'), merged_data.get('product_name'))
+                    # client §4 — rebuild the identity key from the FINAL
+                    # (depolluted) brand/name + size + real pack, so the key
+                    # never carries a stale pre-depollute name, a bare "VSOP"
+                    # (no brand), or a logistics pack like "112CS".
+                    from core.normalization import build_product_key
+                    _pkey = build_product_key(_dp_brand, _dp_name,
+                                              merged_data.get('unit_volume_ml'),
+                                              merged_data.get('units_per_case'))
                     safe_data = {
                         'product_name': _dp_name or "Not Found",
-                        'product_key': merged_data.get('product_key') or "Not Found",
+                        'product_key': _pkey or merged_data.get('product_key') or "Not Found",
                         'brand': _dp_brand or "Not Found",
                         # Phase 3 M2 — raw source-row text threaded through from
                         # core.openai_client.extract_from_file so the customs
@@ -1643,7 +1653,8 @@ async def process_offer(payload, job_id: str):
                         'vintage': merged_data.get('vintage'),
                         'supplier_reference': merged_data.get('supplier_reference'),
                         'ean_code': merged_data.get('ean_code'),
-                        'label_language': merged_data.get('label_language') or "EN",
+                        # client §4 — only when the source stated it (no "EN" default)
+                        'label_language': merged_data.get('label_language') if merged_data.get('label_language') not in (None, '', 'Not Found') else None,
                         'product_reference': merged_data.get('product_reference'),
                         'custom_status': merged_data.get('custom_status') if merged_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                         'supplier_name': merged_data.get('supplier_name'),
@@ -1882,9 +1893,15 @@ async def process_offer(payload, job_id: str):
             try:
                 _dp_brand, _dp_name = depollute_identity(
                     extracted_data.get('brand'), extracted_data.get('product_name'))
+                # client §4 — rebuild identity key from final brand/name + size
+                # + real pack (see batch-path note above).
+                from core.normalization import build_product_key
+                _pkey = build_product_key(_dp_brand, _dp_name,
+                                          extracted_data.get('unit_volume_ml'),
+                                          extracted_data.get('units_per_case'))
                 safe_data = {
                     'product_name': _dp_name or "Not Found",
-                    'product_key': extracted_data.get('product_key') or "Not Found",
+                    'product_key': _pkey or extracted_data.get('product_key') or "Not Found",
                     'brand': _dp_brand or "Not Found",
                     # Phase 3 M2 — raw source-row text (see batch-path note above).
                     '_raw_row_text': extracted_data.get('_raw_row_text'),
@@ -1928,7 +1945,8 @@ async def process_offer(payload, job_id: str):
                     'vintage': extracted_data.get('vintage'),
                     'supplier_reference': extracted_data.get('supplier_reference'),
                     'ean_code': extracted_data.get('ean_code'),
-                    'label_language': extracted_data.get('label_language') or "EN",
+                    # client §4 — only when the source stated it (no "EN" default)
+                    'label_language': extracted_data.get('label_language') if extracted_data.get('label_language') not in (None, '', 'Not Found') else None,
                     'product_reference': extracted_data.get('product_reference'),
                     'custom_status': extracted_data.get('custom_status') if extracted_data.get('custom_status') not in [None, '', 'Not Found'] else None,
                     'supplier_name': extracted_data.get('supplier_name'),

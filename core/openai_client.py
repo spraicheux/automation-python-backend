@@ -2822,6 +2822,31 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
         return {"error": f"General extraction error: {str(e)}"}
 
 
+_RTD_MARKERS = ("ready to drink", "ready-to-drink", "rtd", "premix", "pre-mix",
+                "pre mix", "hard seltzer", "seltzer")
+_RTD_MIXERS = ("coca-cola", "coca cola", "& cola", "and cola", " cola", "coke",
+               "tonic", "soda", "lemonade", "ginger ale", "ginger beer",
+               "spritz", "mojito", "margarita", "pina colada", "cuba libre")
+
+
+def _is_rtd(product_name, alcohol_percent) -> bool:
+    """A ready-to-drink premix: an explicit RTD marker in the name, or a mixer
+    in the name together with a low ABV (≤15%). The ABV gate stops a
+    full-strength spirit from being misread as an RTD."""
+    name = (product_name or "").lower()
+    if not name:
+        return False
+    if any(m in name for m in _RTD_MARKERS):
+        return True
+    try:
+        abv = float(alcohol_percent) if alcohol_percent not in (None, "", "Not Found") else None
+    except (TypeError, ValueError):
+        abv = None
+    if abv is not None and abv <= 15 and any(m in name for m in _RTD_MIXERS):
+        return True
+    return False
+
+
 def clean_product_data(product: dict) -> dict:
     """Clean up product data to ensure it matches schema exactly"""
     # Zero-price retention tag (Samuel case-school B31). The schema-field loop
@@ -2979,16 +3004,32 @@ def clean_product_data(product: dict) -> dict:
             logger.info(f"[clean_product_data] Field '{field}': NOT in product — using default: {default_value!r}")
             cleaned_product[field] = default_value
 
-    if cleaned_product['product_key'] in ["Not Found"] and cleaned_product['product_name'] not in ["Not Found"]:
-        product_key = str(cleaned_product['product_name']).replace(' ', '_').replace('/', '_').replace('&', '_').replace('.', '').upper()
-        logger.info(f"[clean_product_data] product_key was 'Not Found' — auto-generated: {product_key!r}")
-        cleaned_product['product_key'] = product_key
-
-    # Strip customs (T1/T2) and refillable (RF/NRF) tokens from the key — those
-    # belong in custom_status / refillable_status, not the product identity key.
-    if cleaned_product.get('product_key') not in (None, "", "Not Found"):
+    # client §4 — build the product_key DETERMINISTICALLY from brand + name +
+    # size + real pack (units_per_case), identically for every ingest path.
+    # This replaces (a) the name-only auto-gen that produced a bare "VSOP"
+    # (no brand → different brands' VSOP could collide) and (b) blindly
+    # trusting the LLM's key, which embedded "112CS" (cases/pallet, a
+    # logistics value) on the Edo Johnnie Walker row. clean_product_key
+    # (inside build_product_key) strips any T1/T2 / RF/NRF tokens.
+    if cleaned_product['product_name'] not in [None, "", "Not Found"]:
+        from core.normalization import build_product_key
+        cleaned_product['product_key'] = build_product_key(
+            cleaned_product.get('brand'),
+            cleaned_product.get('product_name'),
+            cleaned_product.get('unit_volume_ml'),
+            cleaned_product.get('units_per_case'),
+        )
+    elif cleaned_product.get('product_key') not in (None, "", "Not Found"):
         from core.normalization import clean_product_key
         cleaned_product['product_key'] = clean_product_key(cleaned_product['product_key'])
+
+    # client §4 — an RTD (ready-to-drink premix) must NOT be classified as a
+    # spirit sub-type (e.g. "Jack Daniel's & Coca-Cola 330ml 5%" was filed as
+    # Whisky and entered whisky comparisons). Detect a mixer in the name plus a
+    # low ABV, or an explicit RTD marker, and set sub_category = "RTD". The low
+    # ABV already keeps it out of the full-strength whisky peer group.
+    if _is_rtd(cleaned_product.get('product_name'), cleaned_product.get('alcohol_percent')):
+        cleaned_product['sub_category'] = "RTD"
 
     # Convert any 0 values to None for numeric fields that shouldn't have 0 as a valid value
     numeric_fields_never_zero = [

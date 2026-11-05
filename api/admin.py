@@ -1499,6 +1499,59 @@ def strip_product_name_noise(
     }
 
 
+@router.post("/admin/renormalize-identity", dependencies=[Depends(_require_admin)])
+def renormalize_identity(
+    apply: bool = False,
+    clear_default_label: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Deterministically re-normalise stored rows WITHOUT re-extraction (no
+    OpenAI), for files whose source is no longer in storage. Applies the same
+    rules as the fixed ingest pipeline (client §4):
+
+      • strip trade tokens (T1/T2, RF/NRF, GBX/NGBX) out of product_name/brand
+      • rebuild product_key = BRAND_NAME_<size>ML_<pack> from the FINAL
+        brand/name/size/units_per_case (never cases_per_pallet → kills the
+        "112CS" Edo key; always brand → kills the bare "VSOP" collision)
+      • when units_per_case is unknown, drop a packaging string that falsely
+        claims a pack ("112/case") so the row reads "pack n/a", not "loose"
+      • clear a fabricated label_language = "EN" (blanket default, not from
+        source) when clear_default_label is set
+
+    Dry-run by default. Returns up to 40 before/after samples. Safe to re-run.
+    """
+    from core.normalization import depollute_identity, build_product_key
+    rows = db.query(OfferItemDB).all()
+    changes = []
+    for r in rows:
+        before = {"product_name": r.product_name, "brand": r.brand,
+                  "product_key": r.product_key, "packaging": r.packaging,
+                  "label_language": r.label_language}
+        b2, p2 = depollute_identity(r.brand, r.product_name)
+        new_key = build_product_key(b2, p2, r.unit_volume_ml, r.units_per_case)
+        new_pkg = r.packaging
+        upc = r.units_per_case
+        if (upc in (None, 0, 0.0)) and r.packaging and re.search(r'/\s*case', str(r.packaging), re.I):
+            new_pkg = None  # unknown pack must not masquerade as "N/case"
+        new_label = r.label_language
+        if clear_default_label and (r.label_language or "").strip().upper() == "EN":
+            new_label = None
+        after = {"product_name": p2, "brand": b2, "product_key": new_key,
+                 "packaging": new_pkg, "label_language": new_label}
+        if after != before:
+            changes.append({"uid": r.uid, "before": before, "after": after})
+            if apply:
+                r.product_name = p2
+                r.brand = b2
+                r.product_key = new_key
+                r.packaging = new_pkg
+                r.label_language = new_label
+    if apply:
+        db.commit()
+    return {"applied": apply, "rows_scanned": len(rows),
+            "rows_changed": len(changes), "samples": changes[:40]}
+
+
 @router.post("/admin/flush-celery-queue", dependencies=[Depends(_require_admin)])
 def flush_celery_queue(
     fail_stuck_jobs: bool = True,

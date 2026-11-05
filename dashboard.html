@@ -2029,7 +2029,12 @@
     if (upc && upc > 1) {
       return `<div class="pack-vol">${volStr}</div><div class="pack-case" title="${Math.trunc(upc)} bottles per case">${Math.trunc(upc)}/case</div>`;
     }
-    return `<div class="pack-vol">${volStr}</div><div class="pack-case dim" title="Source has no case pack — loose bottles offered">loose</div>`;
+    // client §4 — unknown pack must NOT read as "loose". Only an explicit
+    // units_per_case of 1 is genuinely loose; a null/0 pack is simply unknown.
+    if (upc === 1) {
+      return `<div class="pack-vol">${volStr}</div><div class="pack-case dim" title="Source states a single unit — loose, no case">loose</div>`;
+    }
+    return `<div class="pack-vol">${volStr}</div><div class="pack-case dim" title="Case pack not stated in the source">pack n/a</div>`;
   }
   function nullCell() { return `<span class="null-cell">—</span>`; }
 
