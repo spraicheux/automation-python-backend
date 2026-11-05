@@ -14,13 +14,34 @@ router = APIRouter()
 
 
 @router.get("/openai-status")
-async def openai_status():
+async def openai_status(probe: bool = False):
     """Live OpenAI health for the dashboard: ok True/False/None, the last error
     (e.g. 'no credits remaining'), when it was last checked, and how many jobs
     are currently parked waiting for credits. OpenAI exposes no dollar balance
-    via the API key, so this is a reliable OK / EXHAUSTED signal, not an amount."""
-    from core.openai_health import get_openai_status
-    return get_openai_status()
+    via the API key, so this is a reliable OK / EXHAUSTED signal, not an amount.
+
+    Probes OpenAI when the status is unknown or older than 5 min (or ?probe=true)
+    so the chip reflects reality even when nothing is extracting. A probe is a
+    1-token call when credits exist, and free (rejected) when they don't."""
+    import time
+    import calendar
+    import asyncio
+    from core.openai_health import get_openai_status, probe_openai
+    st = get_openai_status()
+    stale = st.get("ok") is None
+    if not stale and st.get("checked_at"):
+        try:
+            t = calendar.timegm(time.strptime(st["checked_at"], "%Y-%m-%dT%H:%M:%SZ"))
+            stale = (time.time() - t) > 300
+        except Exception:
+            stale = True
+    if probe or stale:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, probe_openai)
+            st = get_openai_status()
+        except Exception:
+            pass
+    return st
 
 
 @router.get("/intake-status")
