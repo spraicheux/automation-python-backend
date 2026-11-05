@@ -1668,7 +1668,14 @@ async def process_offer(payload, job_id: str):
                         _pu = int(_pkg_m.group(1))
                         _pv = float(_pkg_m.group(2).replace(',', '.'))
                         _pu_unit = _pkg_m.group(3).lower()
-                        safe_data['units_per_case'] = float(_pu)
+                        _cpp_now = _safe_float(safe_data.get('cases_per_pallet'))
+                        # When the "pack count" equals the cases-per-pallet, the
+                        # LLM built packaging like "112x70cl" out of "112cs"
+                        # (cases/pallet), not a real pack size (Samuel Edo). Take
+                        # only the bottle volume; leave units_per_case as the
+                        # pallet parser set it (null).
+                        if not (_cpp_now and float(_pu) == _cpp_now):
+                            safe_data['units_per_case'] = float(_pu)
                         safe_data['unit_volume_ml'] = (
                             _pv * 10 if _pu_unit == 'cl' else
                             _pv * 1000 if _pu_unit == 'l' else _pv
