@@ -75,7 +75,9 @@ class OfferItem(BaseModel):
     # R-07 supersession — supplier_reference the row explicitly replaces
     supersedes_ref: Optional[str] = None
     ean_code: Optional[str] = None
-    label_language: str = Field(default="EN")
+    # client §4 — label language comes from the source or is unknown (None);
+    # never a blanket "EN" default. Optional so an unknown label is valid.
+    label_language: Optional[str] = None
     product_reference: Optional[str] = None
     quantity_unit: Optional[str] = None
     # Multi-category (Phase 3 M1)
