@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import logging
 import traceback
+from core.openai_health import OpenAICreditsExhausted
 
 # Root logging configured in entry points
 logger = logging.getLogger(__name__)
@@ -1879,6 +1880,8 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                                 )
                                 processed_row_count += len(batch_df)
 
+                    except OpenAICreditsExhausted:
+                        raise
                     except Exception as e:
                         logger.error(f"[extract_from_file] Batch {batch_num}: OpenAI call FAILED: {e}")
                         logger.error(f"[extract_from_file] Batch {batch_num}: {traceback.format_exc()}")
@@ -2137,6 +2140,8 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     logger.error(f"[extract_from_file] No products could be extracted from the Excel file")
                     return {"error": "No products could be extracted from the Excel file"}
 
+            except OpenAICreditsExhausted:
+                raise
             except Exception as e:
                 logger.error(f"[extract_from_file] Excel processing FAILED: {e}")
                 logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
@@ -2394,6 +2399,8 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                         logger.info(f"[extract_from_file] PDF Batch {batch_num}: falling back to extract_offer()")
                         fallback = await extract_offer(combined_text)
                         all_pdf_products.extend(fallback.get('products', []))
+                    except OpenAICreditsExhausted:
+                        raise
                     except Exception as e:
                         logger.error(f"[extract_from_file] PDF Batch {batch_num}: error: {e}")
                         logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
@@ -2510,6 +2517,8 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
             except ImportError:
                 logger.error(f"[extract_from_file] PyPDF2 is NOT installed — cannot process PDF")
                 return {"error": "PyPDF2 not installed"}
+            except OpenAICreditsExhausted:
+                raise
             except Exception as e:
                 logger.error(f"[extract_from_file] PDF read FAILED: {e}")
                 logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")
@@ -2579,6 +2588,10 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
             logger.warning(f"[extract_from_file] No text content was extracted from file — aborting")
             return {"error": "No content extracted from file"}
 
+    except OpenAICreditsExhausted:
+        # Must reach the worker so the job is parked for auto-resume, not
+        # turned into a 0-product 'done'.
+        raise
     except Exception as e:
         logger.error(f"[extract_from_file] CRITICAL error: {e}")
         logger.error(f"[extract_from_file] Traceback: {traceback.format_exc()}")

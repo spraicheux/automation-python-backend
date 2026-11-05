@@ -99,6 +99,29 @@ def test_credit_error_propagates_not_swallowed():
         asyncio.run(oc.extract_offer(text))
 
 
+def test_credit_error_propagates_from_extract_from_file(tmp_path):
+    """XLSX path: a credits-exhausted error must propagate out of
+    extract_from_file (so the job parks), not be swallowed by its own
+    except Exception into a 0-product 'done'."""
+    import openpyxl
+    from core.openai_health import OpenAICreditsExhausted
+    p = tmp_path / "o.xlsx"
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["Brand", "Product", "Price"])
+    for i in range(10):
+        ws.append([f"B{i}", "Vodka", 10.0 + i])
+    wb.save(p)
+
+    def fake(**k):
+        raise RuntimeError("Error code: 429 - insufficient_quota, "
+                           "credit_balance_exhausted: You have no credits remaining")
+
+    oc.client.chat.completions.create = AsyncMock(side_effect=fake)
+    with pytest.raises(OpenAICreditsExhausted):
+        asyncio.run(oc.extract_from_file(
+            str(p), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+
+
 def test_normal_error_does_not_park(tmp_path):
     """A non-credit error must NOT raise OpenAICreditsExhausted (it degrades to
     0 products for that unit, as before)."""
