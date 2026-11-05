@@ -25,6 +25,10 @@ class IngestRequest(BaseModel):
     attachments: Optional[Union[List[Attachment], Attachment]] = Field(default_factory=list)
     # Phase 3 M1: content-hash for the primary file, computed at ingest.
     content_hash: Optional[str] = None
+    # client §6: arrival time stamped ONCE at intake so a later reprocess from
+    # the saved payload keeps the ORIGINAL receipt timestamp (age must not
+    # restart on reprocessing). ISO-8601 string; None on legacy payloads.
+    received_at: Optional[str] = None
 
     @validator('attachments')
     def validate_attachments(cls, v):

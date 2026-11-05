@@ -23,6 +23,19 @@ from api.admin import _extract_customs_token, _strip_customs_token, _T1T2_PATTER
 logger = logging.getLogger(__name__)
 
 
+def _received_at(payload) -> datetime:
+    """The arrival timestamp stamped at intake (client §6), so a reprocess from
+    the saved payload keeps the ORIGINAL receipt time instead of restarting the
+    age. Falls back to now() for legacy payloads that carry no stamp."""
+    raw = getattr(payload, 'received_at', None)
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw))
+        except Exception:
+            pass
+    return datetime.utcnow()
+
+
 def _deshout_supplier(name: str) -> str:
     """A single all-caps "shout" like ``ELIXEMARKET`` → ``Elixemarket`` for a
     consistent display form. Short acronyms (FBC, QA, LVMH, DFS) and names that
@@ -1282,20 +1295,30 @@ def _offer_date_or_flag(raw, source_filename: str, received: datetime,
     a visible review flag so the dashboard can label the row as
     "offer date unknown — showing received date for freshness only"."""
     resolved = _resolve_offer_date(raw, source_filename, received)
-    if resolved is None:
-        try:
-            flags = safe_data.get('error_flags') or []
-            if not isinstance(flags, list):
-                flags = []
+    try:
+        flags = safe_data.get('error_flags') or []
+        if not isinstance(flags, list):
+            flags = []
+        if resolved is None:
             _msg = ("offer_date not stated in source — stored as unknown "
                     "(freshness displayed from date_received as a labelled fallback, "
                     "never as a commercial offer date)")
             if _msg not in flags:
                 flags.append(_msg)
-                safe_data['error_flags'] = flags
             safe_data['needs_manual_review'] = True
-        except Exception:
-            pass
+        elif _parse_offer_date(raw) is None:
+            # client §6 — the per-offer date was blank; this date came from the
+            # SOURCE FILENAME, not the offer itself. Label it so the trader
+            # never reads a file-level date as a per-offer commercial date
+            # (Martell VS: blank offer-date cell, date taken from the QA file
+            # name "..._2026-11-05.xlsx").
+            _msg = ("offer_date not stated per-offer — taken from the source "
+                    "filename date, not the offer itself")
+            if _msg not in flags:
+                flags.append(_msg)
+        safe_data['error_flags'] = flags
+    except Exception:
+        pass
     return resolved
 
 
@@ -1827,7 +1850,7 @@ async def process_offer(payload, job_id: str):
                             merged_data.get('offer_date'),
                             payload.source_filename or "",
                             datetime.utcnow(), safe_data),
-                        date_received=datetime.utcnow(),
+                        date_received=_received_at(payload),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
                         supplier_name=_resolve_supplier_name(_sup_name, payload),
@@ -2051,7 +2074,7 @@ async def process_offer(payload, job_id: str):
                         extracted_data.get('offer_date'),
                         payload.source_filename or "",
                         datetime.utcnow(), safe_data),
-                    date_received=datetime.utcnow(),
+                    date_received=_received_at(payload),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],
                     supplier_name=_resolve_supplier_name(_sup_name, payload),

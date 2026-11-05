@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -305,6 +306,9 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
         "text_body": text_body,
         "attachments": attachments,
         "content_hash": content_hash,
+        # client §6 — stamp arrival ONCE so a reprocess keeps the original
+        # receipt time (age must not restart when the saved payload is re-run).
+        "received_at": datetime.utcnow().isoformat(),
     }
     # Fail fast on a malformed payload here, not deep inside the worker.
     IngestRequest(**payload_dict)
