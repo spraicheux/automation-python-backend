@@ -380,6 +380,16 @@ async def get_records(
                 func.coalesce(OfferItemDB.best_before_date, ''),
                 func.coalesce(OfferItemDB.vintage, ''),
                 func.coalesce(OfferItemDB.custom_status, ''),
+                # offer_date + original-unit quantities MUST be in the display
+                # fingerprint too, so it matches the ingest-time dedup key
+                # (workers.processor._canon_key). Two lines of the same SKU at
+                # the same price but a DIFFERENT offer date are distinct offers
+                # (price history) and must both show — otherwise the table (30)
+                # under-counts the stored rows (31) and disagrees with the
+                # sidebar (client §3: QA01 vs QA02 collapsed).
+                func.coalesce(OfferItemDB.offer_date, ''),
+                func.coalesce(OfferItemDB.quantity_bottles, 0),
+                func.coalesce(OfferItemDB.quantity_pallets, 0),
             ),
             order_by=[
                 nulls_last(OfferItemDB.price_per_unit_eur.asc()),
