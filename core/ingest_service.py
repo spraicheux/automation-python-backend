@@ -76,7 +76,14 @@ def was_delivered(job_id: str) -> bool:
 # filename, or the attachment. If nothing matches, supplier is None (no
 # fallback), exactly as the Make scenario produced it.
 
-_SUPPLIER_LINE = re.compile(r'^[>\s]*supplier\s*:\s*(.+)$', re.IGNORECASE)
+# An explicit supplier designation the user typed in the message ("Supplier: X",
+# "Fournisseur - X", "Vendor = X", …). This is Samuel manually naming the
+# commercial supplier on a forward and it MUST win over any quoted From:/De:
+# header of the original sender. Multi-language + colon/dash/equals separators.
+_SUPPLIER_LINE = re.compile(
+    r'^[>\s]*(?:supplier|fournisseur|fournisseure|lieferant|fornitore|proveedor|'
+    r'vendor|seller|supp)\s*[:\-=]\s*(.+)$',
+    re.IGNORECASE)
 _SUPPLIER_PATTERNS = [
     re.compile(r'\boffer\s+from\s+(.+)$', re.IGNORECASE),
     re.compile(r'\boffre\s+de\s+(.+)$', re.IGNORECASE),

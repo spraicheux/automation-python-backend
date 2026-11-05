@@ -23,6 +23,50 @@ from api.admin import _extract_customs_token, _strip_customs_token, _T1T2_PATTER
 logger = logging.getLogger(__name__)
 
 
+def _deshout_supplier(name: str) -> str:
+    """A single all-caps "shout" like ``ELIXEMARKET`` → ``Elixemarket`` for a
+    consistent display form. Short acronyms (FBC, QA, LVMH, DFS) and names that
+    already carry lowercase letters are left untouched."""
+    def _fix(tok: str) -> str:
+        if len(tok) >= 5 and tok.isalpha() and tok.isupper():
+            return tok[:1] + tok[1:].lower()
+        return tok
+    return " ".join(_fix(t) for t in name.split())
+
+
+def _canonical_supplier_name(db, name):
+    """Collapse the same commercial supplier onto ONE spelling so it appears
+    consistently in the table, offer details and supplier filter (client §1).
+
+    The LLM returns the supplier with varying case per offer (``ELIXEMARKET``
+    vs ``Elixemarket``), which otherwise splits one company into two filter
+    entries. We reuse an existing DB spelling when one exists (case-insensitive,
+    whitespace-insensitive); otherwise we store a de-shouted display form. The
+    DB is the source of truth, so the first row of a job sets the canonical
+    spelling and every later row — this job or any future one — reuses it."""
+    _missing = (None, "", "Not Found")
+    if name in _missing:
+        return name
+    cleaned = re.sub(r'\s+', ' ', str(name)).strip().strip('"\'')
+    cleaned = re.sub(r'[\.,;:]+$', '', cleaned).strip()
+    if not cleaned or cleaned in _missing:
+        return name
+    key = cleaned.casefold()
+    existing = None
+    try:
+        from sqlalchemy import func
+        existing = (db.query(OfferItemDB.supplier_name)
+                      .filter(OfferItemDB.supplier_name.isnot(None))
+                      .filter(func.lower(func.trim(OfferItemDB.supplier_name)) == key)
+                      .first())
+    except Exception as e:  # DB hiccup must not block the write
+        logger.warning(f"supplier canonicalisation lookup failed: {e}")
+        existing = None
+    if existing and existing[0]:
+        return existing[0]
+    return _deshout_supplier(cleaned)
+
+
 def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
     """
     Persist a single extracted OfferItem to the PostgreSQL database.
@@ -36,6 +80,12 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
     try:
         db = get_session_factory()()
         try:
+            # Collapse the supplier onto one canonical spelling (client §1 —
+            # consistent across table / details / filter) before it is written
+            # to BOTH the SourceFileDB and the OfferItemDB row below.
+            offer_dict["supplier_name"] = _canonical_supplier_name(
+                db, offer_dict.get("supplier_name"))
+
             source_filename = offer_dict.get("source_filename") or None
             if source_filename:
                 duplicate = db.query(SourceFileDB).filter(
