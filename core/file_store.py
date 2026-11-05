@@ -70,3 +70,23 @@ def file_exists(path: str) -> bool:
         return bool(path) and os.path.isfile(path)
     except Exception:
         return False
+
+
+def delete_files(pattern: Optional[str] = None, clear_all: bool = False) -> int:
+    """Delete saved files whose name contains `pattern` (case-insensitive), or
+    all of them. Returns how many were removed."""
+    d = _dir()
+    if not os.path.isdir(d):
+        return 0
+    n = 0
+    try:
+        for name in os.listdir(d):
+            if clear_all or (pattern and pattern.lower() in name.lower()):
+                try:
+                    os.remove(os.path.join(d, name))
+                    n += 1
+                except Exception as e:
+                    logger.warning(f"delete {name} failed: {e}")
+    except Exception as e:
+        logger.warning(f"delete_files failed: {e}")
+    return n

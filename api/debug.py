@@ -80,6 +80,23 @@ async def purge_queue():
     return out
 
 
+@router.get("/debug/clear-pending-credits")
+async def clear_pending_credits():
+    """Drop parked (NO CREDITS) jobs so they will NOT auto-resume — used when
+    you intend to re-send the file fresh instead."""
+    from core.openai_health import clear_pending
+    return {"cleared_pending": clear_pending()}
+
+
+@router.get("/debug/delete-saved-files")
+async def delete_saved_files(pattern: str = "", all: bool = False):
+    """Delete saved offer files from server storage by name substring, or all."""
+    from core.file_store import delete_files
+    if not all and len(pattern) < 3:
+        return {"error": "pattern too short (min 3 chars); or pass all=true"}
+    return {"deleted": delete_files(pattern=(pattern or None), clear_all=all)}
+
+
 @router.get("/debug/reprocess")
 async def reprocess(job_id: str, force: bool = False):
     """Re-run a job from its saved payload/file (nothing re-sent). Without force,

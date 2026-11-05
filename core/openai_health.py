@@ -118,6 +118,20 @@ def pending_count() -> int:
         return 0
 
 
+def clear_pending() -> int:
+    """Drop all parked jobs (so they do NOT auto-resume). Returns how many."""
+    r = _r()
+    if not r:
+        return 0
+    try:
+        n = int(r.llen(_PENDING_KEY) or 0)
+        r.delete(_PENDING_KEY)
+        return n
+    except Exception as e:
+        logger.warning(f"clear_pending failed: {e}")
+        return 0
+
+
 def probe_openai() -> bool:
     """Minimal (1-token) call to check whether credits are back. Updates the
     stored status. Returns True if OpenAI is usable."""
