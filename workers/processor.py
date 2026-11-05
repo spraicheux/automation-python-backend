@@ -827,10 +827,23 @@ def _backfill_numeric_brand(safe_data: dict) -> None:
     brand = (safe_data.get('brand') or '').strip()
     if brand and brand.lower() not in ('not found', 'unknown'):
         return
-    m = re.match(r'^(\d{2,4})\s+(\S.*)$', (safe_data.get('product_name') or '').strip())
+    name = (safe_data.get('product_name') or '').strip()
+    # (a) the numeric token is still at the start of the product name
+    m = re.match(r'^(\d{2,4})\s+(\S.*)$', name)
     if m:
         safe_data['brand'] = m.group(1)
         safe_data['product_name'] = m.group(2).strip()
+        return
+    # (b) the LLM dropped the numeric brand from the name — recover it from the
+    #     source: "1800 Reserva Blanco" → brand "1800". The number must be
+    #     immediately followed by the product's first word (so a quantity like
+    #     "2007 cs" never matches — it's followed by a unit, not the name).
+    first_word = name.split()[0] if name else ''
+    if first_word:
+        m2 = re.search(r'(?<![\d.])(\d{2,4})\s+' + re.escape(first_word),
+                       safe_data.get('_raw_row_text') or '')
+        if m2:
+            safe_data['brand'] = m2.group(1)
 
 
 # ─── MOQ / QUANTITY normalization ──────────────────────────────────────────────

@@ -1134,6 +1134,15 @@ async def extract_offer(text: str) -> dict:
             products = result.get('products', [])
             logger.info(f"[extract_offer] Chunk {idx + 1}: AI returned {len(products)} product(s) in JSON")
 
+            # Fallback raw source text for the downstream deterministic parsers
+            # (pallet/price, customs, supersession). When a chunk has no
+            # per-product markers — e.g. a one-line WhatsApp offer like Edo's
+            # "30 pallets per 112cs" — each product's raw source IS the chunk.
+            # Marker-based code below overrides this with the exact block.
+            for _p in products:
+                if isinstance(_p, dict):
+                    _p.setdefault('_raw_row_text', chunk)
+
             # ─── EAN / supplier_reference salvage from this chunk's blocks ──────
             # When the LLM is confused by a POR / zero price it occasionally
             # drops the EAN or supplier_reference even though the source
