@@ -386,8 +386,14 @@ def is_valid_offer(offer_dict: dict) -> bool:
         has_ref = bool(offer_dict.get('ean_code') or offer_dict.get('supplier_reference')
                        or offer_dict.get('product_reference'))
         if has_qty or has_ref:
+            # Price is absent (not an explicit €0.00 — that path returned above):
+            # store null, never 0.0, so the dashboard shows "on request".
+            for _pk in ('price_per_unit', 'price_per_case',
+                        'price_per_unit_eur', 'price_per_case_eur'):
+                if offer_dict.get(_pk) in (0, 0.0):
+                    offer_dict[_pk] = None
             if isinstance(flags, list):
-                _m = 'Price on request retained — no price stated in source'
+                _m = 'Price on request — no price stated in source'
                 if _m not in flags:
                     flags.append(_m)
                     offer_dict['error_flags'] = flags
@@ -767,6 +773,64 @@ def _normalize_incoterm_location(safe_data: dict) -> None:
                 safe_data["incoterm"] = tok
             rest = m.group(2).strip(" .,-")
             safe_data["location"] = rest or None
+
+
+_PALLET_PER_CASE_RE = re.compile(
+    r'(\d+(?:[.,]\d+)?)\s*(?:pallets?|plt|pll)\s*(?:per|x|×|/|of|\*)?\s*'
+    r'(\d+(?:[.,]\d+)?)\s*(?:cs\b|cases?|cartons?|ctns?)', re.IGNORECASE)
+
+
+def _fix_pallet_per_case_phrasing(safe_data: dict) -> None:
+    """'30 pallets per 112cs' = 30 pallets × 112 CASES-per-pallet = 3360 cases.
+    The LLM read '112cs' as units_per_case and swapped it with the pallet count
+    (Samuel Edo). Parse the source text and set the quantity fields correctly:
+    the cases-per-pallet figure is NEVER units_per_case, and a bare price in a
+    pallet-scale quote (no '/cs' in the source) is per BOTTLE, not per case."""
+    raw = safe_data.get('_raw_row_text') or ''
+    m = _PALLET_PER_CASE_RE.search(raw)
+    if not m:
+        return
+    try:
+        pallets = float(m.group(1).replace(',', '.'))
+        cpp = float(m.group(2).replace(',', '.'))
+    except (TypeError, ValueError):
+        return
+    if pallets <= 0 or cpp <= 0:
+        return
+    safe_data['quantity_pallets'] = pallets
+    safe_data['cases_per_pallet'] = cpp
+    safe_data['quantity_case'] = round(pallets * cpp, 4)
+    safe_data['quantity_unit'] = 'cases'
+    upc = _safe_float(safe_data.get('units_per_case'))
+    if upc is not None and (upc == cpp or upc > 24):
+        safe_data['units_per_case'] = None  # 112 was cases/pallet, not units/case
+    # A bare price with no explicit per-case marker in the source is per bottle.
+    if not re.search(r'/\s*cs|/\s*case|per\s*case|p/?cs|eur/cs|usd/cs', raw, re.IGNORECASE):
+        ppc = _safe_float(safe_data.get('price_per_case'))
+        if ppc:
+            safe_data['price_per_unit'] = ppc
+            safe_data['price_per_case'] = None
+            safe_data['price_per_unit_eur'] = None
+            safe_data['price_per_case_eur'] = None
+    flags = safe_data.get('error_flags')
+    if isinstance(flags, list):
+        _m = f'Quantity: {pallets:g} pallets × {cpp:g} cases/pallet = {pallets * cpp:g} cases'
+        if _m not in flags:
+            flags.append(_m)
+
+
+def _backfill_numeric_brand(safe_data: dict) -> None:
+    """A numeric brand (1800 Tequila, 818) is often missed — the LLM leaves
+    brand 'Not Found' with the digits on the product name. When brand is absent
+    and the product name starts with a numeric token, promote it to brand. Safe:
+    word-brands like 'Grey Goose' never start with a digit."""
+    brand = (safe_data.get('brand') or '').strip()
+    if brand and brand.lower() not in ('not found', 'unknown'):
+        return
+    m = re.match(r'^(\d{2,4})\s+(\S.*)$', (safe_data.get('product_name') or '').strip())
+    if m:
+        safe_data['brand'] = m.group(1)
+        safe_data['product_name'] = m.group(2).strip()
 
 
 # ─── MOQ / QUANTITY normalization ──────────────────────────────────────────────
@@ -1571,6 +1635,8 @@ async def process_offer(payload, job_id: str):
 
                     # ── Currency normalisation & EUR conversion ──────────────
                     _snap_duplicated_row_per_unit(safe_data)
+                    _fix_pallet_per_case_phrasing(safe_data)
+                    _backfill_numeric_brand(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
                     _normalize_incoterm_location(safe_data)
 
@@ -1819,6 +1885,8 @@ async def process_offer(payload, job_id: str):
                 _drop_misleading_multi_incoterm_flag(safe_data)
                 _parse_supersedes_ref(safe_data)
 
+                _fix_pallet_per_case_phrasing(safe_data)
+                _backfill_numeric_brand(safe_data)
                 safe_data = _normalize_currency_and_prices(safe_data)
                 _normalize_incoterm_location(safe_data)
 
