@@ -1985,6 +1985,14 @@ async def process_offer(payload, job_id: str):
                     safe_data = _normalize_moq_and_quantity(safe_data, _flag_bucket)
                     safe_data['error_flags'] = _flag_bucket
 
+                    # client §5 — MOQ unit follows the SOURCE. When the source
+                    # stated the MOQ in cases (moq_cases populated) and no other
+                    # unit was captured, record "cases" so the display never
+                    # inherits the product's stock/price unit (a loose item's
+                    # "10 cs" must not become "10 pieces").
+                    if safe_data.get('moq_cases') is not None and not safe_data.get('moq_unit'):
+                        safe_data['moq_unit'] = 'cases'
+
                     # ── Parse units_per_case & unit_volume_ml from packaging ──
                     _pkg_str = str(safe_data.get('packaging') or '')
                     _pkg_m = re.search(
@@ -1996,13 +2004,6 @@ async def process_offer(payload, job_id: str):
                         _pv = float(_pkg_m.group(2).replace(',', '.'))
                         _pu_unit = _pkg_m.group(3).lower()
                         _cpp_now = _safe_float(safe_data.get('cases_per_pallet'))
-                        # When the "pack count" equals the cases-per-pallet, the
-                        # LLM built packaging like "112x70cl" out of "112cs"
-                        # (cases/pallet), not a real pack size (Samuel Edo). Take
-                        # only the bottle volume; leave units_per_case as the
-                        # pallet parser set it (null).
-                        if not (_cpp_now and float(_pu) == _cpp_now):
-                            safe_data['units_per_case'] = float(_pu)
                         safe_data['unit_volume_ml'] = (
                             _pv * 10 if _pu_unit == 'cl' else
                             _pv * 1000 if _pu_unit == 'l' else _pv
@@ -2010,11 +2011,35 @@ async def process_offer(payload, job_id: str):
                         # Canonical display form — store raw LLM string first
                         if not safe_data.get('packaging_raw'):
                             safe_data['packaging_raw'] = _pkg_str
-                        safe_data['packaging'] = f"{_pu}/case"
+                        # When the "pack count" equals the cases-per-pallet, the
+                        # LLM built packaging like "112x70cl" out of "112cs"
+                        # (cases/pallet), not a real pack size (Samuel Edo). Take
+                        # only the bottle volume; leave units_per_case as the
+                        # pallet parser set it (null) AND do not fake a
+                        # "112/case" pack label.
+                        if not (_cpp_now and float(_pu) == _cpp_now):
+                            safe_data['units_per_case'] = float(_pu)
+                            safe_data['packaging'] = f"{_pu}/case"
+                        else:
+                            safe_data['packaging'] = (
+                                f"{_pkg_m.group(2).replace(',', '.')}{_pu_unit}")
                         logger.debug(
                             f"Row {idx}: packaging '{_pkg_str}' → "
-                            f"units_per_case={_pu}, unit_volume_ml={safe_data['unit_volume_ml']}"
+                            f"units_per_case={safe_data.get('units_per_case')}, "
+                            f"unit_volume_ml={safe_data['unit_volume_ml']}"
                         )
+
+                    # client §4 — rebuild the identity key from the FINAL
+                    # corrected pack so a logistics value the LLM mistook for a
+                    # case pack ("112cs" → units_per_case=112) never survives in
+                    # the product_key (Edo JW: ..._112). build_product_key omits
+                    # the pack token when units_per_case is null.
+                    _final_key = build_product_key(
+                        safe_data.get('brand'), safe_data.get('product_name'),
+                        safe_data.get('unit_volume_ml'),
+                        safe_data.get('units_per_case'))
+                    if _final_key:
+                        safe_data['product_key'] = _final_key
 
                     _apply_offer_level(
                         safe_data, _commercial_conditions, _cond_valid_until,
@@ -2256,6 +2281,25 @@ async def process_offer(payload, job_id: str):
                 _backfill_numeric_brand(safe_data)
                 safe_data = _normalize_currency_and_prices(safe_data)
                 _normalize_incoterm_location(safe_data)
+
+                # client §4 — a cases/pallet figure the LLM mistook for a case
+                # pack must not survive in units_per_case or the identity key.
+                # Precise signal only (units_per_case == cases_per_pallet); never
+                # a blanket size cap, which would wrongly null legitimate large
+                # packs like the 120-count 50 ml miniatures.
+                _upc = _safe_float(safe_data.get('units_per_case'))
+                _cpp = _safe_float(safe_data.get('cases_per_pallet'))
+                if _upc is not None and _cpp and _upc == _cpp:
+                    safe_data['units_per_case'] = None
+                # client §5 — MOQ unit follows the source (see batch path note).
+                if safe_data.get('moq_cases') is not None and not safe_data.get('moq_unit'):
+                    safe_data['moq_unit'] = 'cases'
+                _final_key = build_product_key(
+                    safe_data.get('brand'), safe_data.get('product_name'),
+                    safe_data.get('unit_volume_ml'),
+                    safe_data.get('units_per_case'))
+                if _final_key:
+                    safe_data['product_key'] = _final_key
 
                 _apply_offer_level(
                     safe_data, _commercial_conditions, _cond_valid_until,

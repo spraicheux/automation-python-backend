@@ -2147,18 +2147,14 @@
     const moqUnit = (i.moq_unit || '').toLowerCase().trim();
     const moqBtls = i.moq_bottles != null ? Number(i.moq_bottles) : null;
     const wrap = inner => `<span>${inner}</span>`;
-    // client §2 — a LOOSE product (no real case pack) must not read "10 cs";
-    // a bare "MOQ cases" column on a loose/pieces item is shown in the item's
-    // own offered unit instead. Data stays faithful (moq_cases unchanged).
-    const _loose = (i.units_per_case == null) || Number(i.units_per_case) <= 1;
-    const _prodUnit = (i.quantity_unit || '').toLowerCase().trim();
-    const _looseLabel =
-      (_loose && ['pieces','piece','pcs','pc','each'].includes(_prodUnit)) ? 'pieces' :
-      (_loose && ['bottles','bottle','btl'].includes(_prodUnit)) ? 'btls' : 'cs';
+    // client §5 (2026-11-06) — the MOQ unit MUST follow the source and must
+    // never inherit the product's stock/price unit. A source "MOQ 10 cs" stays
+    // "10 cs" even on a loose/pieces item; silently turning it into "10 pieces"
+    // would change the commercial condition. The backend records the source
+    // unit in moq_unit (defaulting to "cases" when the MOQ was stated in
+    // cases), so the display reads it verbatim and never guesses.
     // FTL MOQ (A11 "MOQ 1 FTL") carries no case or bottle equivalent — truck
-    // capacity is not supplied — so it must be handled BEFORE the null guard
-    // below, otherwise the drawer renders "—" for a MOQ the source stated
-    // explicitly (Samuel 2026-10-31).
+    // capacity is not supplied — so it must be handled BEFORE the null guard.
     if (moqUnit === 'ftl') return wrap('1 FTL');
     if (moqCs == null && !moqBtls) return null;
     if (moqUnit === 'bottles' || moqUnit === 'bottle') {
@@ -2179,7 +2175,12 @@
       }
       return moqCs != null ? wrap(`${moqCs} cs`) : null;
     }
-    return moqCs != null ? wrap(`${moqCs} ${_looseLabel}`) : null;
+    if (['pieces','piece','pcs','pc','each','unit','units'].includes(moqUnit)) {
+      const n = moqCs != null ? moqCs : moqBtls;
+      return n != null ? wrap(`${n} pieces`) : null;
+    }
+    // Default: the MOQ is in CASES (moq_cases' native meaning / source "cs").
+    return moqCs != null ? wrap(`${moqCs} cs`) : null;
   }
 
   // ─── Flag categorization ────────────────────────────────────────────────────
