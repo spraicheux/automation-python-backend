@@ -5,7 +5,7 @@ import os
 import traceback
 import tempfile
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from core.openai_health import OpenAICreditsExhausted
 from typing import Optional
 
@@ -143,10 +143,16 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                     # Phase 3 M1: propagate ingest-time metadata
                     content_hash=offer_dict.get("_content_hash"),
                     expected_row_count=offer_dict.get("_expected_row_count"),
+                    # client §2 — durable copy of the raw offer content
+                    source_text=offer_dict.get("_source_text"),
                 )
                 db.add(source_file)
                 db.flush()  # get the id without committing yet
                 logger.info(f"DB: created SourceFileDB for job {job_id}, file='{source_filename}'")
+            elif offer_dict.get("_source_text") and not source_file.source_text:
+                # Backfill the durable source text if the first row of the job
+                # didn't carry it (e.g. legacy ordering).
+                source_file.source_text = offer_dict.get("_source_text")
             # ────────────────────────────────────────────────────────────────
 
             row = OfferItemDB(
@@ -220,6 +226,10 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 custom_status=offer_dict.get("custom_status"),
                 processing_version=offer_dict.get("processing_version"),
                 offer_date=offer_dict.get("offer_date"),
+                document_date=offer_dict.get("document_date"),
+                document_date_source=offer_dict.get("document_date_source"),
+                commercial_conditions=offer_dict.get("commercial_conditions"),
+                source_type=offer_dict.get("source_type"),
                 date_received=offer_dict.get("date_received"),
                 supersedes_ref=offer_dict.get("supersedes_ref"),
             )
@@ -1290,36 +1300,172 @@ def _resolve_offer_date(raw, source_filename: str, received: datetime) -> Option
 
 def _offer_date_or_flag(raw, source_filename: str, received: datetime,
                        safe_data: dict) -> Optional[datetime]:
-    """Resolve offer_date; when the source gave none AND the filename yielded
-    none, store None (no fabricated commercial date, Samuel R-06) and record
-    a visible review flag so the dashboard can label the row as
-    "offer date unknown — showing received date for freshness only"."""
-    resolved = _resolve_offer_date(raw, source_filename, received)
+    """Client §4 (2026-11-06): the COMMERCIAL offer_date is only ever a date the
+    offer itself stated. A date read from the source FILENAME is NOT a
+    commercial offer date — it is returned separately (see the `document_date`
+    keys set on safe_data) and must never drive expiry, alerts or history.
+
+    Returns the commercial offer_date (parsed from the offer, else None) and, as
+    a side effect, writes `document_date` / `document_date_source` onto
+    safe_data plus the appropriate labelled review flag.
+    """
+    commercial = _parse_offer_date(raw)
+    from_name = _date_from_filename(source_filename or "",
+                                    (received or datetime.utcnow()).year)
     try:
         flags = safe_data.get('error_flags') or []
         if not isinstance(flags, list):
             flags = []
-        if resolved is None:
-            _msg = ("offer_date not stated in source — stored as unknown "
-                    "(freshness displayed from date_received as a labelled fallback, "
-                    "never as a commercial offer date)")
+
+        # Filename-derived date → store separately with provenance, never as
+        # the commercial date.
+        if from_name is not None:
+            safe_data['document_date'] = from_name
+            # VARCHAR(255) column — truncate the provenance label defensively.
+            safe_data['document_date_source'] = (
+                f"source filename: {os.path.basename(str(source_filename))}")[:255]
+        else:
+            safe_data['document_date'] = None
+            safe_data['document_date_source'] = None
+
+        if commercial is None:
+            if from_name is not None:
+                # Martell VS: blank per-offer date, but the QA filename encodes
+                # one. Keep the commercial date UNKNOWN; surface the filename
+                # date only as a provenance-labelled document date.
+                _msg = ("offer date not stated in the offer — commercial offer "
+                        f"date kept unknown. A date ({from_name.date().isoformat()}) "
+                        "was read from the source filename and is stored "
+                        "separately as the document date (provenance: filename); "
+                        "it is NOT used as the commercial date, for expiry or for "
+                        "alerts. Freshness shown from the received date, labelled.")
+            else:
+                _msg = ("offer date not stated in source — stored as unknown "
+                        "(freshness displayed from date_received as a labelled "
+                        "fallback, never as a commercial offer date)")
             if _msg not in flags:
                 flags.append(_msg)
             safe_data['needs_manual_review'] = True
-        elif _parse_offer_date(raw) is None:
-            # client §6 — the per-offer date was blank; this date came from the
-            # SOURCE FILENAME, not the offer itself. Label it so the trader
-            # never reads a file-level date as a per-offer commercial date
-            # (Martell VS: blank offer-date cell, date taken from the QA file
-            # name "..._2026-11-05.xlsx").
-            _msg = ("offer_date not stated per-offer — taken from the source "
-                    "filename date, not the offer itself")
-            if _msg not in flags:
-                flags.append(_msg)
         safe_data['error_flags'] = flags
     except Exception:
         pass
-    return resolved
+    return commercial
+
+
+# ─── commercial conditions (client §6.3) ────────────────────────────────────
+_WEEKDAYS = {
+    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 'friday': 4,
+    'saturday': 5, 'sunday': 6,
+    'lundi': 0, 'mardi': 1, 'mercredi': 2, 'jeudi': 3, 'vendredi': 4,
+    'samedi': 5, 'dimanche': 6,
+}
+
+
+def _resolve_relative_validity(raw: str, anchor: Optional[datetime]):
+    """Resolve a relative validity term ("tomorrow", "today", a weekday) against
+    a RELIABLE anchor — the offer's own stated date, else the original message
+    received date — never the reprocessing date (client §6.3). Returns
+    (iso_date | None, basis_note, uncertain_bool). When no reliable anchor is
+    available the wording is preserved and uncertainty flagged."""
+    s = (raw or "").strip().lower().rstrip('.')
+    if not s:
+        return None, "no validity term", True
+    # An explicit date in the term wins and needs no anchor.
+    explicit = _parse_offer_date(raw)
+    if explicit is not None:
+        return explicit.date().isoformat(), "explicit date stated in the offer", False
+    if anchor is None:
+        return None, "no reliable original message date available", True
+    base = anchor.date().isoformat()
+    if s in ('tomorrow', 'the next day', 'next day', 'demain'):
+        return (anchor + timedelta(days=1)).date().isoformat(), \
+            f"anchored to message date {base} + 1 day", False
+    if s in ('today', 'end of day', 'eod', "aujourd'hui", 'this day'):
+        return anchor.date().isoformat(), f"anchored to message date {base}", False
+    for name, idx in _WEEKDAYS.items():
+        if re.search(rf'\b{name}\b', s):
+            delta = (idx - anchor.weekday()) % 7
+            delta = delta or 7  # a bare weekday means the NEXT one
+            return (anchor + timedelta(days=delta)).date().isoformat(), \
+                f"anchored to message date {base} → next {name.title()}", False
+    return None, "relative validity term not understood", True
+
+
+def _extract_commercial_conditions(text: str, anchor: Optional[datetime]):
+    """Client §6.3 — capture offer-level commercial conditions verbatim
+    (payment, PO requirement, bonded-warehouse delivery, validity) and resolve
+    relative validity against a reliable anchor. Returns
+    (conditions_text | None, resolved_valid_until | None, flags:list)."""
+    if not text:
+        return None, None, []
+    t = str(text)
+    found, flags = [], []
+    resolved_valid_until = None
+
+    # Validity — captured verbatim, then resolved when possible.
+    mv = re.search(r'valid(?:ity)?\s+(?:is\s+)?(?:till|until|thru|through|up to)\s+'
+                   r'([^\.,;\n]+)', t, re.IGNORECASE)
+    if mv:
+        raw_validity = mv.group(1).strip()
+        found.append(f"Validity: valid until {raw_validity}")
+        resolved, basis, uncertain = _resolve_relative_validity(raw_validity, anchor)
+        if resolved is not None:
+            resolved_valid_until = resolved
+            flags.append(f"validity '{raw_validity}' resolved to {resolved} ({basis})")
+        else:
+            flags.append(f"validity '{raw_validity}' preserved verbatim — not "
+                         f"resolved to a date ({basis}); no expiry computed")
+            # uncertainty must be visible, not silently dropped
+            if uncertain:
+                pass
+
+    # PO requirement
+    if re.search(r'immediate\s+p\.?\s?o\.?|p\.?\s?o\.?\s+required|'
+                 r'required\s+immediate\s+p\.?\s?o\.?|purchase\s+order\s+required',
+                 t, re.IGNORECASE):
+        found.append("Immediate PO required")
+
+    # Payment terms
+    if re.search(r'\bT\.?\s?T\.?\b|telegraphic\s+transfer|wire\s+transfer|'
+                 r'bank\s+transfer', t, re.IGNORECASE):
+        found.append("Payment: TT (bank transfer)")
+    if re.search(r'\bL\.?\s?/?\s?C\b|letter\s+of\s+credit', t, re.IGNORECASE):
+        found.append("Payment: L/C (letter of credit)")
+    if re.search(r'\b(?:cash\s+in\s+advance|prepayment|advance\s+payment|'
+                 r'payment\s+in\s+advance)\b', t, re.IGNORECASE):
+        found.append("Payment: in advance")
+
+    # Delivery / customs condition
+    if re.search(r'excise[-\s]?bonded|bonded\s+warehouse|under\s+bond|in\s+bond|'
+                 r'delivery\s+to\s+excise', t, re.IGNORECASE):
+        found.append("Delivery to an excise-bonded warehouse")
+
+    if not found:
+        return None, resolved_valid_until, flags
+    return "; ".join(found), resolved_valid_until, flags
+
+
+def _apply_offer_level(safe_data: dict, conditions, cond_valid_until,
+                       cond_flags, source_type, source_flags) -> None:
+    """Stamp offer-level fields (client §6.3 conditions, §2 source provenance)
+    onto a per-product safe_data before the OfferItem is built. Relative
+    validity only fills valid_until when the offer did not state an explicit
+    one. All condition / source notes are merged into error_flags so nothing
+    is silently dropped."""
+    if conditions:
+        safe_data['commercial_conditions'] = conditions
+    if source_type:
+        # VARCHAR(255) column — truncate, never let a long value fail the save.
+        safe_data['source_type'] = str(source_type)[:255]
+    if cond_valid_until and not safe_data.get('valid_until'):
+        safe_data['valid_until'] = cond_valid_until
+    flags = safe_data.get('error_flags') or []
+    if not isinstance(flags, list):
+        flags = []
+    for f in list(cond_flags or []) + list(source_flags or []):
+        if f not in flags:
+            flags.append(f)
+    safe_data['error_flags'] = flags
 
 
 def _apply_offer_defaults(data: dict) -> dict:
@@ -1413,6 +1559,17 @@ async def process_offer(payload, job_id: str):
         logger.info(f"Text body length: {len(payload.text_body) if payload.text_body else 0}")
         logger.info(f"Attachment count: {len(payload.attachments) if payload.attachments else 0}")
 
+        # Client §2/§7 — track the content extraction actually ran on, so the
+        # stored source is honest (never a signature logo) and nothing is
+        # silently dropped.
+        from core.ingest_service import is_signature_attachment
+        _channel = (payload.source_channel or "").lower()
+        _body_label = ("whatsapp message" if "whatsapp" in _channel or _channel == "wa"
+                       else "email body")
+        _extracted_sources = []    # human labels of content that yielded products
+        _skipped_signatures = []   # signature/decorative images ignored
+        _empty_attachments = []    # readable attachments that produced no rows
+
         if payload.text_body:
             try:
                 extracted_data = await extract_offer(payload.text_body or "")
@@ -1424,6 +1581,8 @@ async def process_offer(payload, job_id: str):
                 else:
                     logger.info("Using extracted_data as single product")
                     all_products.append(extracted_data)
+                if all_products:
+                    _extracted_sources.append(_body_label)
 
             except OpenAICreditsExhausted:
                 raise
@@ -1434,6 +1593,17 @@ async def process_offer(payload, job_id: str):
             for attachment in payload.attachments:
                 try:
                     file_name = attachment.fileName
+
+                    # Client §2/§7 — a signature / decorative image is NOT an
+                    # offer source. Skip it before extraction (no wasted vision
+                    # call, no phantom source) and record that it was ignored.
+                    if is_signature_attachment(attachment):
+                        logger.info(
+                            f"Skipping signature/decorative image (not an offer "
+                            f"source): {file_name}")
+                        _skipped_signatures.append(file_name)
+                        continue
+
                     logger.info(f"Processing attachment: {file_name}")
 
                     file_ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
@@ -1441,6 +1611,7 @@ async def process_offer(payload, job_id: str):
 
                     if not file_bytes:
                         logger.warning(f"Could not parse file data for {file_name}")
+                        _empty_attachments.append(file_name)
                         continue
 
                     with tempfile.NamedTemporaryFile(
@@ -1455,6 +1626,22 @@ async def process_offer(payload, job_id: str):
                             tmp_file_path,
                             attachment.contentType
                         )
+
+                        # Client §2/§7 — record whether this (readable, non-
+                        # signature) attachment actually produced offer content.
+                        _produced = False
+                        if file_extracted:
+                            if ('products' in file_extracted
+                                    and isinstance(file_extracted['products'], list)):
+                                _produced = len(file_extracted['products']) > 0
+                            else:
+                                _produced = any(
+                                    v not in (None, "", [])
+                                    for v in file_extracted.values())
+                        if _produced:
+                            _extracted_sources.append(f"attachment: {file_name}")
+                        else:
+                            _empty_attachments.append(file_name)
 
                         if file_extracted:
                             logger.info(f"File extraction completed for {file_name}")
@@ -1511,6 +1698,40 @@ async def process_offer(payload, job_id: str):
                 except Exception as e:
                     logger.error(f"Error processing attachment {attachment.fileName}: {e}")
                     continue
+
+        # ── Client §6.3 — offer-level commercial conditions (computed once) ──
+        # Scan the real offer content (email/WhatsApp body + any document text)
+        # for validity / PO / payment / bonded-warehouse terms, preserve them
+        # verbatim, and resolve relative validity ("valid till tomorrow")
+        # against a RELIABLE anchor — the offer's own date if stated, else the
+        # original message received time — never the reprocessing date.
+        _cond_source_text = (payload.text_body or "")
+        for _dt in (extracted_data.get('_source_texts') or []):
+            _cond_source_text += "\n" + str(_dt)
+        _cond_anchor = (_parse_offer_date(extracted_data.get('offer_date'))
+                        or _received_at(payload))
+        _commercial_conditions, _cond_valid_until, _cond_flags = \
+            _extract_commercial_conditions(_cond_source_text, _cond_anchor)
+        # Client §2 — a durable copy of the raw offer content, stored on the
+        # SourceFileDB so the source survives Redis payload expiry (capped to
+        # keep the row sane).
+        _durable_source_text = (_cond_source_text or "").strip()[:200_000] or None
+
+        # ── Client §2/§7 — source provenance + nothing silently dropped ──────
+        _seen_src, _job_source_type_parts = set(), []
+        for _s in _extracted_sources:
+            if _s not in _seen_src:
+                _seen_src.add(_s)
+                _job_source_type_parts.append(_s)
+        _job_source_type = "; ".join(_job_source_type_parts) or None
+        _source_flags = []
+        for _sig in _skipped_signatures:
+            _source_flags.append(
+                f"ignored signature/decorative image (not an offer source): {_sig}")
+        for _emp in _empty_attachments:
+            _source_flags.append(
+                f"attachment '{_emp}' produced no readable offer content — "
+                f"flagged for manual review, not silently dropped")
 
         # Deduplicate products extracted from multiple sources (text body + attachments,
         # or the same product listed twice). Key on normalised name + volume + price.
@@ -1795,6 +2016,10 @@ async def process_offer(payload, job_id: str):
                             f"units_per_case={_pu}, unit_volume_ml={safe_data['unit_volume_ml']}"
                         )
 
+                    _apply_offer_level(
+                        safe_data, _commercial_conditions, _cond_valid_until,
+                        _cond_flags, _job_source_type, _source_flags)
+
                     _sup_name  = safe_data.get('supplier_name')
                     _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
 
@@ -1850,6 +2075,10 @@ async def process_offer(payload, job_id: str):
                             merged_data.get('offer_date'),
                             payload.source_filename or "",
                             datetime.utcnow(), safe_data),
+                        document_date=safe_data.get('document_date'),
+                        document_date_source=safe_data.get('document_date_source'),
+                        commercial_conditions=safe_data.get('commercial_conditions'),
+                        source_type=safe_data.get('source_type'),
                         date_received=_received_at(payload),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
@@ -1884,6 +2113,7 @@ async def process_offer(payload, job_id: str):
                     # so save_offer_to_db can persist them on the SourceFileDB.
                     offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
                     offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
+                    offer_dict["_source_text"] = _durable_source_text
 
                     if not is_valid_offer(offer_dict):
                         logger.info(
@@ -2027,6 +2257,10 @@ async def process_offer(payload, job_id: str):
                 safe_data = _normalize_currency_and_prices(safe_data)
                 _normalize_incoterm_location(safe_data)
 
+                _apply_offer_level(
+                    safe_data, _commercial_conditions, _cond_valid_until,
+                    _cond_flags, _job_source_type, _source_flags)
+
                 _sup_name  = safe_data.get('supplier_name')
                 _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
 
@@ -2074,6 +2308,10 @@ async def process_offer(payload, job_id: str):
                         extracted_data.get('offer_date'),
                         payload.source_filename or "",
                         datetime.utcnow(), safe_data),
+                    document_date=safe_data.get('document_date'),
+                    document_date_source=safe_data.get('document_date_source'),
+                    commercial_conditions=safe_data.get('commercial_conditions'),
+                    source_type=safe_data.get('source_type'),
                     date_received=_received_at(payload),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],
@@ -2103,6 +2341,7 @@ async def process_offer(payload, job_id: str):
                 # Phase 3 M1: thread content-hash + source-row estimate
                 offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
                 offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
+                offer_dict["_source_text"] = _durable_source_text
 
                 # Loose-unit €/case cleanup — see multi-product path above.
                 upc = offer_dict.get("units_per_case")
@@ -2168,12 +2407,43 @@ async def process_offer(payload, job_id: str):
                 # ground-truth said without needing server logs.
                 "source_row_estimate": extracted_data.get("_source_row_estimate"),
                 "all_products_count": len(all_products),
+                # Client §2/§7 — exactly what we extracted from, what signature
+                # images were ignored, and any readable attachment that gave
+                # nothing. Visible without digging into server logs.
+                "source_type": _job_source_type,
+                "ignored_signature_images": _skipped_signatures,
+                "empty_attachments": _empty_attachments,
             }
         }
 
         redis_manager.set_job_result(job_id, result_data)
         redis_manager.set_job_status(job_id, "done")
         logger.info(f"Successfully processed {len(offers)} products for job {job_id}")
+
+        # Client §2/§7 — a job that produced NO offer rows must be visibly
+        # flagged, never silently dropped. Record why (signatures ignored /
+        # attachments unreadable) on the intake feed.
+        try:
+            from core.intake_log import update_intake
+            if len(offers) == 0:
+                _why = []
+                if _skipped_signatures:
+                    _why.append("only signature/decorative image(s): "
+                                + ", ".join(_skipped_signatures))
+                if _empty_attachments:
+                    _why.append("unreadable/empty attachment(s): "
+                                + ", ".join(_empty_attachments))
+                if not _why:
+                    _why.append("no offer content could be extracted from the "
+                                "message body or attachments")
+                logger.warning(f"Job {job_id} produced 0 offers — flagged: "
+                               + "; ".join(_why))
+                update_intake(job_id, status="no_offer_content", products=0,
+                              error="No offer extracted — " + "; ".join(_why))
+            else:
+                update_intake(job_id, status="done", products=len(offers))
+        except Exception as _ie:
+            logger.warning(f"intake finalize failed for {job_id}: {_ie}")
 
         # R-12: persist any new trading events the full offer_items table
         # now implies, so /api/events keeps the full chain (A01 €25 → B01

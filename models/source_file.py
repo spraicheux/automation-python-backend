@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Boolean
+from sqlalchemy import Column, String, DateTime, Integer, Boolean, Text
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -23,6 +23,12 @@ class SourceFileDB(Base):
     expected_row_count    = Column(Integer, nullable=True)  # source-row estimate (barcodes in PDF, df length in XLSX)
     imported_row_count    = Column(Integer, nullable=True)  # how many actually persisted
     import_incomplete     = Column(Boolean, nullable=True)  # true when expected > imported
+    # client §2 (2026-11-06) — the raw offer content we extracted from (email
+    # body + any document text), stored durably so the original source stays
+    # available for audit and reprocessing AFTER the ephemeral Redis job
+    # payload has expired. This is why older text/WhatsApp offers (Edo) became
+    # un-reprocessable: their only copy lived in the expiring payload.
+    source_text  = Column(Text, nullable=True)
     created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     offer_items = relationship("OfferItemDB", back_populates="source_file", lazy="dynamic")
@@ -43,5 +49,6 @@ class SourceFileDB(Base):
             "expected_row_count": self.expected_row_count,
             "imported_row_count": self.imported_row_count,
             "import_incomplete": self.import_incomplete,
+            "source_text": self.source_text,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

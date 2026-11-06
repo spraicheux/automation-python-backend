@@ -54,7 +54,20 @@ class OfferItem(BaseModel):
     quantity_ftl: Optional[float] = None
     valid_until: Optional[str] = None
     offer_date: Optional[datetime] = None
+    # client §4 (2026-11-06) — a date read from the SOURCE FILENAME is NOT a
+    # commercial offer date. It is stored here, separately, with its provenance
+    # in `document_date_source`, and never drives expiry, alerts or commercial
+    # history. `offer_date` stays null unless the offer itself stated a date.
+    document_date: Optional[datetime] = None
+    document_date_source: Optional[str] = None
     date_received: Optional[datetime] = None
+    # client §6.3 — offer-level commercial conditions preserved verbatim
+    # (validity, immediate PO, payment terms, bonded-warehouse delivery, …).
+    commercial_conditions: Optional[str] = None
+    # client §2 (2026-11-06) — what content the extraction actually ran on:
+    # "email body" | "whatsapp message" | "attachment: <name>" | "image: <name>".
+    # Never a signature logo (those are skipped before extraction).
+    source_type: Optional[str] = None
     best_before_date: Optional[str] = None
     vintage: Optional[str] = None
     supplier_name: Optional[str] = None

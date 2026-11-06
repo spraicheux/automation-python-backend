@@ -131,8 +131,20 @@ class OfferItemDB(Base):
     superseded_by_uid   = Column(String(64), nullable=True, index=True)
     superseded_by_ref   = Column(String(255), nullable=True)
 
+    # client §6.3 — offer-level commercial conditions preserved verbatim
+    # (validity, immediate PO, payment terms, delivery to bonded warehouse).
+    commercial_conditions = Column(Text, nullable=True)
+    # client §2 — the content the extraction ran on ("email body",
+    # "whatsapp message", "attachment: X"). Never a signature logo.
+    source_type   = Column(String(255), nullable=True)
+
     # Timestamps
     offer_date    = Column(DateTime, nullable=True)
+    # client §4 — a date derived from the source FILENAME, kept separate from
+    # the commercial offer_date (which stays null unless the offer itself
+    # stated a date). document_date never drives expiry / alerts / history.
+    document_date        = Column(DateTime, nullable=True)
+    document_date_source = Column(String(255), nullable=True)
     date_received = Column(DateTime, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -295,6 +307,10 @@ class OfferItemDB(Base):
             "superseded_by_uid": self.superseded_by_uid,
             "superseded_by_ref": self.superseded_by_ref,
             "offer_date": self.offer_date.isoformat() if self.offer_date else None,
+            "document_date": self.document_date.isoformat() if self.document_date else None,
+            "document_date_source": self.document_date_source,
+            "commercial_conditions": self.commercial_conditions,
+            "source_type": self.source_type,
             "date_received": self.date_received.isoformat() if self.date_received else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }

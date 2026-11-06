@@ -2412,10 +2412,16 @@
           ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
           ${kv('Customs status (T1/T2)', (i.custom_status && i.custom_status !== 'Not Found') ? statusBadge(i.custom_status) : null, true, 'custom_status')}
           ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null, false, 'lead_time')}
-          ${kv('Offer date', formatDate(i.offer_date), false, 'offer_date')}
+          ${kv('Offer date', i.offer_date ? formatDate(i.offer_date) : '<span style="color:var(--muted)">unknown — not stated in the offer</span>', false, 'offer_date')}
+          ${i.document_date ? kv('Document date', `<span>${escapeHtml(formatDate(i.document_date) || '')}${i.document_date_source ? ` <small style="color:var(--muted)">(${escapeHtml(i.document_date_source)}; not a commercial date)</small>` : ''}</span>`) : ''}
           ${kv('Valid until', formatDate(i.valid_until), false, 'valid_until')}
           ${kv('Best before', formatDate(i.best_before_date), false, 'best_before_date')}
         </div>
+        ${i.commercial_conditions ? `
+          <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2,rgba(127,127,127,0.06));">
+            <div style="font-weight:600;color:var(--text-dim);margin-bottom:4px;">Commercial conditions</div>
+            <div style="font-size:13px;line-height:1.5;">${escapeHtml(i.commercial_conditions)}</div>
+          </div>` : ''}
       </div>
 
       <!-- FLAGS -->
@@ -2476,6 +2482,7 @@
             ${kv('Sender name', i.sender_name)}
             ${kv('Sender email', i.sender_email)}
             ${kv('Source filename', i.source_filename)}
+            ${kv('Extracted from', i.source_type || null)}
             ${kv('Source message id', i.source_message_id, true)}
             ${kv('Attachments', i.attachment_count != null ? `${i.attachment_count} file(s)` : null, true)}
             ${kv('Received', formatDate(i.date_received))}

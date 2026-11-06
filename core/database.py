@@ -111,6 +111,15 @@ def init_db():
             ("supersedes_ref",      "VARCHAR(255)"),
             ("superseded_by_uid",   "VARCHAR(64)"),
             ("superseded_by_ref",   "VARCHAR(255)"),
+            # client §4 (2026-11-06): a filename-derived date must NOT become
+            # the commercial offer_date. It is stored here with its provenance
+            # and excluded from expiry / alerts / commercial history.
+            ("document_date",         "TIMESTAMP"),
+            ("document_date_source",  "VARCHAR(255)"),
+            # client §6.3: offer-level commercial conditions preserved verbatim.
+            ("commercial_conditions", "TEXT"),
+            # client §2: what the extraction ran on (never a signature logo).
+            ("source_type",           "VARCHAR(255)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:
@@ -130,6 +139,9 @@ def init_db():
                 ("expected_row_count",   "INTEGER"),
                 ("imported_row_count",   "INTEGER"),
                 ("import_incomplete",    "BOOLEAN"),
+                # client §2 (2026-11-06): durable copy of the raw offer content
+                # so a source survives Redis payload expiry for audit/reprocess.
+                ("source_text",          "TEXT"),
             ]
             for col, coltype in source_file_columns:
                 conn.execute(text(

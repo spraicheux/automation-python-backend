@@ -138,14 +138,62 @@ def detect_supplier_from_text(*texts: Optional[str]) -> Optional[str]:
 
 # ─── filename + dedup (one copy, shared by all channels) ──────────────────────
 
+# Client §2/§7 (2026-11-06): a signature / decorative image (Outlook inline
+# "image001.gif", a logo, a footer banner) is NOT an offer source. It must
+# never become the source_filename and must never be sent for extraction —
+# the ElixeMarket offers were wrongly attributed to image001.gif (the LOXO
+# signature logo) because it happened to be attachments[0].
+_SIG_NAME_RE = re.compile(
+    r"(?i)^(?:image|img|logo|signature|sig|footer|banner|icon|header|"
+    r"outlook-[-\w]*)[-_ ]?\d*\.(?:gif|png|jpe?g|bmp|svg|tiff?)$"
+)
+
+
+def _att_get(att, key, default=None):
+    """Read a field from an attachment that may be a dict or an object."""
+    if isinstance(att, dict):
+        return att.get(key, default)
+    return getattr(att, key, default)
+
+
+def is_signature_attachment(att) -> bool:
+    """True when an attachment is a signature / decorative image rather than a
+    real offer document. Conservative: a genuine offer photo (a reasonably
+    sized jpg/png with no inline Content-ID and a non-boilerplate name) is NOT
+    treated as a signature, so it still reaches vision extraction."""
+    name = str(_att_get(att, "fileName", "") or "").strip()
+    ctype = str(_att_get(att, "contentType", "") or "").lower()
+    size = _att_get(att, "fileSize", 0) or 0
+    cid = _att_get(att, "contentId")
+    lname = name.lower()
+    is_image = ctype.startswith("image/") or lname.endswith(
+        (".gif", ".png", ".jpg", ".jpeg", ".bmp", ".svg", ".tif", ".tiff"))
+    if not is_image:
+        return False
+    # Auto-generated inline names (Outlook image001.gif, logo.png, …).
+    if _SIG_NAME_RE.match(name):
+        return True
+    # GIFs are effectively never a product offer — signatures/banners are.
+    if ctype == "image/gif" or lname.endswith(".gif"):
+        return True
+    # Inline image (has a Content-ID) that is small → decorative signature.
+    try:
+        if cid and size and int(size) < 50_000:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def generate_source_filename(source_filename, attachments, supplier_email,
                              supplier_name, source_message_id, job_id):
     if source_filename:
         return source_filename
-    if attachments:
-        first = attachments[0]
-        name = (first.get("fileName") if isinstance(first, dict)
-                else getattr(first, "fileName", None))
+    # Skip signature/decorative images so a logo never poses as the source.
+    for att in (attachments or []):
+        if is_signature_attachment(att):
+            continue
+        name = _att_get(att, "fileName")
         if name:
             return name
     base = supplier_email or supplier_name or "unknown_source"
