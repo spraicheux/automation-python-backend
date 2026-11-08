@@ -45,6 +45,12 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "price per piece": "price_per_unit", "unit price eur": "price_per_unit",
     "price per case": "price_per_case", "case price": "price_per_case",
     "price per carton": "price_per_case",
+    # A bare "Price" column paired with a "Price basis" column (per bottle /
+    # per case / per piece) — resolved to price_per_unit vs price_per_case
+    # AFTER the row is read (Samuel QA_EMAIL E07, 2026-11-07).
+    "price": "_price_value", "net price": "_price_value", "price eur": "_price_value",
+    "price basis": "_price_basis", "basis": "_price_basis",
+    "price type": "_price_basis", "per": "_price_basis",
     "units per case": "units_per_case", "unit per case": "units_per_case",
     "bottles per case": "units_per_case", "pieces per case": "units_per_case",
     "pack size": "units_per_case", "pack": "units_per_case",
@@ -89,8 +95,9 @@ _FIELD_SYNONYMS: Dict[str, str] = {
 # Headers we recognise but intentionally ignore (keeps the match score honest).
 _IGNORE_HEADERS = {"test id", "id", "no", "line", "row", "index"}
 
-# Fields that make a row a real product line (need at least one).
-_PRICE_FIELDS = {"price_per_unit", "price_per_case"}
+# Fields that make a row a real product line (need at least one). "_price_value"
+# is the bare "Price" column resolved later against its "Price basis".
+_PRICE_FIELDS = {"price_per_unit", "price_per_case", "_price_value"}
 
 
 def _match_header(norm: str) -> Optional[str]:
@@ -195,6 +202,38 @@ _QTY_FTL = {"ftl", "truck", "trucks", "load"}
 _QTY_UNIT = {"bottle", "bottles", "btl", "unit", "units", "piece", "pieces",
              "pcs", "pc", "each"}
 
+# A quantity/MOQ cell often carries its unit inline with no separate unit
+# column ("100 cases", "3 pallets", "1 FTL", "9600 bottles", "24 pieces").
+# Parse the leading number AND the trailing unit word so the unit routing
+# (_assign_quantity) is correct — a bottle count must never be stored as cases.
+_NUM_UNIT_RE = re.compile(r'(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+)?')
+_ON_REQUEST_RE = re.compile(
+    r'on\s*request|price\s*on\s*req|\bp\.?o\.?a\.?\b|\bpoa\b|\btbc\b|'
+    r'to\s*be\s*(?:confirmed|advised)|\bask\b', re.IGNORECASE)
+
+
+def _split_num_unit(raw: Any) -> Tuple[Optional[float], Optional[str]]:
+    """('9600 bottles') -> (9600.0, 'bottles'); ('100') -> (100.0, None).
+    Commas are treated as thousands separators (English QA files)."""
+    if raw is None:
+        return (None, None)
+    if isinstance(raw, (int, float)):
+        return (float(raw), None)
+    m = _NUM_UNIT_RE.search(str(raw).strip())
+    if not m:
+        return (None, None)
+    try:
+        num = float(m.group(1).replace(",", ""))
+    except ValueError:
+        num = None
+    unit = (m.group(2) or "").strip().lower() or None
+    return (num, unit)
+
+
+def _is_on_request(val: Any) -> bool:
+    """A Price / Price-basis cell that means 'price on request' — never 0."""
+    return bool(_ON_REQUEST_RE.search(str(val if val is not None else "")))
+
 
 def _assign_quantity(prod: Dict[str, Any], qty: Optional[float], unit: Optional[str]) -> None:
     if qty is None:
@@ -262,6 +301,11 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             prod: Dict[str, Any] = {}
             qty_val: Optional[float] = None
             qty_unit: Optional[str] = None
+            moq_val: Optional[float] = None
+            moq_unit_inline: Optional[str] = None
+            price_value: Optional[float] = None
+            price_basis: str = ""
+            price_on_request = False
             size_raw: Any = None
             any_value = False
 
@@ -274,11 +318,25 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
                 if field == "alcohol_percent":
                     prod["alcohol_percent"] = _scale_percent(cell)
-                elif field in ("price_per_unit", "price_per_case", "units_per_case",
-                               "moq_cases"):
+                elif field == "_price_value":
+                    # Bare "Price" column; basis decides unit vs case below.
+                    if _is_on_request(val):
+                        price_on_request = True
+                    else:
+                        price_value = _to_float(val)
+                elif field == "_price_basis":
+                    price_basis = str(val).strip().lower()
+                    if _is_on_request(val):
+                        price_on_request = True
+                elif field in ("price_per_unit", "price_per_case", "units_per_case"):
                     prod[field] = _to_float(val)
+                elif field == "moq_cases":
+                    # MOQ may carry its own inline unit ("1 pallet", "1 FTL").
+                    moq_val, moq_unit_inline = _split_num_unit(val)
                 elif field == "_quantity":
-                    qty_val = _to_float(val)
+                    qty_val, _qu = _split_num_unit(val)
+                    if _qu:
+                        qty_unit = _qu
                 elif field == "quantity_unit":
                     qty_unit = str(val).strip()
                 elif field in ("offer_date", "valid_until", "best_before_date"):
@@ -307,13 +365,71 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
             if not any_value:
                 continue
-            # A product line needs a name/brand and a price.
+            # A product line needs a name or a brand.
             if not (prod.get("product_name") or prod.get("brand")):
                 continue
-            if prod.get("price_per_unit") is None and prod.get("price_per_case") is None:
+
+            # ── Resolve the Price / Price-basis pair ───────────────────────
+            if price_value is not None:
+                if "case" in price_basis or "carton" in price_basis:
+                    prod["price_per_case"] = price_value
+                elif any(w in price_basis for w in
+                         ("bottle", "btl", "unit", "piece", "each")):
+                    prod["price_per_unit"] = price_value
+                elif prod.get("price_per_unit") is None and prod.get("price_per_case") is None:
+                    # basis unstated → the common bottle price
+                    prod["price_per_unit"] = price_value
+            if price_on_request:
+                # Samuel 2026-11-07 (E07-08): a "price on request" line is NEVER
+                # €0 and is NEVER dropped — keep it with null prices and flag it
+                # so it is reviewed, not treated as a zero-price offer.
+                prod["price_per_unit"] = None
+                prod["price_per_case"] = None
+                flags = prod.setdefault("error_flags", [])
+                if "Price on request retained" not in flags:
+                    flags.append("Price on request retained")
+                prod["needs_manual_review"] = True
+
+            # ── Quantity (unit parsed from the cell) ───────────────────────
+            _assign_quantity(prod, qty_val, qty_unit)
+            # Stock stated in bottles/pieces with a known pack → also derive
+            # cases for the comparison views, keeping the stated count visible.
+            _upc = prod.get("units_per_case")
+            if prod.get("quantity_bottles") and _upc:
+                try:
+                    prod["quantity_case"] = round(
+                        float(prod["quantity_bottles"]) / float(_upc), 2)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+            # ── MOQ (unit follows the source — client §5) ──────────────────
+            if moq_val is not None:
+                _mu = _norm(moq_unit_inline)
+                if _mu in _QTY_PALLET:
+                    prod["moq_unit"] = "pallets"
+                elif _mu in _QTY_FTL:
+                    prod["moq_unit"] = "ftl"
+                elif _mu in ("piece", "pieces", "pcs", "pc"):
+                    prod["moq_bottles"] = moq_val
+                    prod["moq_unit"] = "pieces"
+                elif _mu in ("bottle", "bottles", "btl", "unit", "units"):
+                    prod["moq_bottles"] = moq_val
+                    prod["moq_unit"] = "bottles"
+                else:
+                    prod["moq_cases"] = moq_val
+                    prod["moq_unit"] = "cases"
+
+            # Keep the row when it carries ANY commercial signal — a price, a
+            # price-on-request marker, a quantity, or an EAN. A no-price,
+            # no-quantity line falls through to the LLM/flagging path.
+            _has_price = (prod.get("price_per_unit") is not None
+                          or prod.get("price_per_case") is not None)
+            _has_qty = any(prod.get(k) for k in
+                           ("quantity_case", "quantity_bottles",
+                            "quantity_pallets", "quantity_ftl"))
+            if not (_has_price or price_on_request or _has_qty or prod.get("ean_code")):
                 continue
 
-            _assign_quantity(prod, qty_val, qty_unit)
             prod.setdefault("category_slug", _category_slug(prod.get("category")))
             prod["_structured_source"] = f"{ws.title}:row{r}"
             products.append(prod)

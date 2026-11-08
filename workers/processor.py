@@ -532,6 +532,31 @@ def _is_placeholder_supplier(value, source_filename) -> bool:
     return False
 
 
+# A trailing offer-reference glued onto the supplier name, e.g.
+# "Cedar Bay QA Trading — ref. QA-20261107-W07". The supplier field must hold
+# ONLY the trading name; the reference belongs in supplier_reference
+# (Samuel Cedar Bay, 2026-11-07).
+_SUPPLIER_REF_SPLIT_RE = re.compile(
+    r'\s*[—–\-|,;:]*\s*(?:ref(?:erence)?|our\s*ref|offer\s*ref)\.?\s*[:.#]?\s*'
+    r'([A-Za-z0-9][A-Za-z0-9/_\-]{2,})\s*$', re.IGNORECASE)
+
+
+def _supplier_name_and_ref(raw):
+    """('Cedar Bay QA Trading — ref. QA-20261107-W07') ->
+    ('Cedar Bay QA Trading', 'QA-20261107-W07'). Conservative: splits only a
+    trailing ref-marker followed by a token that contains a digit, so an
+    ordinary trading name is never truncated."""
+    if not raw:
+        return (raw, None)
+    s = str(raw).strip()
+    m = _SUPPLIER_REF_SPLIT_RE.search(s)
+    if m and re.search(r'\d', m.group(1)):
+        name = s[:m.start()].strip(' .,-—–|;:')
+        if name:
+            return (name, m.group(1).strip(' .,-'))
+    return (s, None)
+
+
 def _resolve_supplier_name(ai_name, payload) -> str:
     """Return the best available supplier name.
 
@@ -542,14 +567,15 @@ def _resolve_supplier_name(ai_name, payload) -> str:
 
     A candidate that is really the source filename or a test marker is skipped
     (see _is_placeholder_supplier) so a catalog filename never poses as a supplier.
+    A trailing offer reference is stripped (see _supplier_name_and_ref).
     """
     _missing = [None, "", "Not Found"]
     src = getattr(payload, 'source_filename', None)
     pname = getattr(payload, 'supplier_name', None)
     if pname not in _missing and not _is_placeholder_supplier(pname, src):
-        return str(pname)
+        return _supplier_name_and_ref(str(pname))[0]
     if ai_name not in _missing and not _is_placeholder_supplier(ai_name, src):
-        return str(ai_name)
+        return _supplier_name_and_ref(str(ai_name))[0]
     # Fallback: derive the supplier from the message body / subject at PROCESS
     # time. Covers (a) reprocessed jobs whose saved payload predates improved
     # detection, and (b) forwarded emails where the original supplier sits in
@@ -559,7 +585,7 @@ def _resolve_supplier_name(ai_name, payload) -> str:
         derived = detect_supplier_from_text(getattr(payload, 'text_body', None),
                                             getattr(payload, 'subject', None))
         if derived and not _is_placeholder_supplier(derived, src):
-            return str(derived)
+            return _supplier_name_and_ref(str(derived))[0]
     except Exception:
         pass
     return "Not Found"
@@ -865,8 +891,19 @@ def _normalize_incoterm_location(safe_data: dict) -> None:
 
 
 _PALLET_PER_CASE_RE = re.compile(
-    r'(\d+(?:[.,]\d+)?)\s*(?:pallets?|plt|pll)\s*(?:per|x|×|/|of|\*)?\s*'
+    r'(\d+(?:[.,]\d+)?)\s*(?:pallets?|plt|pll)\b[\s,;:]*'
+    r'(?:per|x|×|/|of|\*|each|with|containing|=)?[\s,;:]*'
     r'(\d+(?:[.,]\d+)?)\s*(?:cs\b|cases?|cartons?|ctns?)', re.IGNORECASE)
+
+# Per-option bottle prices in a pallet-scale quote, e.g.
+# "EUR 4.76 per bottle EXW Germany" / "EUR 4.80 per bottle DAP Riga".
+# Lets us preserve the QUOTED bottle price EXACTLY (not the LLM's round-tripped
+# value) and attach it to the row with the matching incoterm (Samuel Cedar Bay).
+_BOTTLE_OPTION_RE = re.compile(
+    r'(?:eur|usd|gbp|chf|€|\$|£)\s*([\d]+(?:[.,]\d+)?)\s*'
+    r'(?:per\s*bottle|/\s*b(?:tl|ottle)\b|per\s*btl\b)\s*'
+    r'(exworks?|exw|dap|ddp|cif|cfr|cnf|fob|fca|cpt|cip|dpu|fas|ex)\b',
+    re.IGNORECASE)
 
 
 def _fix_pallet_per_case_phrasing(safe_data: dict) -> None:
@@ -893,14 +930,40 @@ def _fix_pallet_per_case_phrasing(safe_data: dict) -> None:
     upc = _safe_float(safe_data.get('units_per_case'))
     if upc is not None and (upc == cpp or upc > 24):
         safe_data['units_per_case'] = None  # 112 was cases/pallet, not units/case
-    # A bare price with no explicit per-case marker in the source is per bottle.
-    if not re.search(r'/\s*cs|/\s*case|per\s*case|p/?cs|eur/cs|usd/cs', raw, re.IGNORECASE):
+
+    # ── Price: the bottles-per-case is unknown here, so a CASE price cannot be
+    # derived. Preserve the quoted BOTTLE price exactly and leave the case price
+    # blank (Samuel Cedar Bay: "preserve the quoted bottle prices exactly and
+    # leave both case prices blank when the bottles per case is unknown").
+    _has_case_marker = re.search(
+        r'/\s*cs|/\s*case|per\s*case|p/?cs|eur/cs|usd/cs', raw, re.IGNORECASE)
+    # Exact per-option bottle prices from the source, keyed by incoterm.
+    _opts: dict = {}
+    for _mo in _BOTTLE_OPTION_RE.finditer(raw):
+        _pv = _safe_float(_mo.group(1).replace(',', '.'))
+        _ic = _mo.group(2).upper()
+        _ic = 'EXW' if _ic in ('EX', 'EXWORK', 'EXWORKS') else _ic
+        if _pv is not None and _ic:
+            _opts.setdefault(_ic, _pv)
+    _row_inco = str(safe_data.get('incoterm') or '').strip().upper()
+    _row_inco = 'EXW' if _row_inco in ('EX', 'EXWORK', 'EXWORKS') else _row_inco
+    if _opts and _row_inco in _opts and not _has_case_marker:
+        # Authoritative: the quoted bottle price for THIS row's incoterm.
+        safe_data['price_per_unit'] = _opts[_row_inco]
+        safe_data['price_per_case'] = None
+        safe_data['price_per_unit_eur'] = None   # recomputed by currency pass
+        safe_data['price_per_case_eur'] = None
+    elif not _has_case_marker:
+        # Bare price with no per-case marker → it is per bottle. Move a value the
+        # LLM parked in price_per_case to price_per_unit (only if unit is empty),
+        # then clear the un-derivable case price.
         ppc = _safe_float(safe_data.get('price_per_case'))
-        if ppc:
+        ppu = _safe_float(safe_data.get('price_per_unit'))
+        if ppu is None and ppc is not None:
             safe_data['price_per_unit'] = ppc
-            safe_data['price_per_case'] = None
-            safe_data['price_per_unit_eur'] = None
-            safe_data['price_per_case_eur'] = None
+        safe_data['price_per_case'] = None
+        safe_data['price_per_case_eur'] = None
+        safe_data['price_per_unit_eur'] = None
     flags = safe_data.get('error_flags')
     if isinstance(flags, list):
         _m = f'Quantity: {pallets:g} pallets × {cpp:g} cases/pallet = {pallets * cpp:g} cases'
@@ -2047,6 +2110,13 @@ async def process_offer(payload, job_id: str):
 
                     _sup_name  = safe_data.get('supplier_name')
                     _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
+                    # A reference glued onto the supplier name belongs in
+                    # supplier_reference (Cedar Bay — ref. QA-20261107-W07).
+                    if not safe_data.get('supplier_reference'):
+                        _sr = _supplier_name_and_ref(
+                            getattr(payload, 'supplier_name', None) or _sup_name)[1]
+                        if _sr:
+                            safe_data['supplier_reference'] = _sr
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -2307,6 +2377,13 @@ async def process_offer(payload, job_id: str):
 
                 _sup_name  = safe_data.get('supplier_name')
                 _sup_email = _resolve_supplier_email(payload, safe_data.get('supplier_email'))
+                # A reference glued onto the supplier name belongs in
+                # supplier_reference (Cedar Bay — ref. QA-20261107-W07).
+                if not safe_data.get('supplier_reference'):
+                    _sr = _supplier_name_and_ref(
+                        getattr(payload, 'supplier_name', None) or _sup_name)[1]
+                    if _sr:
+                        safe_data['supplier_reference'] = _sr
 
                 offer = OfferItem(
                     uid=uid,
