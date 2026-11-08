@@ -959,10 +959,53 @@ def _salvage_truncated_json(content: str, chunk_label: str) -> list:
         return []
 
 
+# A standalone "Ex <Warehouse>" line (e.g. "Ex Loen", "Ex Newcorp") is a SECTION
+# HEADING: it sets the incoterm/location for the product lines BELOW it until the
+# next such heading. These can land in a different 20-line chunk than the products
+# they govern, so the LLM would mis-attach them (Samuel ATV: Southern Comfort shown
+# under Newcorp instead of Loen). Annotating each governed line with its heading —
+# before chunking — makes the association survive chunk boundaries.
+_SECTION_HEADING_RE = re.compile(
+    r'^[>\s•·●*\-]*\s*((?:ex|exw)\s+[A-Za-z][A-Za-z]+)\s*$', re.IGNORECASE)
+_INLINE_INCOTERM_RE = re.compile(
+    r'\b(?:ex\s*works?|exw|ex\s+[A-Za-z]{2,}|dap|ddp|cif|cfr|cnf|fob|fca|cpt|cip|fas|dpu|bond|loco)\b',
+    re.IGNORECASE)
+_SECTION_PRICE_LINE_RE = re.compile(
+    r'@|/\s*cs\b|/\s*btl\b|/\s*case\b|/\s*bottle\b', re.IGNORECASE)
+
+
+def _annotate_section_headings(text: str) -> str:
+    """Carry a standalone 'Ex <Warehouse>' section heading down onto the product
+    lines it governs (those below it, up to the next heading) when they lack their
+    own inline incoterm. No-op for text with no such heading, so ordinary emails
+    are untouched."""
+    if not text:
+        return text
+    lines = text.splitlines()
+    if not any(_SECTION_HEADING_RE.match(ln) for ln in lines):
+        return text
+    out, current = [], None
+    for ln in lines:
+        m = _SECTION_HEADING_RE.match(ln)
+        if m:
+            current = m.group(1).strip()
+            out.append(ln)
+            continue
+        if (current and _SECTION_PRICE_LINE_RE.search(ln)
+                and not _INLINE_INCOTERM_RE.search(ln)):
+            out.append(ln.rstrip() + f" , {current}")
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
+    # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
+    # the lines they govern before chunking (Samuel ATV delivery-terms fix).
+    text = _annotate_section_headings(text)
 
     # ── BLOCK-AWARE CHUNKING ───────────────────────────────────────────────────
     # When the input contains explicit per-product markers (e.g.
