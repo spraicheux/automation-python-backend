@@ -1798,8 +1798,12 @@ async def process_offer(payload, job_id: str):
         _cond_source_text = (payload.text_body or "")
         for _dt in (extracted_data.get('_source_texts') or []):
             _cond_source_text += "\n" + str(_dt)
-        _cond_anchor = (_parse_offer_date(extracted_data.get('offer_date'))
-                        or _parse_stated_offer_date(_cond_source_text)
+        # Prefer an offer date EXPLICITLY STATED in the body ("Original offer
+        # date: 7 November 2026") over the LLM's document-level offer_date — the
+        # stated date is the authoritative original date and must never be
+        # displaced by the reprocessing/received date (Samuel rule #1).
+        _cond_anchor = (_parse_stated_offer_date(_cond_source_text)
+                        or _parse_offer_date(extracted_data.get('offer_date'))
                         or _received_at(payload))
         _commercial_conditions, _cond_valid_until, _cond_flags = \
             _extract_commercial_conditions(_cond_source_text, _cond_anchor)
