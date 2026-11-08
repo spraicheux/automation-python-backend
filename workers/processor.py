@@ -1071,10 +1071,13 @@ def _normalize_moq_and_quantity(safe_data: dict, error_flags: list) -> dict:
         # row text ("1 FTL available", "FTL × 1") when the LLM gave a
         # numeric quantity_case before we null it; default to 1 when the
         # supplier wrote "1 FTL" or just "FTL" with no explicit count.
-        ftl_count = None
-        if qty is not None and qty > 0:
+        # Honour a count already set upstream (e.g. the structured XLSX path
+        # parsed "1 FTL" into quantity_ftl) before recomputing — otherwise a
+        # row with no _raw_row_text would null it (Samuel E07-09).
+        ftl_count = _to_float(safe_data.get('quantity_ftl'))
+        if ftl_count is None and qty is not None and qty > 0:
             ftl_count = qty
-        else:
+        if ftl_count is None:
             raw = safe_data.get('_raw_row_text') or ''
             m = re.search(r'(\d+(?:\.\d+)?)\s*(?:FTL|full\s*truck\s*load)\b',
                           raw, re.IGNORECASE)
@@ -1454,6 +1457,30 @@ def _resolve_relative_validity(raw: str, anchor: Optional[datetime]):
     return None, "relative validity term not understood", True
 
 
+# An explicitly stated offer/original date in the body, e.g.
+# "Original offer date: 7 November 2026." — the reliable anchor for relative
+# validity ("valid till tomorrow"), so it never depends on the reprocessing
+# date (Samuel rule #1, Cedar Bay 2026-11-07).
+_STATED_OFFER_DATE_RE = re.compile(
+    r'(?:original\s+offer\s+date|offer\s+date|date\s+of\s+offer|'
+    r'offer\s+issued(?:\s+on)?|issued\s+on|dated)\s*[:\-]?\s*'
+    r'(\d{1,2}\s+[A-Za-zûéèçîôàâäïüö]+\s+\d{4}'
+    r'|\d{4}-\d{2}-\d{2}'
+    r'|\d{1,2}[./]\d{1,2}[./]\d{2,4}'
+    r'|[A-Za-z]+\s+\d{1,2},?\s+\d{4})',
+    re.IGNORECASE)
+
+
+def _parse_stated_offer_date(text: str) -> Optional[datetime]:
+    """Return the offer/original date stated in the body text, or None."""
+    if not text:
+        return None
+    m = _STATED_OFFER_DATE_RE.search(str(text))
+    if not m:
+        return None
+    return _parse_offer_date(m.group(1))
+
+
 def _extract_commercial_conditions(text: str, anchor: Optional[datetime]):
     """Client §6.3 — capture offer-level commercial conditions verbatim
     (payment, PO requirement, bonded-warehouse delivery, validity) and resolve
@@ -1772,6 +1799,7 @@ async def process_offer(payload, job_id: str):
         for _dt in (extracted_data.get('_source_texts') or []):
             _cond_source_text += "\n" + str(_dt)
         _cond_anchor = (_parse_offer_date(extracted_data.get('offer_date'))
+                        or _parse_stated_offer_date(_cond_source_text)
                         or _received_at(payload))
         _commercial_conditions, _cond_valid_until, _cond_flags = \
             _extract_commercial_conditions(_cond_source_text, _cond_anchor)
