@@ -2258,17 +2258,35 @@ async def process_offer(payload, job_id: str):
                     # dashboard shows "—" or "N/A (loose)" instead.
                     upc = offer_dict.get("units_per_case")
                     if not upc or upc in (0, 0.0, 1, 1.0):
-                        # NARS retest bug: loose pack with price_per_case == price_per_unit
-                        # was passing through. Treat all loose-pack case prices as unavailable.
-                        offer_dict["price_per_case"] = None
-                        offer_dict["price_per_case_eur"] = None
-                        if upc in (0, 0.0):
-                            offer_dict["units_per_case"] = None
-                        # Also null quantity_case if it was passed through as bottle count
-                        # (defensive — the processor's _normalize_quantity_units should have
-                        # already caught this, but belt-and-braces for direct DB writes).
-                        if (offer_dict.get("quantity_unit") or "").lower() == "bottles":
-                            offer_dict["quantity_case"] = None
+                        # NARS retest bug: a loose pack whose price_per_case was a COPY of
+                        # the per-bottle price was passing through. Treat loose-pack case
+                        # prices as unavailable — UNLESS the source genuinely quoted a
+                        # per-case price for a product ordered BY THE CASE (Samuel ATV:
+                        # Cody Vody "3456 cases @ €23.40 per case"), where the bottles-per-
+                        # case is simply unknown. That is a real case price the trader buys
+                        # at, not an artifact, so it must survive.
+                        _ppc = _safe_float(offer_dict.get("price_per_case"))
+                        _ppu = _safe_float(offer_dict.get("price_per_unit"))
+                        _by_case = (offer_dict.get("quantity_unit") or "").strip().lower() in ("cases", "case")
+                        _is_copy = (_ppc is not None and _ppu is not None and _ppu > 0
+                                    and abs(_ppc - _ppu) <= 0.01)
+                        _genuine_case = bool(_by_case and _ppc and not _is_copy)
+                        if not _genuine_case:
+                            offer_dict["price_per_case"] = None
+                            offer_dict["price_per_case_eur"] = None
+                            if upc in (0, 0.0):
+                                offer_dict["units_per_case"] = None
+                            # Also null quantity_case if it was passed through as bottle count
+                            # (defensive — the processor's _normalize_quantity_units should have
+                            # already caught this, but belt-and-braces for direct DB writes).
+                            if (offer_dict.get("quantity_unit") or "").lower() == "bottles":
+                                offer_dict["quantity_case"] = None
+                        elif offer_dict.get("price_per_unit") in (0, 0.0):
+                            # Genuine per-case price with no derivable per-bottle price:
+                            # show the unit price as blank, never €0 (Samuel: Cody Vody
+                            # must not read "€0/unit").
+                            offer_dict["price_per_unit"] = None
+                            offer_dict["price_per_unit_eur"] = None
 
                     offers.append(offer_dict)
                     valid_count += 1

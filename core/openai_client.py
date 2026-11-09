@@ -1286,11 +1286,25 @@ def _reconcile_source_authoritative(text, products):
                 if _recon_looks_fragment(P.get('product_name')) and rec['name']:
                     P['product_name'] = rec['name']
             else:
-                P = {'product_name': rec['name'], 'price_per_unit': None, 'price_per_case': None,
-                     'quantity_case': None, 'quantity_bottles': None, 'quantity_ftl': None,
-                     'quantity_unit': None, 'custom_status': rec['custom'] or 'Not Found',
-                     'error_flags': [], 'incoterm': 'Not Found', 'location': 'Not Found',
-                     'currency': rec['currency'] or 'EUR', '_raw_row_text': rec['raw']}
+                # Re-injected product the LLM dropped. Run it through clean_product_data
+                # so it gets a product_key + schema like a real extracted row — WITHOUT
+                # a product_key the processor drops it at its "product_key not found"
+                # guard (Samuel Capri Sun). Fall back to a slug key if cleaning fails.
+                base = {'product_name': rec['name'], 'brand': rec['name'],
+                        'currency': rec['currency'] or 'EUR'}
+                try:
+                    P = clean_product_data(base)
+                except Exception:
+                    P = dict(base)
+                    P['product_key'] = (re.sub(r'[^A-Z0-9]+', '_', (rec['name'] or 'RECON').upper()).strip('_')
+                                        or 'RECON_INJECTED')
+                P['_raw_row_text'] = rec['raw']
+                P['price_per_unit'] = None; P['price_per_case'] = None
+                P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None
+                P['quantity_case'] = None; P['quantity_bottles'] = None
+                P['quantity_ftl'] = None; P['quantity_unit'] = None
+                P['custom_status'] = rec['custom'] or 'Not Found'
+                P['incoterm'] = 'Not Found'; P['location'] = 'Not Found'
                 if rec['price'] is not None or rec['basis'] == 'ambiguous':
                     _recon_apply_price(P, rec)
                 if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
@@ -1300,14 +1314,8 @@ def _reconcile_source_authoritative(text, products):
                     # honours to KEEP a no-price row (Samuel Capri Sun — else it is dropped).
                     _recon_flag(P, 'Price on request retained')
                     _recon_flag(P, 'no price stated in source')
+                _recon_flag(P, 'row re-injected from source — LLM had dropped this product line')
                 out.append(P); injected += 1
-        # Surface a compact diagnostic via error_flags (reliably readable from
-        # /api/result) so the live match/parse picture is visible without logs.
-        if out:
-            _recon_flag(out[0], f"RECONDIAG priced={priced} recs={len(recs)} perT={per_line_T} "
-                               f"match={len(match)} inj={injected} head={text[:80]!r}")
-            _recon_flag(out[0], "RECONDIAG unmatched=" + "; ".join(
-                str(recs[i]['name']) for i in range(len(recs)) if i not in match)[:160])
         logger.info(f"[reconcile] source-authoritative pass ran: {len(recs)} source offers, "
                     f"{len(match)} matched+corrected, {injected} re-injected "
                     f"(products {len(products)} -> {len(out)})")
