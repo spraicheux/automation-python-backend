@@ -617,7 +617,22 @@ def _resolve_supplier_ref(ai_name, payload):
         derived = detect_supplier_from_text(getattr(payload, 'text_body', None),
                                             getattr(payload, 'subject', None))
         if derived and not _is_placeholder_supplier(derived, src):
-            return _supplier_name_and_ref(str(derived))[1]
+            _r = _supplier_name_and_ref(str(derived))[1]
+            if _r:
+                return _r
+    except Exception:
+        pass
+    # Fallback: the reference may sit in the body text beside the supplier line
+    # even when the LLM already extracted a clean supplier_name without it
+    # (Samuel Cedar Bay WhatsApp: "Offer from Cedar Bay QA Trading — ref.
+    # QA-20261107-W07"). Conservative: a "ref" marker followed by a token with a digit.
+    try:
+        body = getattr(payload, 'text_body', None) or ''
+        m = re.search(
+            r'(?:^|[—–\-|,;:(\s])(?:ref(?:erence)?|our\s*ref|offer\s*ref)\.?\s*[:.#]?\s*'
+            r'([A-Za-z0-9][A-Za-z0-9/_\-]{2,})', body, re.IGNORECASE)
+        if m and re.search(r'\d', m.group(1)):
+            return m.group(1).strip(' .,-')
     except Exception:
         pass
     return None
