@@ -1261,6 +1261,13 @@ def _reconcile_source_authoritative(text, products):
         out = [dict(p) for p in products]   # shallow copy; fields reassigned, flags copied in _recon_flag
         match = _recon_match(recs, out)
         injected = 0
+        logger.info(f"[reconcile] DIAG priced={priced} recs={len(recs)} per_line_T={per_line_T} "
+                    f"matched={len(match)} text_head={text[:120]!r}")
+        logger.info(f"[reconcile] DIAG recs=" + " || ".join(
+            f"{r['name']!r} p={r['price']} b={r['basis']} q={r['qty_val']}{r['qty_unit'] or ''} T={r['custom']}"
+            for r in recs))
+        logger.info(f"[reconcile] DIAG unmatched_src=" + ", ".join(
+            repr(recs[i]['name']) for i in range(len(recs)) if i not in match))
         for si, rec in enumerate(recs):
             if si in match:
                 P = out[match[si]]
@@ -1283,8 +1290,10 @@ def _reconcile_source_authoritative(text, products):
                 if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
                     _recon_apply_qty(P, rec)
                 if rec['price'] is None and rec['qty_val'] is None and rec['qty_unit'] != 'ftl':
+                    # 'Price on request retained' is the magic flag processor._passes_quality
+                    # honours to KEEP a no-price row (Samuel Capri Sun — else it is dropped).
+                    _recon_flag(P, 'Price on request retained')
                     _recon_flag(P, 'no price stated in source')
-                _recon_flag(P, 'row re-injected from source — LLM had dropped this product line')
                 out.append(P); injected += 1
         logger.info(f"[reconcile] source-authoritative pass ran: {len(recs)} source offers, "
                     f"{len(match)} matched+corrected, {injected} re-injected "
