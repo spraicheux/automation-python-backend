@@ -463,6 +463,14 @@ def is_valid_offer(offer_dict: dict) -> bool:
                     or 'Price on request retained' in f
                 )
                 for f in flags):
+            # A "price on request" row must never read €0 on the dashboard — null a
+            # stray 0 so it shows "on request" (Samuel: never €0). A genuinely stated
+            # €0.00 keeps its own "Zero price retained" semantics elsewhere.
+            if not any(isinstance(f, str) and 'Zero price retained' in f for f in flags):
+                for _pk in ('price_per_unit', 'price_per_case',
+                            'price_per_unit_eur', 'price_per_case_eur'):
+                    if offer_dict.get(_pk) in (0, 0.0):
+                        offer_dict[_pk] = None
             return True
         # No price, but keep the offer when it carries another commercial signal
         # — a quantity, an EAN or a supplier reference. Suppliers legitimately
