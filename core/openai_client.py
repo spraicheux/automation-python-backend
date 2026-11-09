@@ -1000,6 +1000,31 @@ def _annotate_section_headings(text: str) -> str:
     return "\n".join(out)
 
 
+# Suppliers glue the quantity, unit and price together ("15450btls@€18.99/btl",
+# "3456cs@€23.40/cs", "840 bottles@€262.25/btl"). Expanding them to explicit
+# words before the LLM makes the quantity, its unit and the price BASIS
+# unambiguous, so a bottle count isn't dropped and a "/cs" price isn't mapped to
+# the unit price (Samuel ATV). Deterministic; only touches '@' price fragments.
+_GLUED_QTY_BTL_RE = re.compile(r'(\d[\d,]*)\s*(?:btls?|bottles?)\s*@', re.IGNORECASE)
+_GLUED_QTY_CS_RE = re.compile(r'(\d[\d,]*)\s*(?:cs|cases?|cartons?|ctns?)\s*@', re.IGNORECASE)
+_GLUED_PRICE_BTL_RE = re.compile(
+    r'@\s*(€|eur|usd|\$|£|gbp|chf)?\s*([\d][\d.,]*)\s*/\s*(?:btls?|bottles?)\b', re.IGNORECASE)
+_GLUED_PRICE_CS_RE = re.compile(
+    r'@\s*(€|eur|usd|\$|£|gbp|chf)?\s*([\d][\d.,]*)\s*/\s*(?:cs|cases?|cartons?)\b', re.IGNORECASE)
+
+
+def _normalize_glued_units(text: str) -> str:
+    """Expand glued quantity/unit/price fragments into explicit words. No-op for
+    text with no '@' price fragments, so ordinary offers are untouched."""
+    if not text or '@' not in text:
+        return text
+    t = _GLUED_QTY_BTL_RE.sub(lambda m: f"{m.group(1)} bottles @", text)
+    t = _GLUED_QTY_CS_RE.sub(lambda m: f"{m.group(1)} cases @", t)
+    t = _GLUED_PRICE_BTL_RE.sub(lambda m: f"@ {(m.group(1) or '')}{m.group(2)} per bottle", t)
+    t = _GLUED_PRICE_CS_RE.sub(lambda m: f"@ {(m.group(1) or '')}{m.group(2)} per case", t)
+    return t
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -1007,6 +1032,8 @@ async def extract_offer(text: str) -> dict:
     # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
     # the lines they govern before chunking (Samuel ATV delivery-terms fix).
     text = _annotate_section_headings(text)
+    # Expand glued quantity/unit/price fragments (Samuel ATV: 15450btls@€18.99/btl).
+    text = _normalize_glued_units(text)
 
     # ── BLOCK-AWARE CHUNKING ───────────────────────────────────────────────────
     # When the input contains explicit per-product markers (e.g.
