@@ -1025,6 +1025,276 @@ def _normalize_glued_units(text: str) -> str:
     return t
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  DETERMINISTIC SOURCE-AUTHORITATIVE RECONCILIATION  (Samuel ATV "SPIRITS 611")
+# ════════════════════════════════════════════════════════════════════════════
+# Dense, glued, bulleted spirits lists (ATV) defeat the LLM's field mapping even
+# after normalization: it loses a case price (Cody Vody), drops a wrapped quantity
+# (Dom Perignon 840 btl), invents a customs status borrowed from a neighbour
+# (Cody/Beefeater T1), guesses an ambiguous "@€75" price, and silently drops a
+# no-price line (Capri Sun). Prompt nudging proved unreliable AND regressed correct
+# rows (2026-11-09). This pass instead reads each product's OWN source line as the
+# authority and overrides only price basis/value, quantity and customs on the LLM's
+# output, re-injecting product lines the LLM dropped. It is gated to the glued-"@"
+# list format (≥3 products each with an @-price) so ordinary and well-formatted
+# emails (Cedar "EUR 4.76 per bottle", "100 cs at EUR 20") are a strict no-op, and
+# it is wrapped so any failure returns the LLM output unchanged.
+_RECON_BULLET = '•·●▪◦‣*'
+_RECON_QUOTE_BULLET = re.compile(r'^[>\s]*[' + re.escape(_RECON_BULLET) + r']?\s*')
+_RECON_SEP_RE = re.compile(
+    r'^(#|SPIRITS\b|--|Best wishes|ATV\b|CELL\b|SKYPE\b|We Trade|De:|Objet:|Date:|À:|Début)', re.I)
+_RECON_SECTION_RE = re.compile(r'^(?:ex|exw)\s+[a-z]+\s*$', re.I)
+_RECON_PACK_RE = re.compile(r'\b(\d+)\s*[xX]\s*\d+(?:\s*[xX]\s*[\d.]+)?')
+_RECON_PRICE_RE = re.compile(r'@\s*(€|eur|usd|us\$|\$|£|gbp|chf)?\s*(\d[\d.,]*\d|\d)', re.I)
+_RECON_PER_CASE_RE = re.compile(r'per\s*case|/\s*cs\b|/\s*case\b|per\s*cs\b', re.I)
+_RECON_PER_BTL_RE = re.compile(r'per\s*bottle|/\s*btl\b|/\s*bottle\b|per\s*btl\b', re.I)
+_RECON_QTY_CS_RE = re.compile(r'\b(\d+)\s*(?:cases?|cs)\b', re.I)
+_RECON_QTY_BTL_RE = re.compile(r'\b(\d+)\s*(?:bottles?|btls?)\b', re.I)
+_RECON_FTL_RE = re.compile(r'\bFTL\b|\bfull\s+truck', re.I)
+_RECON_T_RE = re.compile(r'\bT([12])\b')
+_RECON_CUR = {'€': 'EUR', 'eur': 'EUR', 'usd': 'USD', 'us$': 'USD', '$': 'USD',
+              '£': 'GBP', 'gbp': 'GBP', 'chf': 'CHF'}
+
+
+def _recon_num(s):
+    """European-aware number parse: '771,50'->771.5, '1.690,00'->1690.0, '43.50,'->43.5."""
+    if s is None:
+        return None
+    s = s.strip().rstrip(',.')          # drop any trailing separator
+    if ',' in s and '.' in s:
+        s = s.replace('.', '').replace(',', '.') if s.rfind(',') > s.rfind('.') else s.replace(',', '')
+    elif ',' in s:
+        frac = s.split(',')[-1]
+        s = s.replace(',', '.') if len(frac) == 2 else s.replace(',', '')
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recon_segment(text):
+    """Split normalized text into product blocks (list of joined strings)."""
+    blocks, cur = [], None
+    for ln in text.splitlines():
+        raw_noquote = re.sub(r'^[>\s]*', '', ln)
+        s = _RECON_QUOTE_BULLET.sub('', ln).strip()
+        if raw_noquote.strip().startswith('--'):
+            break                                   # email footer
+        if not s:
+            if cur:
+                blocks.append(cur); cur = None
+            continue
+        if _RECON_SEP_RE.match(raw_noquote.strip()) or _RECON_SECTION_RE.match(s):
+            if cur:
+                blocks.append(cur); cur = None
+            continue
+        if re.match(r'^[' + re.escape(_RECON_BULLET) + r']', raw_noquote):
+            if cur:
+                blocks.append(cur); cur = None
+            cur = [s]
+        elif cur is not None:
+            cur.append(s)
+        elif s[:1].isalpha():                        # non-bullet product-name start
+            cur = [s]
+        # else: stray digit/note with no open block -> ignore
+    if cur:
+        blocks.append(cur)
+    return [' '.join(b).strip() for b in blocks]
+
+
+def _recon_parse_block(block):
+    """Parse one source block into an authoritative offer record."""
+    rec = {'raw': block, 'name': None, 'upc': None, 'price': None, 'currency': None,
+           'basis': None, 'qty_val': None, 'qty_unit': None, 'custom': None}
+    pm = _RECON_PACK_RE.search(block)
+    if pm:
+        rec['upc'] = float(pm.group(1))
+    tm = _RECON_T_RE.search(block)
+    rec['custom'] = 'T' + tm.group(1) if tm else None
+    prm = _RECON_PRICE_RE.search(block)
+    if prm:
+        rec['currency'] = _RECON_CUR.get((prm.group(1) or '').lower().replace(' ', '')) if prm.group(1) else 'EUR'
+        rec['price'] = _recon_num(prm.group(2))
+        tail = block[prm.end():prm.end() + 14]
+        head = block[max(0, prm.start() - 16):prm.start()]
+        if _RECON_PER_CASE_RE.search(tail):
+            rec['basis'] = 'case'
+        elif _RECON_PER_BTL_RE.search(tail):
+            rec['basis'] = 'bottle'
+        elif _RECON_QTY_CS_RE.search(head) or re.search(r'cases?\s*$', head, re.I):
+            rec['basis'] = 'case'
+        elif _RECON_QTY_BTL_RE.search(head) or re.search(r'bottles?\s*$', head, re.I):
+            rec['basis'] = 'bottle'
+        elif _RECON_FTL_RE.search(head):
+            rec['basis'] = 'case'                    # FTL price treated as per-case
+        else:
+            rec['basis'] = 'ambiguous'
+    if _RECON_FTL_RE.search(block):
+        rec['qty_unit'] = 'ftl'
+    else:
+        qc = _RECON_QTY_CS_RE.search(block)
+        qb = _RECON_QTY_BTL_RE.search(block)
+        if qc:
+            rec['qty_val'] = _recon_num(qc.group(1)); rec['qty_unit'] = 'cases'
+        elif qb:
+            rec['qty_val'] = _recon_num(qb.group(1)); rec['qty_unit'] = 'bottles'
+    cuts = [m.start() for m in (pm, prm) if m]
+    qm = _RECON_QTY_CS_RE.search(block) or _RECON_QTY_BTL_RE.search(block)
+    if qm:
+        cuts.append(qm.start())
+    name = block[:min(cuts)] if cuts else block
+    name = re.sub(r'[,\s]+$', '', name).strip()
+    name = re.sub(r'\b(nrf|ngb|ngbx|ref|gbx|std|ibc|coded|promo)\b', '', name, flags=re.I)
+    name = re.sub(r'\b(ex|exw)\s+[a-z]+\b', '', name, flags=re.I)
+    name = re.sub(r'\bT[12]\b', '', name)
+    name = re.sub(r'\s{2,}', ' ', name).strip(' ,')
+    rec['name'] = name or None
+    return rec
+
+
+def _recon_is_product(rec):
+    return bool(rec['name']) and (rec['price'] is not None or rec['qty_val'] is not None
+                                  or rec['qty_unit'] == 'ftl' or rec['upc'] is not None)
+
+
+def _recon_tokens(s):
+    return set(re.findall(r'[a-z0-9]+', (s or '').lower())) - {'the', 'and', 'di', 'de', 'label'}
+
+
+def _recon_close(a, b):
+    if a is None or b is None:
+        return False
+    try:
+        return abs(float(a) - float(b)) <= max(0.02, abs(float(a)) * 0.001)
+    except (TypeError, ValueError):
+        return False
+
+
+def _recon_match(source_recs, products):
+    """Map source_idx -> product_idx. Quantity/price fingerprints dominate; a mangled
+    LLM name that is a subset of the source name ("70cl" ⊂ "Beefeater 70cl") still matches."""
+    pairs = []
+    for si, S in enumerate(source_recs):
+        for pi, P in enumerate(products):
+            sc = 0.0
+            pu, pc = P.get('price_per_unit'), P.get('price_per_case')
+            qc, qb, qf = P.get('quantity_case'), P.get('quantity_bottles'), P.get('quantity_ftl')
+            if S['qty_val'] is not None and (_recon_close(S['qty_val'], qc) or _recon_close(S['qty_val'], qb)):
+                sc += 60
+            if S['qty_unit'] == 'ftl' and qf:
+                sc += 50
+            if S['price'] is not None and (_recon_close(S['price'], pu) or _recon_close(S['price'], pc)):
+                sc += 40
+            if S['price'] is not None and S['upc'] and _recon_close(S['price'], (pu or 0) * S['upc']):
+                sc += 25
+            st, pt = _recon_tokens(S['name']), _recon_tokens(P.get('product_name'))
+            jac = len(st & pt) / max(1, len(st | pt))
+            sc += 30 * jac
+            if pt and (pt <= st or st <= pt):
+                sc += 30
+            sc -= abs(si - pi) * 0.3
+            if sc > 0:
+                pairs.append((sc, si, pi))
+    pairs.sort(reverse=True)
+    match, p_used = {}, set()
+    for sc, si, pi in pairs:
+        if si in match or pi in p_used or sc < 20:
+            continue
+        match[si] = pi; p_used.add(pi)
+    return match
+
+
+def _recon_flag(P, msg):
+    fl = P.get('error_flags')
+    fl = list(fl) if isinstance(fl, list) else []
+    if msg not in fl:
+        fl.append(msg)
+    P['error_flags'] = fl
+    P['needs_manual_review'] = True
+
+
+def _recon_apply_price(P, rec):
+    V, upc, cur = rec['price'], rec['upc'], rec['currency']
+    if rec['basis'] == 'ambiguous':
+        P['price_per_unit'] = None; P['price_per_case'] = None
+        P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None
+        _recon_flag(P, "price basis ambiguous — '@' price has no per-bottle/per-case qualifier")
+        return
+    if cur:
+        P['currency'] = cur
+    if rec['basis'] == 'case':
+        P['price_per_case'] = V
+        P['price_per_unit'] = round(V / upc, 4) if upc else None
+    elif rec['basis'] == 'bottle':
+        P['price_per_unit'] = V
+        P['price_per_case'] = round(V * upc, 4) if upc else None
+    P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None   # recomputed downstream
+
+
+def _recon_apply_qty(P, rec):
+    if rec['qty_unit'] == 'ftl':
+        P['quantity_ftl'] = 1.0; P['quantity_unit'] = 'ftl'
+        P['quantity_case'] = None; P['quantity_bottles'] = None
+    elif rec['qty_unit'] == 'cases' and rec['qty_val'] is not None:
+        P['quantity_case'] = rec['qty_val']; P['quantity_unit'] = 'cases'; P['quantity_bottles'] = None
+    elif rec['qty_unit'] == 'bottles' and rec['qty_val'] is not None:
+        P['quantity_bottles'] = rec['qty_val']; P['quantity_unit'] = 'bottles'
+        P['quantity_case'] = round(rec['qty_val'] / rec['upc'], 4) if rec['upc'] else None
+
+
+def _recon_looks_fragment(name):
+    return bool(re.match(r'^\s*\d+\s*(ml|cl|l|cls?)\s*$', str(name or ''), re.I))
+
+
+def _reconcile_source_authoritative(text, products):
+    """Override the LLM's price basis/value, quantity and customs from each product's
+    own source line, and re-inject dropped product lines. Gated to the glued-"@" list
+    format; a strict no-op otherwise. Never raises — returns the LLM output on any error."""
+    try:
+        if not text or not isinstance(products, list) or '@' not in text:
+            return products
+        recs = [r for r in (_recon_parse_block(b) for b in _recon_segment(text)) if _recon_is_product(r)]
+        priced = sum(1 for r in recs if r['price'] is not None)
+        if priced < 3:                      # not the glued-"@" list format
+            return products
+        per_line_T = any(r['custom'] for r in recs)
+        out = [dict(p) for p in products]   # shallow copy; fields reassigned, flags copied in _recon_flag
+        match = _recon_match(recs, out)
+        injected = 0
+        for si, rec in enumerate(recs):
+            if si in match:
+                P = out[match[si]]
+                if rec['price'] is not None or rec['basis'] == 'ambiguous':
+                    _recon_apply_price(P, rec)
+                if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
+                    _recon_apply_qty(P, rec)
+                if per_line_T:
+                    P['custom_status'] = rec['custom'] if rec['custom'] else 'Not Found'
+                if _recon_looks_fragment(P.get('product_name')) and rec['name']:
+                    P['product_name'] = rec['name']
+            else:
+                P = {'product_name': rec['name'], 'price_per_unit': None, 'price_per_case': None,
+                     'quantity_case': None, 'quantity_bottles': None, 'quantity_ftl': None,
+                     'quantity_unit': None, 'custom_status': rec['custom'] or 'Not Found',
+                     'error_flags': [], 'incoterm': 'Not Found', 'location': 'Not Found',
+                     'currency': rec['currency'] or 'EUR'}
+                if rec['price'] is not None or rec['basis'] == 'ambiguous':
+                    _recon_apply_price(P, rec)
+                if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
+                    _recon_apply_qty(P, rec)
+                if rec['price'] is None and rec['qty_val'] is None and rec['qty_unit'] != 'ftl':
+                    _recon_flag(P, 'no price stated in source')
+                _recon_flag(P, 'row re-injected from source — LLM had dropped this product line')
+                out.append(P); injected += 1
+        logger.info(f"[reconcile] source-authoritative pass ran: {len(recs)} source offers, "
+                    f"{len(match)} matched+corrected, {injected} re-injected "
+                    f"(products {len(products)} -> {len(out)})")
+        return out
+    except Exception as e:
+        logger.error(f"[reconcile] skipped (non-fatal): {e}")
+        return products
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -1380,6 +1650,11 @@ async def extract_offer(text: str) -> dict:
             continue
 
     logger.info(f"[extract_offer] ===== END — total products aggregated: {len(all_products)} =====")
+    # Deterministic source-authoritative reconciliation for glued bulleted lists
+    # (Samuel ATV): overrides price basis/value, quantity and customs from each
+    # product's own source line and re-injects dropped lines. Strict no-op for any
+    # other format; never raises.
+    all_products = _reconcile_source_authoritative(text, all_products)
     return {"products": all_products}
 
 
