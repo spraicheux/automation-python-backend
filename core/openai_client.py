@@ -1275,6 +1275,12 @@ def _reconcile_source_authoritative(text, products):
                     _recon_apply_price(P, rec)
                 if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
                     _recon_apply_qty(P, rec)
+                # Set the product's OWN source line as _raw_row_text so the processor's
+                # customs/price backfill reads THIS product's line, not the whole chunk
+                # (which bleeds a neighbour's T1 onto a product that has none — Samuel
+                # Cody/Beefeater). Harmless for a header-T email: there the LLM already
+                # set a truthy custom_status so the backfill is skipped anyway.
+                P['_raw_row_text'] = rec['raw']
                 if per_line_T:
                     P['custom_status'] = rec['custom'] if rec['custom'] else 'Not Found'
                 if _recon_looks_fragment(P.get('product_name')) and rec['name']:
@@ -1284,7 +1290,7 @@ def _reconcile_source_authoritative(text, products):
                      'quantity_case': None, 'quantity_bottles': None, 'quantity_ftl': None,
                      'quantity_unit': None, 'custom_status': rec['custom'] or 'Not Found',
                      'error_flags': [], 'incoterm': 'Not Found', 'location': 'Not Found',
-                     'currency': rec['currency'] or 'EUR'}
+                     'currency': rec['currency'] or 'EUR', '_raw_row_text': rec['raw']}
                 if rec['price'] is not None or rec['basis'] == 'ambiguous':
                     _recon_apply_price(P, rec)
                 if rec['qty_val'] is not None or rec['qty_unit'] == 'ftl':
@@ -1295,6 +1301,13 @@ def _reconcile_source_authoritative(text, products):
                     _recon_flag(P, 'Price on request retained')
                     _recon_flag(P, 'no price stated in source')
                 out.append(P); injected += 1
+        # Surface a compact diagnostic via error_flags (reliably readable from
+        # /api/result) so the live match/parse picture is visible without logs.
+        if out:
+            _recon_flag(out[0], f"RECONDIAG priced={priced} recs={len(recs)} perT={per_line_T} "
+                               f"match={len(match)} inj={injected} head={text[:80]!r}")
+            _recon_flag(out[0], "RECONDIAG unmatched=" + "; ".join(
+                str(recs[i]['name']) for i in range(len(recs)) if i not in match)[:160])
         logger.info(f"[reconcile] source-authoritative pass ran: {len(recs)} source offers, "
                     f"{len(match)} matched+corrected, {injected} re-injected "
                     f"(products {len(products)} -> {len(out)})")
