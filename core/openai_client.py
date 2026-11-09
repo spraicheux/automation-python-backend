@@ -297,14 +297,21 @@ SCHEMA DEFINITION - Use EXACTLY these field names and rules:
 ══════════════════════════════════════════════════════════════════════
 RULE 1 — CUSTOM STATUS (T1 / T2)  ⚠️ HIGHEST PRIORITY
 ══════════════════════════════════════════════════════════════════════
-Scan the ENTIRE text character by character for the tokens "T1" or "T2".
-- They may appear in a product code, a column, a note, anywhere — e.g.
-  "Baileys 12/100/17/DF/T2", "Status: T1", "T2 goods", "T1", a standalone cell.
+custom_status is PER PRODUCT. Assign it from the "T1"/"T2" token that belongs to
+THAT product — on the product's own line, inside its own product code, or in a note
+attached to it. It may appear anywhere in that product's own block — e.g.
+  "Baileys 12/100/17/DF/T2", "Status: T1", "T2 goods", a standalone cell on the row.
 - DO NOT require a header or label to be present.
-- If "T1" appears ANYWHERE → custom_status: "T1"
-- If "T2" appears ANYWHERE → custom_status: "T2"
-- If NEITHER T1 nor T2 is found anywhere → custom_status: "Not Found"
-- Never default to "Not Found" when T1 or T2 is present in any form.
+- A T-status stated ONCE as a shared header / column / global status for the whole
+  offer (and not repeated per line) applies to every product.
+- BUT when products are listed one per line and each line carries its OWN T-status
+  (or none), use each line's own token. If a product's own line/block has no T1/T2
+  and there is no shared global T-status, return custom_status: "Not Found".
+- NEVER borrow a T-status from a DIFFERENT product's line just because it appears
+  elsewhere in the text. (Samuel ATV: "•Cody Vody 200ml … ex NL bond" and
+  "•Beefeater 70cl nrf@€75" carry NO T-status of their own and MUST be "Not Found",
+  even though neighbouring lines say T1/T2.)
+- Never default to "Not Found" when a T-status that belongs to the product is present.
 
 ══════════════════════════════════════════════════════════════════════
 RULE 2 — SUB_CATEGORY — INTELLIGENT INFERENCE  ⚠️
@@ -488,7 +495,13 @@ STEP 2 — IDENTIFY PRICE TYPE using explicit suffixes:
     → put value in price_per_unit, leave price_per_case for calculation
   - "/cs", "/case", "per case", "EUR/cs", "USD/cs", "per cs"       → price is PRICE PER CASE
     → put value in price_per_case, leave price_per_unit for calculation
-  - No suffix or ambiguous → default to price_per_case
+  - A price written as "@<amount>" with NO per-bottle/per-case qualifier AND no
+    case-pack context (e.g. "@€75", "nrf@€75", "70cl … @€75") is AMBIGUOUS. Do NOT
+    guess: leave BOTH price_per_unit and price_per_case null and add
+    "price basis ambiguous — '@' price has no per-bottle/per-case qualifier" to
+    error_flags. Do not assume €75 is per bottle.
+  - Any other bare amount with no suffix and no "@" (e.g. "15.95eur", "€46.53") →
+    default to price_per_case.
 
 STEP 3 — CALCULATE the missing price (ALWAYS do this when units_per_case is known).
 Preserve full precision — the storage layer carries 4 decimal places and the
@@ -517,6 +530,14 @@ EXAMPLES:
 
   "11,40eur/btl" → price_per_unit: 11.40, currency: "EUR"
   "32,50eur/cs"  → price_per_case: 32.50, currency: "EUR"
+
+  "3456 cases @ €23.40 per case ex NL bond" — explicitly per case, no case pack stated:
+    → price_per_case: 23.40, quantity_case: 3456, units_per_case: null, price_per_unit: null
+    (NEVER output price_per_unit: 0 — leave it null when it cannot be derived)
+
+  "•Beefeater 70cl nrf@€75" — "@" price with no /btl or /cs qualifier:
+    → price_per_unit: null, price_per_case: null, custom_status: "Not Found",
+      error_flags: ["price basis ambiguous — '@' price has no per-bottle/per-case qualifier"]
 
 ══════════════════════════════════════════════════════════════════════
 RULE 9 — GIFT BOX / NON GIFT BOX  ⚠️
@@ -723,7 +744,14 @@ CRITICAL RULES FOR MISSING VALUES
 
 IMPORTANT RULES:
 1. Extract ALL products mentioned in the text. Return one object per product in the 'products' array.
+   NEVER drop a product line — not even when it has NO price AND no quantity (e.g. a bare
+   "●Capri Sun 40x200ml" listing). Return it with the known fields filled, unknown numeric
+   fields null, and add "no price stated" / "quantity not stated" to error_flags as applicable.
+   The number of products you return MUST equal the number of distinct product lines in the text.
 2. CAPTURE FULL NAMES: 'Baileys Original' is the product_name, not just 'Original'.
+   Keep the BRAND with the descriptor: "Cody Vody 200ml" (not "200ml"), "Beefeater 70cl"
+   (not "70cl"), "Dom Perignon Rose 2009" (not "Rose 2009"). A bare volume/size is NEVER a
+   complete product_name.
 3. If a product has MULTIPLE INCOTERMS, create separate entries — one per incoterm (Rule 6).
 4. If a field is NOT FOUND or doesn't exist, use "Not Found" (NOT null and NOT 0).
 5. DO NOT leave string fields as empty string "" - if missing, use "Not Found".
@@ -1025,6 +1053,45 @@ def _normalize_glued_units(text: str) -> str:
     return t
 
 
+# A supplier sometimes WRAPS one product across two lines — the name (with its
+# pack/customs) on the first line, the quantity+price on the next:
+#   "Dom Perignon Rose 2009 GBX Ex Loen , T1 ,"
+#   "840 bottles @ €262.25 per bottle"
+# The LLM, chunking line by line, then loses the 840-bottle quantity. Joining a
+# bare "<qty> <unit> @ <price> …" continuation onto the product-name line above it
+# keeps the quantity attached to its product (Samuel ATV: Dom Perignon 840 btl).
+_WRAPPED_QTY_PRICE_RE = re.compile(
+    r'^\s*\d[\d,]*\s+(?:bottles?|btls?|cases?|cs)\s*@', re.IGNORECASE)
+_LEAD_QUOTE_BULLET_RE = re.compile(r'^[>\s]*[•·●▪◦‣*\-]?\s*')
+
+
+def _join_wrapped_offer_lines(text: str) -> str:
+    """Join a wrapped "<qty> <unit> @ <price>" continuation line onto the product-
+    name line directly above it. No-op unless such a wrapped line exists and the
+    line above it is a product name (starts with a letter, no '@' of its own), so
+    ordinary single-line offers — and the multi-line blocks the LLM already handles
+    — are left untouched."""
+    if not text or '@' not in text:
+        return text
+    lines = text.splitlines()
+    out, i, n, joined = [], 0, len(lines), False
+    while i < n:
+        cur = lines[i]
+        cur_body = _LEAD_QUOTE_BULLET_RE.sub('', cur).strip()
+        if (i + 1 < n and cur_body[:1].isalpha() and '@' not in cur
+                and not _WRAPPED_QTY_PRICE_RE.match(cur_body)):
+            nxt_body = _LEAD_QUOTE_BULLET_RE.sub('', lines[i + 1]).strip()
+            if _WRAPPED_QTY_PRICE_RE.match(nxt_body):
+                out.append(cur.rstrip() + ' ' + nxt_body)
+                i += 2
+                joined = True
+                continue
+        out.append(cur)
+        i += 1
+    # True no-op (preserve exact bytes, incl. trailing newline) when nothing joined.
+    return "\n".join(out) if joined else text
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -1034,6 +1101,9 @@ async def extract_offer(text: str) -> dict:
     text = _annotate_section_headings(text)
     # Expand glued quantity/unit/price fragments (Samuel ATV: 15450btls@€18.99/btl).
     text = _normalize_glued_units(text)
+    # Re-join a product wrapped across two lines so its quantity stays attached
+    # (Samuel ATV: Dom Perignon Rose 2009 + "840 bottles @ €262.25 per bottle").
+    text = _join_wrapped_offer_lines(text)
 
     # ── BLOCK-AWARE CHUNKING ───────────────────────────────────────────────────
     # When the input contains explicit per-product markers (e.g.
