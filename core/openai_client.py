@@ -1104,11 +1104,19 @@ def _recon_segment(text):
 
 def _recon_parse_block(block):
     """Parse one source block into an authoritative offer record."""
-    rec = {'raw': block, 'name': None, 'upc': None, 'price': None, 'currency': None,
+    rec = {'raw': block, 'name': None, 'upc': None, 'vol': None, 'price': None, 'currency': None,
            'basis': None, 'qty_val': None, 'qty_unit': None, 'custom': None}
     pm = _RECON_PACK_RE.search(block)
     if pm:
         rec['upc'] = float(pm.group(1))
+    # An explicit "NxMml"/"NxMcl" pack carries BOTH the pack count and the unit
+    # size ("40x200ml" = 40 units × 200 ml). Capture the size so a re-injected
+    # row keeps its pack (Samuel Capri Sun — else the 200 ml is lost).
+    sm = re.search(r'\b(\d+)\s*[xX]\s*(\d+(?:\.\d+)?)\s*(ml|cl|l)\b', block, re.I)
+    if sm:
+        rec['upc'] = float(sm.group(1))
+        _v = float(sm.group(2)); _u = sm.group(3).lower()
+        rec['vol'] = _v * 1000 if _u == 'l' else (_v * 10 if _u == 'cl' else _v)
     tm = _RECON_T_RE.search(block)
     rec['custom'] = 'T' + tm.group(1) if tm else None
     prm = _RECON_PRICE_RE.search(block)
@@ -1216,7 +1224,20 @@ def _recon_flag(P, msg):
 def _recon_apply_price(P, rec):
     V, upc, cur = rec['price'], rec['upc'], rec['currency']
     if rec['basis'] == 'ambiguous':
-        P['price_per_unit'] = None; P['price_per_case'] = None
+        # Samuel 2026-11-10 (Beefeater 70cl nrf@€75): a standalone '@'-price with
+        # no per-bottle/per-case qualifier must PRESERVE the quoted amount with an
+        # unknown basis — not be nulled to "price on request". Keep the number
+        # visible in price_per_unit; leave price_per_case null (we will NOT guess
+        # a per-case). The row carries no incoterm/location, so it is peer-
+        # unqualified and already excluded from 12M-low / best-price comparisons.
+        if cur:
+            P['currency'] = cur
+        if V is not None:
+            P['price_per_unit'] = V
+            _recon_flag(P, f"quoted amount {cur or 'EUR'} {V:g} retained — price basis unknown; excluded from price comparison")
+        else:
+            P['price_per_unit'] = None
+        P['price_per_case'] = None
         P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None
         _recon_flag(P, "price basis ambiguous — '@' price has no per-bottle/per-case qualifier")
         return
@@ -1303,6 +1324,12 @@ def _reconcile_source_authoritative(text, products):
                 P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None
                 P['quantity_case'] = None; P['quantity_bottles'] = None
                 P['quantity_ftl'] = None; P['quantity_unit'] = None
+                # Keep the source pack on a re-injected row (Samuel Capri Sun —
+                # "40x200ml" must survive as 40/case · 200 ml, not a blank pack).
+                if rec.get('upc'):
+                    P['units_per_case'] = rec['upc']
+                if rec.get('vol') is not None:
+                    P['unit_volume_ml'] = rec['vol']
                 P['custom_status'] = rec['custom'] or 'Not Found'
                 P['incoterm'] = 'Not Found'; P['location'] = 'Not Found'
                 if rec['price'] is not None or rec['basis'] == 'ambiguous':
@@ -3316,6 +3343,10 @@ def clean_product_data(product: dict) -> dict:
         # show "FTL", not blank.
         'moq_unit': None,
         'moq_bottles': None,
+        # Samuel 2026-11-10 (E07): MOQ stated in pallets / FTL kept in its
+        # native unit so "MOQ 1 pallet" / "MOQ 1 FTL" survives to the drawer.
+        'moq_pallets': None,
+        'moq_ftl': None,
         # Phase 3 M1 — Multi-category fields. The LLM emits these on
         # perfume / cosmetics rows (per Rule 0.23) and the DB / SKU key
         # both consume them, but they were absent from this whitelist so
@@ -3354,6 +3385,7 @@ def clean_product_data(product: dict) -> dict:
                     'unit_volume_ml', 'units_per_case', 'cases_per_pallet',
                     'quantity_case', 'price_per_unit', 'price_per_unit_eur',
                     'price_per_case', 'price_per_case_eur', 'alcohol_percent', 'moq_cases',
+                    'moq_bottles', 'moq_pallets', 'moq_ftl',  # native-unit MOQ counts
                     'size_weight_g',  # Phase 3 M1 — cosmetics (solid weight in grams)
                     # client §2 — original-unit quantities (no conversion)
                     'quantity_bottles', 'quantity_pallets', 'quantity_ftl',

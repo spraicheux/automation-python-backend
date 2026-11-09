@@ -158,6 +158,34 @@ def _parse_size_ml(raw: Any) -> Optional[float]:
     return val  # ml
 
 
+# When the Size cell is a bare number ("700") the unit lives in the HEADER
+# ("Size (ml)", "Volume (cl)"). Read the unit from the header and apply it so
+# unit_volume_ml is populated instead of left blank (Samuel E07 2026-11-10 —
+# the "6x?ml" in the export came from a missing unit_volume_ml).
+_HEADER_UNIT_RE = re.compile(r"\b(ml|cl|l|litre|liter)\b", re.IGNORECASE)
+
+
+def _parse_size_with_header_unit(raw: Any, header: Any) -> Optional[float]:
+    v = _to_float(raw)
+    if v is None:
+        return None
+    m = _HEADER_UNIT_RE.search(str(header if header is not None else ""))
+    unit = (m.group(1).lower() if m else "ml")
+    if unit in ("l", "litre", "liter"):
+        return v * 1000
+    if unit == "cl":
+        return v * 10
+    return v  # ml (default when the header gives no unit)
+
+
+# Customs tier (T1 / T2) is often embedded in the product-description column
+# ("Dry Gin T2") with no dedicated Customs column. Capture it into
+# custom_status at extraction time and strip it from the name BEFORE anything
+# downstream treats the token as noise and drops it (Samuel E07 2026-11-10 —
+# the nine T2 rows stored custom_status = None).
+_CUSTOMS_TOKEN_RE = re.compile(r"\bT([12])\b")
+
+
 def _to_float(raw: Any) -> Optional[float]:
     if raw is None or raw == "":
         return None
@@ -345,6 +373,11 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     size_raw = val
                     prod["packaging_raw"] = str(val).strip()
                     ml = _parse_size_ml(val)
+                    if ml is None:
+                        # Bare number ("700") whose unit is only in the header
+                        # ("Size (ml)"); _parse_size_ml needs an inline unit.
+                        ml = _parse_size_with_header_unit(
+                            val, ws.cell(row=header_row, column=col).value)
                     if ml is not None:
                         prod["unit_volume_ml"] = ml
                 elif field == "_category":
@@ -368,6 +401,22 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # A product line needs a name or a brand.
             if not (prod.get("product_name") or prod.get("brand")):
                 continue
+
+            # ── Customs tier embedded in the description ("Dry Gin T2") ──────
+            # No dedicated Customs column: lift the T1/T2 token into
+            # custom_status and strip it from the name so the drawer, the
+            # export and the peer-group key (which keys on custom_status) all
+            # see it. Done here, at the source, before any downstream cleaner
+            # can drop the token (Samuel E07, 2026-11-10).
+            if not prod.get("custom_status"):
+                _nm = prod.get("product_name") or ""
+                _cm = _CUSTOMS_TOKEN_RE.search(_nm)
+                if _cm:
+                    prod["custom_status"] = "T" + _cm.group(1)
+                    if not prod.get("product_name_raw"):
+                        prod["product_name_raw"] = _nm
+                    prod["product_name"] = re.sub(
+                        r"\s{2,}", " ", _CUSTOMS_TOKEN_RE.sub("", _nm)).strip(" -,")
 
             # ── Resolve the Price / Price-basis pair ───────────────────────
             if price_value is not None:
@@ -406,8 +455,12 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             if moq_val is not None:
                 _mu = _norm(moq_unit_inline)
                 if _mu in _QTY_PALLET:
+                    # Keep the native pallet count ("MOQ 1 pallet") so the
+                    # drawer shows "1 plt", not blank (Samuel E07 2026-11-10).
+                    prod["moq_pallets"] = moq_val
                     prod["moq_unit"] = "pallets"
                 elif _mu in _QTY_FTL:
+                    prod["moq_ftl"] = moq_val
                     prod["moq_unit"] = "ftl"
                 elif _mu in ("piece", "pieces", "pcs", "pc"):
                     prod["moq_bottles"] = moq_val

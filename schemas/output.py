@@ -47,6 +47,11 @@ class OfferItem(BaseModel):
     # Source MOQ in bottles when the supplier wrote the MOQ as a bottle count
     # (A12: "MOQ 12 btls"). moq_cases still carries the normalised 2 cs.
     moq_bottles: Optional[float] = None
+    # Source MOQ in pallets / FTL when the supplier wrote the MOQ in that unit
+    # ("MOQ 1 pallet", "MOQ 1 FTL") — mirrors quantity_pallets / quantity_ftl so
+    # the drawer shows "1 plt" / "1 FTL" instead of blank (Samuel E07 2026-11-10).
+    moq_pallets: Optional[float] = None
+    moq_ftl: Optional[float] = None
     # Source counts in native units — see model doc. Nullable; only populated
     # when the source stated availability in bottles / pallets / FTL.
     quantity_bottles: Optional[float] = None

@@ -204,6 +204,8 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 moq_cases=offer_dict.get("moq_cases"),
                 moq_unit=offer_dict.get("moq_unit"),
                 moq_bottles=offer_dict.get("moq_bottles"),
+                moq_pallets=offer_dict.get("moq_pallets"),
+                moq_ftl=offer_dict.get("moq_ftl"),
                 valid_until=offer_dict.get("valid_until"),
                 best_before_date=offer_dict.get("best_before_date"),
                 vintage=offer_dict.get("vintage"),
@@ -2243,6 +2245,8 @@ async def process_offer(payload, job_id: str):
                         moq_cases=safe_data['moq_cases'],
                         moq_unit=safe_data.get('moq_unit'),
                         moq_bottles=safe_data.get('moq_bottles'),
+                        moq_pallets=safe_data.get('moq_pallets'),
+                        moq_ftl=safe_data.get('moq_ftl'),
                         valid_until=safe_data['valid_until'],
                         offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
@@ -2519,6 +2523,8 @@ async def process_offer(payload, job_id: str):
                     moq_cases=safe_data['moq_cases'],
                     moq_unit=safe_data.get('moq_unit'),
                     moq_bottles=safe_data.get('moq_bottles'),
+                    moq_pallets=safe_data.get('moq_pallets'),
+                    moq_ftl=safe_data.get('moq_ftl'),
                     valid_until=safe_data['valid_until'],
                     offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),

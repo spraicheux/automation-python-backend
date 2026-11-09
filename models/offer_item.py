@@ -90,6 +90,10 @@ class OfferItemDB(Base):
     # moq_cases carries the normalised 2 cs. Drawer shows both so the trader
     # sees the supplier's own figure, not just the converted one.
     moq_bottles       = Column(Float, nullable=True)
+    # Source MOQ in pallets / FTL — mirrors quantity_pallets / quantity_ftl so
+    # "MOQ 1 pallet" / "MOQ 1 FTL" survive as a count (Samuel E07 2026-11-10).
+    moq_pallets       = Column(Float, nullable=True)
+    moq_ftl           = Column(Float, nullable=True)
     valid_until       = Column(String(64), nullable=True)
     best_before_date  = Column(String(64), nullable=True)
     vintage           = Column(String(64), nullable=True)
@@ -282,6 +286,8 @@ class OfferItemDB(Base):
             "moq_cases": self.moq_cases,
             "moq_unit": self.moq_unit,
             "moq_bottles": self.moq_bottles,
+            "moq_pallets": self.moq_pallets,
+            "moq_ftl": self.moq_ftl,
             "valid_until": self.valid_until,
             "best_before_date": self.best_before_date,
             "vintage": self.vintage,

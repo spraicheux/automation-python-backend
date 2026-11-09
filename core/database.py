@@ -95,6 +95,10 @@ def init_db():
             # null (A11 FTL) or converted (A12 MOQ, A07/B05/H02 loose pack).
             # Add-only, nullable — no production rows need backfill.
             ("moq_bottles",         "DOUBLE PRECISION"),
+            # Samuel 2026-11-10 (E07): MOQ stated in pallets / FTL kept in its
+            # native unit so "MOQ 1 pallet" / "MOQ 1 FTL" is not blank.
+            ("moq_pallets",         "DOUBLE PRECISION"),
+            ("moq_ftl",             "DOUBLE PRECISION"),
             ("quantity_bottles",    "DOUBLE PRECISION"),
             ("quantity_pallets",    "DOUBLE PRECISION"),
             ("quantity_ftl",        "DOUBLE PRECISION"),
