@@ -599,6 +599,30 @@ def _resolve_supplier_name(ai_name, payload) -> str:
     return "Not Found"
 
 
+def _resolve_supplier_ref(ai_name, payload):
+    """The offer reference glued onto the supplier string, taken from the SAME
+    source _resolve_supplier_name used for the name. Needed because the name is
+    cleaned (ref stripped) before the ref-storage step runs, so by then the
+    reference is gone from the resolved name (Samuel Cedar Bay: the body carries
+    "Cedar Bay QA Trading — ref. QA-20261107-W07"). Returns None if there is none."""
+    _missing = [None, "", "Not Found"]
+    src = getattr(payload, 'source_filename', None)
+    pname = getattr(payload, 'supplier_name', None)
+    if pname not in _missing and not _is_placeholder_supplier(pname, src):
+        return _supplier_name_and_ref(str(pname))[1]
+    if ai_name not in _missing and not _is_placeholder_supplier(ai_name, src):
+        return _supplier_name_and_ref(str(ai_name))[1]
+    try:
+        from core.ingest_service import detect_supplier_from_text
+        derived = detect_supplier_from_text(getattr(payload, 'text_body', None),
+                                            getattr(payload, 'subject', None))
+        if derived and not _is_placeholder_supplier(derived, src):
+            return _supplier_name_and_ref(str(derived))[1]
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_supplier_email(payload, ai_email=None) -> str:
     """Return the best available supplier email.
 
@@ -2153,8 +2177,7 @@ async def process_offer(payload, job_id: str):
                     # A reference glued onto the supplier name belongs in
                     # supplier_reference (Cedar Bay — ref. QA-20261107-W07).
                     if not safe_data.get('supplier_reference'):
-                        _sr = _supplier_name_and_ref(
-                            getattr(payload, 'supplier_name', None) or _sup_name)[1]
+                        _sr = _resolve_supplier_ref(_sup_name, payload)
                         if _sr:
                             safe_data['supplier_reference'] = _sr
 
@@ -2438,8 +2461,7 @@ async def process_offer(payload, job_id: str):
                 # A reference glued onto the supplier name belongs in
                 # supplier_reference (Cedar Bay — ref. QA-20261107-W07).
                 if not safe_data.get('supplier_reference'):
-                    _sr = _supplier_name_and_ref(
-                        getattr(payload, 'supplier_name', None) or _sup_name)[1]
+                    _sr = _resolve_supplier_ref(_sup_name, payload)
                     if _sr:
                         safe_data['supplier_reference'] = _sr
 
