@@ -1055,6 +1055,35 @@ _RECON_T_RE = re.compile(r'\bT([12])\b')
 _RECON_CUR = {'€': 'EUR', 'eur': 'EUR', 'usd': 'USD', 'us$': 'USD', '$': 'USD',
               '£': 'GBP', 'gbp': 'GBP', 'chf': 'CHF'}
 
+# The LLM sometimes relabels a distinct maison as its PARENT house — Dom Pérignon
+# ⇒ "Moët & Chandon" (both LVMH) — which collapses two separate offers into one
+# brand and breaks search / price comparison (Samuel 2026-11-10: the "Dom Perignon
+# Rose 2009 GBX … 840 bottles@€262.25/btl" line was stored as Moët & Chandon). The
+# source line names the real brand, so force the canonical brand source-
+# authoritatively whenever the block itself names one of these maisons. Keyed on
+# the SOURCE text, so it never fires on an ordinary expansion like
+# "Bombay" → "Bombay Sapphire".
+_RECON_BRAND_FIXUPS = [
+    (re.compile(r'dom\s*p[eé]rignon', re.I), 'Dom Pérignon'),
+    (re.compile(r'veuve\s*clicquot', re.I), 'Veuve Clicquot'),
+    (re.compile(r'\bkrug\b', re.I), 'Krug'),
+    (re.compile(r'\bruinart\b', re.I), 'Ruinart'),
+]
+
+
+def _recon_fix_brand(P, raw):
+    """Force the canonical brand when the SOURCE line names a maison the LLM tends
+    to relabel as its parent house (Dom Pérignon vs Moët & Chandon). Silent — brand
+    canonicalisation is informational and must not flag the row for review."""
+    if not raw:
+        return
+    for pat, canon in _RECON_BRAND_FIXUPS:
+        if pat.search(raw):
+            if (P.get('brand') or '').strip().lower() != canon.lower():
+                P['brand'] = canon
+                P['brand_raw'] = canon
+            return
+
 
 def _recon_num(s):
     """European-aware number parse: '771,50'->771.5, '1.690,00'->1690.0, '43.50,'->43.5."""
@@ -1319,6 +1348,7 @@ def _reconcile_source_authoritative(text, products):
                 # Cody/Beefeater). Harmless for a header-T email: there the LLM already
                 # set a truthy custom_status so the backfill is skipped anyway.
                 P['_raw_row_text'] = rec['raw']
+                _recon_fix_brand(P, rec['raw'])
                 if per_line_T:
                     P['custom_status'] = rec['custom'] if rec['custom'] else 'Not Found'
                 if _recon_looks_fragment(P.get('product_name')) and rec['name']:
