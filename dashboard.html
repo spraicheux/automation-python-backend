@@ -2345,10 +2345,21 @@
     const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_unit) ?? '—'}` : null;
     const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_case) ?? '—'}` : null;
     const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
-    // Cosmetics are counted in pieces, never bottles — the price-hero label must
-    // match the quantity noun (Samuel 2026-11-01: NARS showed "100 pieces" but
-    // the price still read "per bottle").
-    const unitNoun = (i.category_slug || '').toLowerCase() === 'cosmetics' ? 'piece' : 'bottle';
+    // Cosmetics / perfume / accessories are counted in pieces, never bottles —
+    // the price-hero label must match the quantity noun (Samuel 2026-11-01: NARS
+    // showed "100 pieces" but the price read "per bottle"; 2026-11-10 round 3:
+    // L'Oréal, Al Haramain and the bottle opener are priced per piece).
+    const _qu = (i.quantity_unit || '').toLowerCase();
+    const unitNoun = (_qu.indexOf('piece') === 0 || _qu === 'pcs'
+                      || (i.category_slug || '').toLowerCase() === 'cosmetics') ? 'piece' : 'bottle';
+    // A standalone '@'-price with no per-bottle/per-case qualifier (Beefeater
+    // 70cl @€75) has an UNKNOWN basis: BOTH the unit and case price are blank and
+    // the quoted amount is shown only as an annotation (Samuel 2026-11-10 round 3).
+    const quotedNote = (Array.isArray(i.error_flags) ? i.error_flags : [])
+      .map(f => { const m = /([A-Z]{3})\s+([\d.,]+)\s+quoted/.exec(f); return m ? `${m[1]} ${m[2]}` : null; })
+      .find(Boolean) || null;
+    const noEurPrice = (i.price_per_unit_eur == null && i.price_per_case_eur == null);
+    const showQuoted = noEurPrice && !!quotedNote;
 
     return `
       <!-- PRICE HERO -->
@@ -2356,13 +2367,14 @@
         <h3>Price</h3>
         <div class="price-hero">
           <div class="primary">
-            <div class="big">${puEur}</div>
-            <div class="lbl">per ${unitNoun} (EUR)</div>
+            <div class="big"${showQuoted ? ' style="font-size:1.3rem;"' : ''}>${showQuoted ? escapeHtml(quotedNote) + ' quoted' : puEur}</div>
+            <div class="lbl">${showQuoted ? 'basis unspecified — excluded from comparison' : `per ${unitNoun} (EUR)`}</div>
           </div>
+          ${showQuoted ? '' : `
           <div class="secondary">
             <div class="med">${pcEur}</div>
             <div class="lbl">per case (EUR)</div>
-          </div>
+          </div>`}
           ${(originalPuStr || originalPcStr || fxStr) ? `
             <div class="original">
               ${originalPuStr ? `<div class="small">${originalPuStr} / ${unitNoun}</div>` : ''}

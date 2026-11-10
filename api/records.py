@@ -266,21 +266,36 @@ async def get_benchmarks(
             range_name=getattr(r, 'range_name', None),
             custom_status=getattr(r, 'custom_status', None),
         )
-        entry = peers.setdefault(key, {"samples": [], "all_qualified": True})
+        entry = peers.setdefault(key, {"samples": [], "all_qualified": True, "_seen": set()})
         # Effective date = offer_date, else created_at (same coalesce used by the
         # window cutoff above). Carried per observation so the frontend can build
         # a DATE-AWARE prior history for each offer.
         _eff_dt = r.offer_date or r.created_at
-        entry["samples"].append(
-            (r.price_per_unit_eur, r.uid, _eff_dt.isoformat() if _eff_dt else None))
         # A peer group is "qualified" only when EVERY row it contains has
         # both a known incoterm and a known location. One unqualified row
         # poisons the whole group — otherwise a trusted NEW XM LOW could
         # fire when the current row is Rotterdam-EXW but the "prior best"
         # is a row with no known origin, and that's exactly the falsely-
-        # precise trading signal the client asked us to avoid.
+        # precise trading signal the client asked us to avoid. (Evaluated on
+        # EVERY row, before the dedup below.)
         if not is_peer_group_qualified(r.incoterm, r.location):
             entry["all_qualified"] = False
+        # De-duplicate identical re-imported observations: the SAME offer (same
+        # peer, same unit price, same COMMERCIAL date, same supplier) must count
+        # ONCE no matter how many times the file/message was ingested — otherwise
+        # re-importing a price list inflates the historical sample count. Samuel
+        # 2026-11-10 (round 3) saw the QA Atlantic €10 low backed by "8 prior
+        # observations" that were repeated re-ingests of the same two €10 offers.
+        # Keyed on offer_date (stable across re-imports), never created_at, so a
+        # re-import of the same offer is idempotent for the benchmark.
+        _dk = (round(r.price_per_unit_eur, 4),
+               str(r.offer_date)[:10] if r.offer_date else None,
+               (getattr(r, "supplier_name", None) or "").strip().lower())
+        if _dk in entry["_seen"]:
+            continue
+        entry["_seen"].add(_dk)
+        entry["samples"].append(
+            (r.price_per_unit_eur, r.uid, _eff_dt.isoformat() if _eff_dt else None))
 
     out = {}
     for k, v in peers.items():

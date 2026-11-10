@@ -1221,25 +1221,42 @@ def _recon_flag(P, msg):
     P['needs_manual_review'] = True
 
 
+def _recon_line_has_delivery(raw):
+    """True when a source line names its OWN incoterm or delivery location, so a
+    present incoterm/location on its product is genuine and not bled in from a
+    neighbouring line (this module imports `re` only locally — see 2026-11-08)."""
+    if not raw:
+        return False
+    import re
+    return bool(re.search(
+        r'\b(EXW|FCA|FAS|FOB|CFR|CIF|CPT|CIP|DAP|DAT|DPU|DDP)\b|bond|\bex\s+\w|warehouse|loco',
+        str(raw), re.I))
+
+
 def _recon_apply_price(P, rec):
     V, upc, cur = rec['price'], rec['upc'], rec['currency']
     if rec['basis'] == 'ambiguous':
         # Samuel 2026-11-10 (Beefeater 70cl nrf@€75): a standalone '@'-price with
-        # no per-bottle/per-case qualifier must PRESERVE the quoted amount with an
-        # unknown basis — not be nulled to "price on request". Keep the number
-        # visible in price_per_unit; leave price_per_case null (we will NOT guess
-        # a per-case). The row carries no incoterm/location, so it is peer-
-        # unqualified and already excluded from 12M-low / best-price comparisons.
+        # no per-bottle/per-case qualifier has an UNKNOWN basis. Round 3: leave
+        # BOTH the unit and case price BLANK — the figure is not a comparable unit
+        # price — and surface the quoted amount only as an annotation
+        # ("EUR 75 quoted — basis unspecified"). The row is peer-unqualified and
+        # already excluded from 12M-low / best-price comparisons.
         if cur:
             P['currency'] = cur
-        if V is not None:
-            P['price_per_unit'] = V
-            _recon_flag(P, f"quoted amount {cur or 'EUR'} {V:g} retained — price basis unknown; excluded from price comparison")
-        else:
-            P['price_per_unit'] = None
+        P['price_per_unit'] = None
         P['price_per_case'] = None
         P['price_per_unit_eur'] = None; P['price_per_case_eur'] = None
+        if V is not None:
+            _recon_flag(P, f"{cur or 'EUR'} {V:g} quoted — basis unspecified; excluded from price comparison")
         _recon_flag(P, "price basis ambiguous — '@' price has no per-bottle/per-case qualifier")
+        # The bare '@'-price line carries no delivery terms of its own; drop any
+        # incoterm/location the LLM bled in from a neighbour (Beefeater took "NL"
+        # from the preceding "Cody Vody … ex NL bond" line) unless THIS line names
+        # one. Samuel 2026-11-10 round 3.
+        if not _recon_line_has_delivery(rec.get('raw')):
+            P['incoterm'] = 'Not Found'
+            P['location'] = 'Not Found'
         return
     if cur:
         P['currency'] = cur
