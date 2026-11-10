@@ -463,6 +463,11 @@ def is_valid_offer(offer_dict: dict) -> bool:
                 isinstance(f, str) and (
                     'Zero price retained' in f
                     or 'Price on request retained' in f
+                    # A bare '@'-price (Beefeater 70cl @€75) has a quoted amount
+                    # with an unknown basis — keep it as-is, never relabel it
+                    # "Price on request — no price stated" (Samuel 2026-11-10 r3).
+                    or 'basis unspecified' in f
+                    or 'basis ambiguous' in f
                 )
                 for f in flags):
             # A "price on request" row must never read €0 on the dashboard — null a
@@ -1968,7 +1973,18 @@ async def process_offer(payload, job_id: str):
                     # Re-apply pre-scan XLSX metadata when the LLM returned a
                     # sentinel — "Not Found" from product_data would otherwise
                     # overwrite the header-row values we extracted before batching.
+                    # EXCEPT incoterm/location on a bare '@'-price row that the
+                    # source-authoritative reconcile deliberately cleared (price
+                    # basis ambiguous, e.g. Beefeater 70cl @€75): that row has NO
+                    # delivery terms of its own, so an offer-level incoterm/location
+                    # bled from another supplier's line ("ex NL bond") must NOT be
+                    # back-filled onto it (Samuel 2026-11-10 round 3).
+                    _recon_ambiguous = any(
+                        isinstance(f, str) and 'basis ambiguous' in f
+                        for f in (product_data.get('error_flags') or []))
                     for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name'):
+                        if _recon_ambiguous and _mf in ('incoterm', 'location'):
+                            continue
                         if merged_data.get(_mf) in (None, '', 'Not Found', 'nan', 'NaN') and extracted_data.get(_mf) not in (None, '', 'Not Found', 'nan', 'NaN'):
                             merged_data[_mf] = extracted_data[_mf]
 
