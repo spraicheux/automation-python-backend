@@ -188,6 +188,14 @@ def apply_deterministic_defaults(products: list, source_text: str,
 
     corrections = []
     for i, p in enumerate(products):
+        # A bare '@'-price row that the source-authoritative reconcile cleared
+        # (price basis ambiguous, e.g. Beefeater 70cl @€75) has NO delivery terms
+        # of its own — never inherit a document-level incoterm/location onto it,
+        # or an "NL" detected from a neighbour's "ex NL bond" line would reappear
+        # on the row reconcile deliberately blanked (Samuel 2026-11-10 round 3).
+        _recon_ambiguous = any(
+            isinstance(f, str) and "basis ambiguous" in f
+            for f in (p.get("error_flags") or []))
         # ── currency ────────────────────────────────────────────────────
         # Fill BLANKS from the document-level default only. Never override
         # a row that already has a currency set — the LLM had a reason for
@@ -209,13 +217,13 @@ def apply_deterministic_defaults(products: list, source_text: str,
         # "Prices - EXW Rotterdam (EUR)") only propagates to the subset of
         # rows the LLM happened to tag and leaves the rest with "Not Found".
         row_inco = (p.get("incoterm") or "").strip()
-        if doc_incoterm and (not row_inco or row_inco.lower() == "not found"):
+        if doc_incoterm and not _recon_ambiguous and (not row_inco or row_inco.lower() == "not found"):
             p["incoterm"] = doc_incoterm
             corrections.append(f"Row {i+1}: incoterm=None → {doc_incoterm} (inherited from document header)")
 
         # ── location ──────────────────────────────────────────────────
         row_loc = (p.get("location") or "").strip()
-        if doc_location and (not row_loc or row_loc.lower() == "not found"):
+        if doc_location and not _recon_ambiguous and (not row_loc or row_loc.lower() == "not found"):
             p["location"] = doc_location
             corrections.append(f"Row {i+1}: location=None → {doc_location} (inherited from document header)")
 
