@@ -2015,10 +2015,12 @@ def _map_structured_image_row(r: dict) -> Optional[dict]:
     return prod
 
 
-# Vision model for the single structured-image call. gpt-4.1 reads dense sheets
-# (tiny 10 ml bottles, crowded Qty columns) more reliably than gpt-4o; one line
-# to swap if a different model is wanted.
-_STRUCT_IMG_MODEL = "gpt-4.1"
+# Vision model for the single structured-image call. gpt-4o is the verified
+# baseline. gpt-4.1 was A/B-tested on the dense CHELSEA sheet and did NOT fix
+# the two illegible Etat Libre 10 ml quantities (it misread them differently:
+# 18 and 40 vs the gpt-4o 40/40), so there is no accuracy reason to switch.
+# One line to swap if a different model is wanted.
+_STRUCT_IMG_MODEL = "gpt-4o"
 
 
 async def extract_structured_image(base64_image: str, content_type: str) -> Dict[str, Any]:
