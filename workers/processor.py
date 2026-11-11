@@ -983,6 +983,91 @@ _R4_EXW_BASIS_RE = re.compile(
 _R4_DELIVERED = {'DAP', 'DDP', 'CIF', 'CFR', 'CNF', 'CIP', 'CPT', 'DPU'}
 
 
+def _block_for_ref(text: str, ref: str) -> str:
+    """Return ONE reference's own block from the document text — from the
+    reference token up to the next reference / 'REF' boundary. Lets the per-row
+    MOQ / deposit scans work when the LLM product carries no `_raw_row_text`
+    (attachment / vision extractions frequently don't), by giving each row the
+    exact slice of source that belongs to it (Elixe 'MOQ · Full lot' / 'Deposit
+    confirmation required' sit under their own OF-ref, Samuel 2026-11-11)."""
+    ref = str(ref or '').strip()
+    if not ref or not text or ref not in text:
+        return ''
+    i = text.index(ref)
+    tail = text[i + len(ref):]
+    m = re.search(r'(OF-\d{3,}-\d{3,}|ELIXEMARKET\s+REF|\bREF\b\s*[·:])',
+                  tail, re.IGNORECASE)
+    return ref + (tail[:m.start()] if m else tail[:600])
+
+
+# ── Multi-currency retail reconciliation (CHELSEA HK, Samuel 2026-11-11) ──────
+# HK perfume stock sheets quote BOTH an HKD and a USD price plus a stock Qty
+# column. The LLM mis-maps them: the USD value lands in price_per_unit but
+# labelled EUR with no conversion, the HKD value is mistaken for the quantity,
+# and the real Qty is dropped. These parse the row text and set it right
+# deterministically (memory: prefer deterministic reconciliation over
+# extract_offer prompt nudges).
+_MC_HKD_RE = re.compile(r'(?:price_hkd\s*=\s*|HKD\s*|HK\$\s*)([\d][\d,]*(?:\.\d+)?)', re.IGNORECASE)
+_MC_USD_RE = re.compile(r'(?:price_usd\s*=\s*|USD\s*|US\$\s*)([\d][\d,]*(?:\.\d+)?)', re.IGNORECASE)
+_MC_QTY_RE = re.compile(r'(?:qty|quantity|数量)\s*[=:]?\s*([\d][\d,]*)\b', re.IGNORECASE)
+
+
+def _reconcile_multicurrency_retail(safe_data: dict) -> None:
+    """When a row quotes BOTH HKD and USD (HK perfume/cosmetics sheets), make
+    USD the tradeable price, keep HKD as a visible list-price note, recover the
+    stock Qty, and clear a quantity the LLM mis-filled from the HKD price. Runs
+    BEFORE FX normalisation so USD→EUR is converted by the ECB module."""
+    raw = safe_data.get('_raw_row_text') or ''
+    if not raw:
+        return
+    hk = _MC_HKD_RE.search(raw)
+    us = _MC_USD_RE.search(raw)
+    if not (hk and us):
+        return  # only the genuine dual-currency HK sheets
+
+    def _num(s):
+        try:
+            return float(str(s).replace(',', ''))
+        except (TypeError, ValueError):
+            return None
+
+    hkd, usd = _num(hk.group(1)), _num(us.group(1))
+    if usd is None or usd <= 0:
+        return
+    safe_data['currency'] = 'USD'
+    safe_data['price_per_unit'] = usd
+    safe_data['price_per_case'] = None            # per-unit retail, no case price
+    safe_data['price_per_unit_eur'] = None        # force re-conversion from USD
+    safe_data['price_per_case_eur'] = None
+    safe_data['fx_rate'] = None
+    safe_data['fx_source'] = None
+
+    # A quantity the LLM lifted from the HKD list price is wrong — drop it.
+    if hkd is not None:
+        for q in ('quantity_case', 'quantity_bottles', 'quantity_pallets', 'quantity_ftl'):
+            v = _safe_float(safe_data.get(q))
+            if v is not None and abs(v - hkd) < 0.5:
+                safe_data[q] = None
+
+    # Recover the real stock quantity (the explicit Qty column) when transcribed.
+    qm = _MC_QTY_RE.search(raw)
+    if qm:
+        qv = _num(qm.group(1))
+        if qv is not None and (hkd is None or abs(qv - hkd) >= 0.5) and abs(qv - usd) >= 0.5:
+            safe_data['quantity_bottles'] = qv
+            safe_data['quantity_case'] = None
+            safe_data['quantity_unit'] = 'units'
+
+    # Keep BOTH prices visible (Samuel: 17 refs with HKD + USD).
+    if hkd is not None:
+        note = f"List price HKD {hkd:g} / USD {usd:g} (USD used for EUR comparison)"
+        cc = safe_data.get('commercial_conditions')
+        if not cc:
+            safe_data['commercial_conditions'] = note
+        elif 'HKD' not in str(cc):
+            safe_data['commercial_conditions'] = f"{cc}; {note}"
+
+
 def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
     """Samuel 2026-11-11 deterministic offer-shape fixes, keyed on the row's
     own source text (`_raw_row_text`):
@@ -995,6 +1080,16 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
       (5) stop asserting "loose" when the source states no case configuration.
     """
     raw = safe_data.get('_raw_row_text') or ''
+    # When the per-row text is missing/partial (common on PDF / image / XLSX
+    # extractions — the offer arrives as an attachment, so payload.text_body is
+    # empty and the LLM product dict carries no _raw_row_text), fall back to the
+    # row's OWN block located in the document text by its reference. Without
+    # this, the per-row MOQ / deposit scans silently no-op on exactly the
+    # attachment offers Samuel sends (Elixe 'Full lot' / deposit).
+    _ref = (safe_data.get('product_reference')
+            or safe_data.get('supplier_reference') or '')
+    _block = _block_for_ref(body, _ref) if (body and _ref) else ''
+    row_src = (raw + "\n" + _block) if _block else raw
     flags = safe_data.get('error_flags')
     if not isinstance(flags, list):
         flags = []
@@ -1018,6 +1113,21 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
             if _m not in flags:
                 flags.append(_m)
 
+    # (1b) lot quantity stated as "N btls/bottles <BRAND>" that the LLM dropped
+    # (Yamazaki "11 btls YAMAZAKI 25YO" came back with no quantity on either
+    # delivery-term row). Scoped: the brand token must FOLLOW the count, so a
+    # bare "480 bottles available" elsewhere never leaks in.
+    if not any(safe_data.get(q) for q in
+               ('quantity_bottles', 'quantity_case', 'quantity_pallets', 'quantity_ftl')):
+        _bt = (safe_data.get('brand') or '').split()
+        if _bt:
+            _qm = re.search(r'\b(\d{1,5})\s*(?:btls?|bottles?)\s+' + re.escape(_bt[0]),
+                            body or '', re.IGNORECASE)
+            if _qm:
+                safe_data['quantity_bottles'] = float(_qm.group(1))
+                if not safe_data.get('quantity_unit'):
+                    safe_data['quantity_unit'] = 'bottles'
+
     # (2) delivered-term row carrying only the ex-works basis price
     row_ic2 = _norm_ic(safe_data.get('incoterm'))
     if row_ic2 in _R4_DELIVERED and _R4_EXW_BASIS_RE.search(f"{raw}\n{body or ''}"):
@@ -1028,10 +1138,10 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
             safe_data['needs_manual_review'] = True
 
     # (3) non-numeric MOQ "Full lot" + pallet MOQ, verbatim
-    if raw and not safe_data.get('moq_text') and _R4_MOQ_FULLLOT_RE.search(raw):
+    if row_src and not safe_data.get('moq_text') and _R4_MOQ_FULLLOT_RE.search(row_src):
         safe_data['moq_text'] = 'Full lot'
-    if raw and not safe_data.get('moq_pallets'):
-        mpl = _R4_MOQ_PALLETS_RE.search(raw)
+    if row_src and not safe_data.get('moq_pallets'):
+        mpl = _R4_MOQ_PALLETS_RE.search(row_src)
         if mpl:
             try:
                 safe_data['moq_pallets'] = float(mpl.group(1).replace(',', '.'))
@@ -1043,7 +1153,7 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
                 pass
 
     # (4) per-line deposit condition → commercial_conditions
-    if raw and _R4_DEPOSIT_RE.search(raw):
+    if row_src and _R4_DEPOSIT_RE.search(row_src):
         _dep = 'Deposit confirmation required'
         cc = safe_data.get('commercial_conditions')
         if not cc:
@@ -1053,8 +1163,8 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
 
     # (5) "loose" → honest "case configuration not stated"
     upc = _safe_float(safe_data.get('units_per_case'))
-    if raw and upc in (None, 1.0) and not re.search(
-            r'\d+\s*[x×]\s*\d|/\s*cs|per\s*case|\bcases?\b|\bcs\b', raw, re.IGNORECASE):
+    if row_src and upc in (None, 1.0) and not re.search(
+            r'\d+\s*[x×]\s*\d|/\s*cs|per\s*case|\bcases?\b|\bcs\b', row_src, re.IGNORECASE):
         changed = False
         newflags = []
         for f in flags:
@@ -1206,6 +1316,15 @@ def _recover_dropped_at_priced(offers: list, source_text: str, job_id: str) -> i
         except ValueError:
             continue
         if amt <= 0:
+            continue
+        # Guard (Samuel 2026-11-11, Yamazaki): if the '@'-priced line ITSELF
+        # names a product already extracted ("11 btls YAMAZAKI 25YO @ EUR
+        # 3995/btl"), this is NOT a dropped row — skip, so a leading quantity
+        # token ("11 btls") can never make us scrape a phantom from the
+        # surrounding text ("Bordeaux or DAP Loendersloot …").
+        _line_toks = [t for t in re.findall(r'[a-z0-9]+', ln[:m.start()].lower())
+                      if len(t) > 2]
+        if any(t in seen for t in _line_toks):
             continue
         # Candidate name: this line before '@' (minus size/customs tokens), else
         # the nearest preceding name-like line (handles "07 / Name / 70cl @ EUR").
@@ -2525,6 +2644,7 @@ async def process_offer(payload, job_id: str):
                     _snap_duplicated_row_per_unit(safe_data)
                     _fix_pallet_per_case_phrasing(safe_data)
                     _backfill_numeric_brand(safe_data)
+                    _reconcile_multicurrency_retail(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
                     _normalize_incoterm_location(safe_data)
 
@@ -2534,7 +2654,7 @@ async def process_offer(payload, job_id: str):
                     safe_data['error_flags'] = _flag_bucket
 
                     # Round-4 deterministic offer-shape fixes (Samuel 2026-11-11).
-                    _apply_round4_shape_fixes(safe_data, getattr(payload, 'text_body', '') or '')
+                    _apply_round4_shape_fixes(safe_data, _cond_source_text or '')
 
                     # client §5 — MOQ unit follows the SOURCE. When the source
                     # stated the MOQ in cases (moq_cases populated) and no other
@@ -2607,7 +2727,7 @@ async def process_offer(payload, job_id: str):
                     # Split "Company - Person" into company + contact (Yamazaki).
                     _sup_company, _sup_contact = _split_company_contact(
                         _resolve_supplier_name(_sup_name, payload),
-                        getattr(payload, 'text_body', None), _sup_email)
+                        _cond_source_text, _sup_email)
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -2864,6 +2984,7 @@ async def process_offer(payload, job_id: str):
 
                 _fix_pallet_per_case_phrasing(safe_data)
                 _backfill_numeric_brand(safe_data)
+                _reconcile_multicurrency_retail(safe_data)
                 safe_data = _normalize_currency_and_prices(safe_data)
                 _normalize_incoterm_location(safe_data)
 
@@ -2880,7 +3001,7 @@ async def process_offer(payload, job_id: str):
                 if safe_data.get('moq_cases') is not None and not safe_data.get('moq_unit'):
                     safe_data['moq_unit'] = 'cases'
                 # Round-4 deterministic offer-shape fixes (Samuel 2026-11-11).
-                _apply_round4_shape_fixes(safe_data, getattr(payload, 'text_body', '') or '')
+                _apply_round4_shape_fixes(safe_data, _cond_source_text or '')
                 _final_key = build_product_key(
                     safe_data.get('brand'), safe_data.get('product_name'),
                     safe_data.get('unit_volume_ml'),
@@ -2903,7 +3024,7 @@ async def process_offer(payload, job_id: str):
                 # Split "Company - Person" into company + contact (Yamazaki).
                 _sup_company, _sup_contact = _split_company_contact(
                     _resolve_supplier_name(_sup_name, payload),
-                    getattr(payload, 'text_body', None), _sup_email)
+                    _cond_source_text, _sup_email)
 
                 offer = OfferItem(
                     uid=uid,
@@ -3044,7 +3165,11 @@ async def process_offer(payload, job_id: str):
         #     (Alder Beefeater @ EUR 79). Both operate on the whole source.
         try:
             _dedup_fragments_in_place(offers, job_id)
-            _recov_src = (getattr(payload, 'text_body', None)
+            # Prefer the FULL document text (body + extracted attachment text) so
+            # the Beefeater '@ EUR 79' line in an attachment-only PDF (NE-410,
+            # where payload.text_body is empty) is still available to recover.
+            _recov_src = (_cond_source_text
+                          or getattr(payload, 'text_body', None)
                           or (offers[0].get('_source_text') if offers else None) or '')
             _recover_dropped_at_priced(offers, _recov_src, job_id)
         except Exception as _cp_exc:

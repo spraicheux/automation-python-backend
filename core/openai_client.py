@@ -3205,14 +3205,19 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                                  # rows. Transcribe EVERY line faithfully first;
                                  # extract_offer() then applies the full rules.
                                  "text": ("Transcribe EVERY product line from this offer / price-sheet "
-                                          "image as plain text — one line per product reference, exactly "
-                                          "as shown, in reading order. Preserve for each row: the brand and "
-                                          "product name, any reference or barcode, the quantity/availability, "
-                                          "any tester / variant / set marker, and ALL quoted prices WITH their "
-                                          "currencies (e.g. keep BOTH HKD and USD if both are shown). Do NOT "
-                                          "summarise, do NOT skip or merge rows, do NOT add commentary. If a "
-                                          "value is unreadable write [unreadable]. If the image has no "
-                                          "commercial product offer at all, reply exactly: NO_OFFER_CONTENT.")},
+                                          "image. Output ONE line per product reference, in reading order, "
+                                          "as labelled fields separated by ' | '. Copy values verbatim from "
+                                          "the image, in this exact field order, and keep BOTH prices when two "
+                                          "currencies are shown:\n"
+                                          "brand=<brand> | product=<full name incl. ml/size> | "
+                                          "barcode=<EAN/barcode or -> | price_usd=<number or -> | "
+                                          "price_hkd=<number or -> | price_eur=<number or -> | "
+                                          "qty=<available stock quantity number or -> | "
+                                          "state=<tester|retail|sample|set or ->\n"
+                                          "One line per product; do NOT summarise, skip, merge, or invent "
+                                          "rows. Write '-' for any field that is absent and [unreadable] for a "
+                                          "value you cannot read. If the image has no commercial product offer "
+                                          "at all, reply exactly: NO_OFFER_CONTENT.")},
                                 {
                                     "type": "image_url",
                                     "image_url": {
