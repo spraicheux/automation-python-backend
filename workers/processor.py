@@ -1123,6 +1123,141 @@ def _split_company_contact(name, body=None, supplier_email=None):
     return (company or name, contact)
 
 
+def _dedup_fragments_in_place(offers: list, job_id: str) -> int:
+    """Drop an LLM over-split fragment: a no-quantity row that duplicates a
+    quantity-bearing twin (same brand/product/incoterm/location/price). Yamazaki
+    'one lot, two delivery terms' came back as THREE rows — EXW(no qty), EXW(11),
+    DAP(11); the no-qty EXW is the fragment (Samuel 2026-11-11). Removes it from
+    BOTH the offers list and the DB."""
+    if not offers:
+        return 0
+
+    def _hasqty(d):
+        return any(d.get(f) for f in ('quantity_bottles', 'quantity_case',
+                                      'quantity_pallets', 'quantity_ftl'))
+
+    def _sig(d):
+        return ((d.get('brand') or '').strip().lower(),
+                (d.get('product_name') or '').strip().lower(),
+                (d.get('incoterm') or '').strip().upper(),
+                (d.get('location') or '').strip().lower(),
+                d.get('price_per_unit'), d.get('price_per_case'))
+
+    with_qty = {_sig(d) for d in offers if _hasqty(d)}
+    frag_uids = {d.get('uid') for d in offers
+                 if (not _hasqty(d)) and _sig(d) in with_qty}
+    if not frag_uids:
+        return 0
+    try:
+        db = get_session_factory()()
+        try:
+            db.query(OfferItemDB).filter(
+                OfferItemDB.job_id == job_id,
+                OfferItemDB.uid.in_(frag_uids)).delete(synchronize_session=False)
+            sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
+            if sf and sf.product_count:
+                sf.product_count = max(0, sf.product_count - len(frag_uids))
+            db.commit()
+            logger.info(f"dedup: dropped {len(frag_uids)} no-quantity fragment "
+                        f"row(s) for job {job_id}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"fragment dedup DB delete failed for {job_id}: {e}")
+        return 0
+    offers[:] = [d for d in offers if d.get('uid') not in frag_uids]
+    return len(frag_uids)
+
+
+_GLUED_AT_RE = re.compile(r'@\s*(EUR|USD|GBP|CHF|€|\$|£)\s*([\d]+(?:[.,]\d+)?)',
+                          re.IGNORECASE)
+_NON_NAME_RE = re.compile(
+    r'^\s*(?:\d{1,3}$|T[12]\b|EXW|DAP|DDP|CIF|CFR|CNF|FOB|FCA|CPT|CIP|DPU|FAS|MOQ|'
+    r'price\b|from\b|best\b|ref\b|offer\b|supplier\b|stock\b|North\b)', re.IGNORECASE)
+
+
+def _recover_dropped_at_priced(offers: list, source_text: str, job_id: str) -> int:
+    """Recover a glued '@ <CUR> <num>' ambiguous-basis line the LLM dropped —
+    Samuel 2026-11-11, Alder NE-410 item 07 'Beefeater London Dry Gin … @ EUR 79'
+    (6 of 7 rows extracted). The '@ CUR num' format is distinctive; we only add a
+    row when NO extracted row already shares a name token, so an already-captured
+    '@'-priced product (ATV list, Yamazaki) is never duplicated. Kept with null
+    prices + 'EUR 79 quoted — basis unspecified', like the ATV Beefeater."""
+    if not source_text or not offers:
+        return 0
+    lines = [l.rstrip() for l in str(source_text).splitlines()]
+    seen = set()
+    for d in offers:
+        for v in (d.get('brand'), d.get('product_name')):
+            for t in re.findall(r'[a-z0-9]+', (v or '').lower()):
+                if len(t) > 2:
+                    seen.add(t)
+    tmpl = offers[0]
+    base_uid = str(tmpl.get('uid') or 'row').rsplit('_', 1)[0]
+    added = 0
+    for idx, ln in enumerate(lines):
+        m = _GLUED_AT_RE.search(ln)
+        if not m:
+            continue
+        cur = m.group(1).upper()
+        cur = _CURRENCY_SYMBOLS.get(m.group(1), cur)
+        try:
+            amt = float(m.group(2).replace(',', '.'))
+        except ValueError:
+            continue
+        if amt <= 0:
+            continue
+        # Candidate name: this line before '@' (minus size/customs tokens), else
+        # the nearest preceding name-like line (handles "07 / Name / 70cl @ EUR").
+        name = re.sub(r'\b\d+\s*(?:cl|ml|l|cs|btls?|bottles?|pcs?|pieces?|nrf|rf|gbx|ngbx)\b.*$',
+                      '', ln[:m.start()], flags=re.IGNORECASE).strip(' |·-')
+        if not re.search(r'[A-Za-z]{3}', name):
+            for j in range(idx - 1, max(-1, idx - 4), -1):
+                cand = lines[j].strip()
+                if not cand or _NON_NAME_RE.match(cand) or _GLUED_AT_RE.search(cand):
+                    continue
+                if re.search(r'[A-Za-z]{3}', cand):
+                    name = re.sub(r'\b\d+\s*(?:cl|ml|l)\b.*$', '', cand,
+                                  flags=re.IGNORECASE).strip(' |·-')
+                    break
+        toks = [t for t in re.findall(r'[a-z0-9]+', name.lower()) if len(t) > 2]
+        if not toks or any(t in seen for t in toks):
+            continue
+        brand = name.split()[0]
+        prod = name[len(brand):].strip() or name
+        vol = None
+        vm = re.search(r'(\d+(?:\.\d+)?)\s*(cl|ml|l)\b',
+                       ln + ' ' + (lines[idx - 1] if idx > 0 else ''), re.IGNORECASE)
+        if vm:
+            v = float(vm.group(1)); u = vm.group(2).lower()
+            vol = v * 10 if u == 'cl' else v * 1000 if u == 'l' else v
+        od = dict(tmpl)
+        od.update(
+            uid=f"{base_uid}_at{added}", brand=brand, brand_raw=brand,
+            product_name=prod, product_name_raw=name, product_key=None,
+            unit_volume_ml=vol, units_per_case=None,
+            price_per_unit=None, price_per_case=None,
+            price_per_unit_eur=None, price_per_case_eur=None,
+            currency=cur, fx_rate=1.0, fx_source=None, fx_date=None,
+            incoterm=None, location=None,
+            quantity_case=None, quantity_bottles=None, quantity_pallets=None, quantity_ftl=None,
+            quantity_unit=None, moq_cases=None, moq_bottles=None, moq_pallets=None,
+            moq_ftl=None, moq_text=None, offer_date=None,
+            needs_manual_review=True,
+            error_flags=[f"{cur} {amt:g} quoted — basis unspecified; excluded from price comparison",
+                         "price basis ambiguous — unit/case basis not stated in source"])
+        try:
+            save_offer_to_db(od, job_id)
+            offers.append(od)
+            seen.update(toks)
+            added += 1
+            logger.info(f"recovered dropped @-priced row '{name}' ({cur} {amt:g}) "
+                        f"for job {job_id}")
+        except Exception as e:
+            logger.warning(f"recover @-priced '{name}' failed: {e}")
+    return added
+
+
 _PALLET_PER_CASE_RE = re.compile(
     r'(\d+(?:[.,]\d+)?)\s*(?:pallets?|plt|pll)\b[\s,;:]*'
     r'(?:per|x|×|/|of|\*|each|with|containing|=)?[\s,;:]*'
@@ -2902,6 +3037,18 @@ async def process_offer(payload, job_id: str):
                 redis_manager.set_job_status(job_id, "done")
                 logger.info(f"Job {job_id} marked as done with partial success")
                 return
+
+        # ── Round-4 source-completeness pass (Samuel 2026-11-11), once per job ──
+        # (1) drop LLM over-split no-quantity fragments (Yamazaki 3 rows → 2);
+        # (2) recover a glued "@ <CUR> <num>" ambiguous line the LLM dropped
+        #     (Alder Beefeater @ EUR 79). Both operate on the whole source.
+        try:
+            _dedup_fragments_in_place(offers, job_id)
+            _recov_src = (getattr(payload, 'text_body', None)
+                          or (offers[0].get('_source_text') if offers else None) or '')
+            _recover_dropped_at_priced(offers, _recov_src, job_id)
+        except Exception as _cp_exc:
+            logger.warning(f"completeness pass failed for {job_id}: {_cp_exc}")
 
         # Store results
         result_data = {
