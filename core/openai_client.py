@@ -2022,7 +2022,10 @@ async def extract_structured_image(base64_image: str, content_type: str) -> Dict
         messages=[{"role": "user", "content": [
             {"type": "text", "text": _STRUCT_IMG_PROMPT},
             {"type": "image_url",
-             "image_url": {"url": f"data:{content_type};base64,{base64_image}"}},
+             # high detail = higher-resolution tiling so dense sheets with small
+             # text (tiny 10 ml bottles, crowded Qty columns) read reliably.
+             "image_url": {"url": f"data:{content_type};base64,{base64_image}",
+                           "detail": "high"}},
         ]}],
         response_format={"type": "json_object"},
         temperature=0.0, max_tokens=8000,
