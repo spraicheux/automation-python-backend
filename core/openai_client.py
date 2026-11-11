@@ -4,7 +4,7 @@ import asyncio
 import json
 import base64
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import logging
@@ -1872,6 +1872,185 @@ def _extract_docx_text(file_path: str) -> str:
         return ""
 
 
+# ── Universal structured image extraction (Samuel 2026-11-11) ─────────────────
+# One vision call that reads an offer IMAGE in ANY language / layout / category
+# and returns explicit per-row fields (barcode, name incl. non-Latin, EVERY price
+# WITH its own currency, quantity, size, tester). Replaces the fragile
+# transcribe→extract_offer→reconcile chain for images: unambiguous AND cheaper
+# (one compact call, no 12k-token rule block). Output feeds the SAME product
+# pipeline (clean_product_data + the deterministic post-processors).
+_STRUCT_IMG_PROMPT = (
+    "You are reading a B2B product OFFER / price-sheet / stock-list IMAGE. It may be "
+    "in ANY language (English, Chinese, French, Arabic, ...), ANY layout (table, "
+    "list, or a photo of a sheet) and ANY category (wines, spirits, perfumes, "
+    "cosmetics, food, ...). Read EVERY product row.\n"
+    "Return JSON ONLY: {\"is_offer\": true|false, \"products\": [ ... ]}. For EACH "
+    "product row emit ONE object with these keys:\n"
+    "  barcode: the EAN/UPC/barcode digits, or null;\n"
+    "  brand: the brand;\n"
+    "  product_name: the full product name EXACTLY as shown (keep the original "
+    "script, e.g. Chinese characters);\n"
+    "  name_latin: an English/Latin transliteration or translation of the name if it "
+    "is non-Latin, else null;\n"
+    "  prices: an array of EVERY quoted price, each {\"currency\": code or symbol "
+    "(USD, HKD, EUR, GBP, CNY, ...), \"value\": number, \"basis\": "
+    "\"unit\"|\"bottle\"|\"case\"|\"piece\" or null} — keep ALL currencies shown "
+    "(e.g. BOTH HKD and USD);\n"
+    "  quantity: the available stock quantity number, or null; "
+    "quantity_unit: bottles|cases|pieces|pallets|units or null;\n"
+    "  size: e.g. \"100ml\", \"70cl\", \"1L\", or null; pack: units per case (number) or null;\n"
+    "  category: wines_spirits|perfumes|cosmetics|other; "
+    "retail_state: retail|tester|sample|miniature or null; "
+    "gender: men|women|unisex or null; format: EDT|EDP|Parfum|Cologne or null.\n"
+    "RULES: emit exactly one object per product row; do NOT summarise, skip, merge "
+    "or invent rows; copy values verbatim; use null for anything not present; never "
+    "guess a price or barcode. If the image shows NO commercial product offer (a "
+    "logo, a signature, a landscape/photo, a screenshot with no products or prices), "
+    "return {\"is_offer\": false, \"products\": []}."
+)
+# Primary/trade currency preference when a row quotes several. EUR (LOXO's own
+# currency) first, then the international hard currencies; a purely-local list
+# currency like HKD is last — it is kept, but as a secondary list price.
+_TRADE_CCY_PRIORITY = ["EUR", "USD", "GBP", "CHF", "SGD", "AUD", "CAD", "JPY", "CNY", "HKD"]
+_CCY_SYMBOL = {"$": "USD", "US$": "USD", "€": "EUR", "£": "GBP", "¥": "CNY",
+               "HK$": "HKD", "HKD$": "HKD", "RMB": "CNY", "₣": "CHF"}
+
+
+def _map_structured_image_row(r: dict) -> Optional[dict]:
+    """Map one structured-vision row to a pipeline product dict. Picks the trade
+    currency, keeps every other quoted price (incl. HKD) as a visible list price,
+    preserves a non-Latin name, and fills barcode / quantity / size / tester."""
+    if not isinstance(r, dict):
+        return None
+    norm = []
+    for p in (r.get("prices") or []):
+        if not isinstance(p, dict):
+            continue
+        _craw = str(p.get("currency") or "").strip()
+        cur = _CCY_SYMBOL.get(_craw, re.sub(r'[^A-Za-z$€£¥]', '', _craw).upper())
+        cur = _CCY_SYMBOL.get(cur, cur)
+        try:
+            val = float(str(p.get("value")).replace(",", ""))
+        except (TypeError, ValueError):
+            val = None
+        if cur and val and val > 0:
+            norm.append({"currency": cur, "value": val,
+                         "basis": str(p.get("basis") or "").lower()})
+    trade = None
+    for c in _TRADE_CCY_PRIORITY:
+        trade = next((p for p in norm if p["currency"] == c), None)
+        if trade:
+            break
+    if trade is None and norm:
+        trade = norm[0]
+
+    name = str(r.get("product_name") or "").strip()
+    name_latin = str(r.get("name_latin") or "").strip()
+    display = name_latin or name
+    brand = str(r.get("brand") or "").strip() or (display.split()[0] if display else "")
+
+    prod = {
+        "brand": brand or "Not Found",
+        "product_name": display or "Not Found",
+        "ean_code": re.sub(r'\s', '', str(r.get("barcode") or "")) or "Not Found",
+    }
+    if trade:
+        prod["currency"] = trade["currency"]
+        if trade["basis"] in ("case", "cs", "carton"):
+            prod["price_per_case"] = trade["value"]
+        else:
+            prod["price_per_unit"] = trade["value"]
+
+    _size = str(r.get("size") or "")
+    _sm = re.search(r'(\d+(?:\.\d+)?)\s*(ml|cl|l)\b', _size, re.IGNORECASE)
+    if _sm:
+        _v = float(_sm.group(1)); _u = _sm.group(2).lower()
+        prod["unit_volume_ml"] = _v * 10 if _u == "cl" else _v * 1000 if _u == "l" else _v
+    if r.get("pack"):
+        try:
+            prod["units_per_case"] = float(str(r["pack"]).replace(",", ""))
+        except (TypeError, ValueError):
+            pass
+
+    _q = r.get("quantity")
+    try:
+        _qv = float(str(_q).replace(",", "")) if _q not in (None, "") else None
+    except (TypeError, ValueError):
+        _qv = None
+    _qu = str(r.get("quantity_unit") or "").lower()
+    if _qv is not None:
+        if "case" in _qu:
+            prod["quantity_case"] = _qv; prod["quantity_unit"] = "cases"
+        elif "pallet" in _qu:
+            prod["quantity_pallets"] = _qv; prod["quantity_unit"] = "pallets"
+        else:
+            prod["quantity_bottles"] = _qv; prod["quantity_unit"] = _qu or "units"
+
+    if r.get("retail_state"):
+        prod["retail_state"] = r["retail_state"]
+    if r.get("gender"):
+        prod["gender"] = r["gender"]
+    if r.get("format"):
+        prod["perfume_format"] = r["format"]
+    _cat = str(r.get("category") or "").lower()
+    if "perfume" in _cat:
+        prod["category_slug"] = "perfumes"
+    elif "cosmetic" in _cat:
+        prod["category_slug"] = "cosmetics"
+    elif "wine" in _cat or "spirit" in _cat:
+        prod["category_slug"] = "wines_spirits"
+
+    _notes = []
+    if len(norm) > 1:
+        _notes.append("List price: " + "; ".join(f'{p["currency"]} {p["value"]:g}' for p in norm))
+    if name and name_latin and name != name_latin:
+        _notes.append(f"Source name: {name}")
+    if _notes:
+        prod["commercial_conditions"] = " | ".join(_notes)
+
+    prod["_raw_row_text"] = ("barcode=" + str(prod.get("ean_code")) + " | "
+                             + " | ".join(f'{p["currency"]} {p["value"]:g}' for p in norm)
+                             + (f' | Qty {_qv:g}' if _qv is not None else "")
+                             + (f' | {r.get("retail_state")}' if r.get("retail_state") else ""))
+    return prod
+
+
+async def extract_structured_image(base64_image: str, content_type: str) -> Dict[str, Any]:
+    """One structured vision call for an offer image → pipeline products."""
+    resp = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": _STRUCT_IMG_PROMPT},
+            {"type": "image_url",
+             "image_url": {"url": f"data:{content_type};base64,{base64_image}"}},
+        ]}],
+        response_format={"type": "json_object"},
+        temperature=0.0, max_tokens=8000,
+    )
+    content = resp.choices[0].message.content or "{}"
+    logger.info(f"[extract_structured_image] response length: {len(content)} chars")
+    try:
+        data = json.loads(content)
+    except Exception as e:
+        logger.error(f"[extract_structured_image] JSON parse failed: {e}")
+        data = {}
+    rows = data.get("products") if isinstance(data, dict) else None
+    rows = rows or []
+    out = []
+    for r in rows:
+        try:
+            mapped = _map_structured_image_row(r)
+            if mapped:
+                out.append(clean_product_data(mapped))
+        except Exception as e:
+            logger.error(f"[extract_structured_image] row map failed: {e}")
+    # Signal a genuine no-offer image so the caller does not waste a retry.
+    _src = "NO_OFFER_CONTENT" if (not out and isinstance(data, dict)
+                                  and data.get("is_offer") is False) else content[:50000]
+    logger.info(f"[extract_structured_image] mapped {len(out)} product(s) from {len(rows)} row(s)")
+    return {"products": out, "source_text": _src, "source_row_estimate": len(rows)}
+
+
 async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]:
     logger.info(f"[extract_from_file] ===== START =====")
     logger.info(f"[extract_from_file] file_path: {file_path!r}")
@@ -3192,71 +3371,32 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 logger.info(f"[extract_from_file] Image base64 encoded — length: {len(base64_image)} chars, mime={_img_mime}")
                 logger.info(f"[extract_from_file] Calling OpenAI vision API for image extraction...")
 
-                _vision_messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text",
-                             # Samuel 2026-11-11 (CHELSEA): 8 readable perfume
-                             # sheets with 17 references yielded 0 products. A
-                             # single "read-and-structure" pass drops dense
-                             # rows. Transcribe EVERY line faithfully first;
-                             # extract_offer() then applies the full rules.
-                             "text": ("Transcribe EVERY product line from this offer / price-sheet "
-                                      "image as plain text — one line per product reference, exactly "
-                                      "as shown, in reading order. Preserve for each row, labelled on the "
-                                      "same line: the brand and product name, any reference or barcode, "
-                                      "the stock quantity as 'Qty <n>', any tester / variant / set marker, "
-                                      "and ALL quoted prices WITH their currency labels (e.g. keep BOTH "
-                                      "'HKD <n>' and 'USD <n>' when both are shown). Do NOT summarise, do "
-                                      "NOT skip or merge rows, do NOT add commentary. If a value is "
-                                      "unreadable write [unreadable]. If the image has no commercial "
-                                      "product offer at all, reply exactly: NO_OFFER_CONTENT.")},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{content_type};base64,{base64_image}"
-                                },
-                            },
-                        ],
-                    }
-                ]
+                # Universal structured image extraction (Samuel 2026-11-11): ONE
+                # vision call returns explicit per-row fields (barcode, name in any
+                # language, every price WITH its currency, quantity, tester), which
+                # feed the normal product pipeline. Replaces the fragile
+                # transcribe→extract_offer→reconcile chain — unambiguous AND cheaper.
+                result = await extract_structured_image(base64_image, content_type)
+                _prods = result.get('products') if isinstance(result, dict) else None
 
-                async def _vision_extract():
-                    _resp = await client.chat.completions.create(
-                        model="gpt-4o", messages=_vision_messages, max_tokens=16000)
-                    _txt = _resp.choices[0].message.content or ""
-                    logger.info(f"[extract_from_file] Image OpenAI response length: {len(_txt)} chars")
-                    logger.info(f"[extract_from_file] Image response preview: {_txt[:400]!r}")
-                    return _txt, await extract_offer(_txt)
-
-                image_response_text, _img_result = await _vision_extract()
-                _prods = (_img_result or {}).get('products') if isinstance(_img_result, dict) else None
-
-                # Zero-product retry — PARITY WITH THE PDF PATH (Samuel CHELSEA):
-                # a READABLE offer image (transcription has digits and is not an
-                # explicit NO_OFFER_CONTENT) that yields 0 products is retried ONCE
-                # before we accept zero, since a dense multi-row sheet occasionally
-                # transcribes/parses empty on the first pass. Costs one extra call
-                # ONLY when a readable image dropped — never on a true no-offer image.
-                if (not _prods) and image_response_text and \
-                        'NO_OFFER_CONTENT' not in image_response_text.upper() and \
-                        re.search(r'\d', image_response_text):
-                    logger.warning(
-                        "[extract_from_file] IMAGE: 0 products from a readable "
-                        "transcription — retrying vision once")
+                # Retry ONCE on a READABLE image (not an explicit no-offer) that
+                # returned 0 — a dense sheet occasionally comes back empty. Never
+                # retries a genuine no-offer image, so no wasted credits.
+                if (not _prods) and 'NO_OFFER_CONTENT' not in str(
+                        result.get('source_text') or '').upper():
+                    logger.warning("[extract_from_file] IMAGE: 0 products — "
+                                   "retrying structured vision once")
                     try:
-                        _retry_text, _retry_result = await _vision_extract()
-                        if isinstance(_retry_result, dict) and _retry_result.get('products'):
-                            logger.info(
-                                f"[extract_from_file] IMAGE RETRY recovered "
-                                f"{len(_retry_result['products'])} product(s)")
-                            return _retry_result
+                        _retry = await extract_structured_image(base64_image, content_type)
+                        if isinstance(_retry, dict) and _retry.get('products'):
+                            logger.info(f"[extract_from_file] IMAGE RETRY recovered "
+                                        f"{len(_retry['products'])} product(s)")
+                            return _retry
                     except OpenAICreditsExhausted:
                         raise
                     except Exception as _re_err:
                         logger.error(f"[extract_from_file] IMAGE retry failed: {_re_err}")
-                return _img_result
+                return result
 
             except Exception as e:
                 logger.error(f"[extract_from_file] Image processing FAILED: {e}")
