@@ -1013,41 +1013,22 @@ _MC_QTY_RE = re.compile(r'(?:qty|quantity|数量)\s*[=:]?\s*([\d][\d,]*)\b', re.
 
 
 def _reconcile_multicurrency_retail(safe_data: dict) -> None:
-    """When a row quotes BOTH HKD and USD (HK perfume/cosmetics sheets), make
-    USD the tradeable price, keep HKD as a visible list-price note, recover the
-    stock Qty, and clear a quantity the LLM mis-filled from the HKD price. Runs
-    BEFORE FX normalisation so USD→EUR is converted by the ECB module."""
+    """A HK perfume/cosmetics stock sheet quotes BOTH an HKD and a USD price plus
+    a Qty column; the LLM mis-maps them (USD value in price but labelled EUR, HKD
+    mistaken for quantity, Qty dropped). USD is the tradeable price. Runs BEFORE
+    FX normalisation so USD→EUR is converted by the ECB module.
+
+    Currency + EUR conversion are DOCUMENT-level robust — they fire for every row
+    of a dual-currency sheet, because the vision transcription does NOT reliably
+    label or barcode every line (so a per-row-only approach left rows as EUR with
+    no conversion). The HKD list-price note and the stock-Qty recovery stay
+    best-effort from the row's own transcribed line."""
     raw = safe_data.get('_raw_row_text') or ''
     if not raw:
         return
-    # _raw_row_text is the WHOLE image/chunk block (every product in an image
-    # shares it — openai_client sets _p.setdefault('_raw_row_text', chunk)). So
-    # isolate THIS product's own line first — by its barcode, else by product
-    # name — or several rows would all inherit the FIRST row's HKD/USD/Qty.
-    src = raw
-    if '\n' in raw:
-        ean = re.sub(r'\s', '', str(safe_data.get('ean_code') or ''))
-        line = None
-        if ean:
-            for ln in raw.splitlines():
-                if ean and ean in re.sub(r'\s', '', ln):
-                    line = ln
-                    break
-        if line is None:
-            _pn = str(safe_data.get('product_name') or '')
-            _tk = [t for t in re.findall(r'[A-Za-zÀ-ÿ]{4,}', _pn)][:2]
-            if _tk:
-                for ln in raw.splitlines():
-                    if all(t.lower() in ln.lower() for t in _tk):
-                        line = ln
-                        break
-        if line is None:
-            return  # cannot isolate this row — don't risk cross-wiring values
-        src = line
-    hk = _MC_HKD_RE.search(src)
-    us = _MC_USD_RE.search(src)
-    if not (hk and us):
-        return  # only the genuine dual-currency HK sheets
+    # Dual-currency HK sheet? (the chunk mentions BOTH HKD and USD somewhere)
+    if not (_MC_HKD_RE.search(raw) and _MC_USD_RE.search(raw)):
+        return
 
     def _num(s):
         try:
@@ -1055,9 +1036,40 @@ def _reconcile_multicurrency_retail(safe_data: dict) -> None:
         except (TypeError, ValueError):
             return None
 
-    hkd, usd = _num(hk.group(1)), _num(us.group(1))
+    # Best-effort: isolate THIS row's own line (by barcode, else product name)
+    # for the row's exact HKD/USD/Qty. _raw_row_text is the WHOLE image chunk
+    # (openai_client sets _p.setdefault('_raw_row_text', chunk)).
+    line = raw if '\n' not in raw else None
+    if line is None:
+        ean = re.sub(r'\s', '', str(safe_data.get('ean_code') or ''))
+        if ean:
+            for ln in raw.splitlines():
+                if ean in re.sub(r'\s', '', ln):
+                    line = ln
+                    break
+        if line is None:
+            _tk = [t for t in re.findall(r'[A-Za-zÀ-ÿ]{4,}',
+                                        str(safe_data.get('product_name') or ''))][:2]
+            if _tk:
+                for ln in raw.splitlines():
+                    if all(t.lower() in ln.lower() for t in _tk):
+                        line = ln
+                        break
+
+    usd = hkd = None
+    if line is not None:
+        _us = _MC_USD_RE.search(line)
+        _hk = _MC_HKD_RE.search(line)
+        usd = _num(_us.group(1)) if _us else None
+        hkd = _num(_hk.group(1)) if _hk else None
+    # Fall back to the value the LLM already placed in price_per_unit — on these
+    # sheets that is reliably the USD column (prices verified 17/17 against source).
+    if usd is None:
+        usd = _safe_float(safe_data.get('price_per_unit'))
     if usd is None or usd <= 0:
         return
+
+    # Currency + conversion — ALWAYS for a dual-currency-sheet row.
     safe_data['currency'] = 'USD'
     safe_data['price_per_unit'] = usd
     safe_data['price_per_case'] = None            # per-unit retail, no case price
@@ -1066,23 +1078,24 @@ def _reconcile_multicurrency_retail(safe_data: dict) -> None:
     safe_data['fx_rate'] = None
     safe_data['fx_source'] = None
 
-    # A quantity the LLM lifted from the HKD list price is wrong — drop it.
+    # Clear a quantity the LLM lifted from the HKD list price (best-effort).
     if hkd is not None:
         for q in ('quantity_case', 'quantity_bottles', 'quantity_pallets', 'quantity_ftl'):
             v = _safe_float(safe_data.get(q))
             if v is not None and abs(v - hkd) < 0.5:
                 safe_data[q] = None
 
-    # Recover the real stock quantity (the explicit Qty column) when transcribed.
-    qm = _MC_QTY_RE.search(src)
-    if qm:
-        qv = _num(qm.group(1))
-        if qv is not None and (hkd is None or abs(qv - hkd) >= 0.5) and abs(qv - usd) >= 0.5:
-            safe_data['quantity_bottles'] = qv
-            safe_data['quantity_case'] = None
-            safe_data['quantity_unit'] = 'units'
+    # Recover the stock Qty from the row's own line (best-effort).
+    if line is not None:
+        qm = _MC_QTY_RE.search(line)
+        if qm:
+            qv = _num(qm.group(1))
+            if qv is not None and (hkd is None or abs(qv - hkd) >= 0.5) and abs(qv - usd) >= 0.5:
+                safe_data['quantity_bottles'] = qv
+                safe_data['quantity_case'] = None
+                safe_data['quantity_unit'] = 'units'
 
-    # Keep BOTH prices visible (Samuel: 17 refs with HKD + USD).
+    # Keep BOTH prices visible when we have the HKD (Samuel: 17 refs with HKD+USD).
     if hkd is not None:
         note = f"List price HKD {hkd:g} / USD {usd:g} (USD used for EUR comparison)"
         cc = safe_data.get('commercial_conditions')
