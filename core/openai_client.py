@@ -3192,44 +3192,71 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                 logger.info(f"[extract_from_file] Image base64 encoded — length: {len(base64_image)} chars, mime={_img_mime}")
                 logger.info(f"[extract_from_file] Calling OpenAI vision API for image extraction...")
 
-                response = await client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text",
-                                 # Samuel 2026-11-11 (CHELSEA): 8 readable perfume
-                                 # sheets with 17 references yielded 0 products. A
-                                 # single "read-and-structure" pass drops dense
-                                 # rows. Transcribe EVERY line faithfully first;
-                                 # extract_offer() then applies the full rules.
-                                 "text": ("Transcribe EVERY product line from this offer / price-sheet "
-                                          "image as plain text — one line per product reference, exactly "
-                                          "as shown, in reading order. Preserve for each row, labelled on the "
-                                          "same line: the brand and product name, any reference or barcode, "
-                                          "the stock quantity as 'Qty <n>', any tester / variant / set marker, "
-                                          "and ALL quoted prices WITH their currency labels (e.g. keep BOTH "
-                                          "'HKD <n>' and 'USD <n>' when both are shown). Do NOT summarise, do "
-                                          "NOT skip or merge rows, do NOT add commentary. If a value is "
-                                          "unreadable write [unreadable]. If the image has no commercial "
-                                          "product offer at all, reply exactly: NO_OFFER_CONTENT.")},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{content_type};base64,{base64_image}"
-                                    },
+                _vision_messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text",
+                             # Samuel 2026-11-11 (CHELSEA): 8 readable perfume
+                             # sheets with 17 references yielded 0 products. A
+                             # single "read-and-structure" pass drops dense
+                             # rows. Transcribe EVERY line faithfully first;
+                             # extract_offer() then applies the full rules.
+                             "text": ("Transcribe EVERY product line from this offer / price-sheet "
+                                      "image as plain text — one line per product reference, exactly "
+                                      "as shown, in reading order. Preserve for each row, labelled on the "
+                                      "same line: the brand and product name, any reference or barcode, "
+                                      "the stock quantity as 'Qty <n>', any tester / variant / set marker, "
+                                      "and ALL quoted prices WITH their currency labels (e.g. keep BOTH "
+                                      "'HKD <n>' and 'USD <n>' when both are shown). Do NOT summarise, do "
+                                      "NOT skip or merge rows, do NOT add commentary. If a value is "
+                                      "unreadable write [unreadable]. If the image has no commercial "
+                                      "product offer at all, reply exactly: NO_OFFER_CONTENT.")},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{content_type};base64,{base64_image}"
                                 },
-                            ],
-                        }
-                    ],
-                    max_tokens=16000,
-                )
-                image_response_text = response.choices[0].message.content
-                logger.info(f"[extract_from_file] Image OpenAI response length: {len(image_response_text)} chars")
-                logger.info(f"[extract_from_file] Image response preview: {image_response_text[:400]!r}")
-                logger.info(f"[extract_from_file] Passing image response to extract_offer() for structured extraction")
-                return await extract_offer(image_response_text)
+                            },
+                        ],
+                    }
+                ]
+
+                async def _vision_extract():
+                    _resp = await client.chat.completions.create(
+                        model="gpt-4o", messages=_vision_messages, max_tokens=16000)
+                    _txt = _resp.choices[0].message.content or ""
+                    logger.info(f"[extract_from_file] Image OpenAI response length: {len(_txt)} chars")
+                    logger.info(f"[extract_from_file] Image response preview: {_txt[:400]!r}")
+                    return _txt, await extract_offer(_txt)
+
+                image_response_text, _img_result = await _vision_extract()
+                _prods = (_img_result or {}).get('products') if isinstance(_img_result, dict) else None
+
+                # Zero-product retry — PARITY WITH THE PDF PATH (Samuel CHELSEA):
+                # a READABLE offer image (transcription has digits and is not an
+                # explicit NO_OFFER_CONTENT) that yields 0 products is retried ONCE
+                # before we accept zero, since a dense multi-row sheet occasionally
+                # transcribes/parses empty on the first pass. Costs one extra call
+                # ONLY when a readable image dropped — never on a true no-offer image.
+                if (not _prods) and image_response_text and \
+                        'NO_OFFER_CONTENT' not in image_response_text.upper() and \
+                        re.search(r'\d', image_response_text):
+                    logger.warning(
+                        "[extract_from_file] IMAGE: 0 products from a readable "
+                        "transcription — retrying vision once")
+                    try:
+                        _retry_text, _retry_result = await _vision_extract()
+                        if isinstance(_retry_result, dict) and _retry_result.get('products'):
+                            logger.info(
+                                f"[extract_from_file] IMAGE RETRY recovered "
+                                f"{len(_retry_result['products'])} product(s)")
+                            return _retry_result
+                    except OpenAICreditsExhausted:
+                        raise
+                    except Exception as _re_err:
+                        logger.error(f"[extract_from_file] IMAGE retry failed: {_re_err}")
+                return _img_result
 
             except Exception as e:
                 logger.error(f"[extract_from_file] Image processing FAILED: {e}")
