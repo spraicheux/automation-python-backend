@@ -1105,6 +1105,92 @@ def _reconcile_multicurrency_retail(safe_data: dict) -> None:
             safe_data['commercial_conditions'] = f"{cc}; {note}"
 
 
+def _propagate_dual_currency(offers: list, job_id: str) -> int:
+    """If a job's perfume/cosmetics batch has CONFIRMED dual-currency HK rows
+    (USD converted via ECB, or carrying a 'List price HKD' note), the whole
+    supplier batch is a dual-currency sheet. A sibling perfume/cosmetic row that
+    stayed EUR — because the vision model omitted the HKD/USD labels on a dense
+    image (Samuel 2026-11-11, Etat Libre d'Orange 5×10 ml) — is set to USD and
+    converted via ECB, so currency/EUR are consistent across all 17 CHELSEA refs.
+    Updates BOTH the offers list and the DB; flags the row for review."""
+    if not offers:
+        return 0
+
+    def _is_conf(o):
+        if str(o.get('currency')).upper() != 'USD':
+            return False
+        cat = str(o.get('category_slug') or o.get('category') or '').lower()
+        if 'perfume' not in cat and 'cosmetic' not in cat:
+            return False
+        return ('HKD' in str(o.get('commercial_conditions') or '')
+                or 'ECB' in str(o.get('fx_source') or ''))
+
+    if len([o for o in offers if _is_conf(o)]) < 2:
+        return 0
+    targets = []
+    for o in offers:
+        if str(o.get('currency')).upper() == 'USD':
+            continue
+        cat = str(o.get('category_slug') or o.get('category') or '').lower()
+        if 'perfume' not in cat and 'cosmetic' not in cat:
+            continue
+        pu = _safe_float(o.get('price_per_unit'))
+        if pu and pu > 0:
+            targets.append(o)
+    if not targets:
+        return 0
+    try:
+        from core.fx_rates import get_eur_rate
+    except Exception:
+        return 0
+    updated = 0
+    try:
+        db = get_session_factory()()
+        try:
+            for o in targets:
+                pu = _safe_float(o.get('price_per_unit'))
+                fx, _eff, _src, _fb = get_eur_rate(
+                    'USD', o.get('offer_date') or o.get('date_received'))
+                o['currency'] = 'USD'
+                o['price_per_unit_eur'] = round(pu * fx, 4)
+                o['price_per_case'] = None
+                o['price_per_case_eur'] = None
+                o['fx_rate'] = fx
+                o['fx_source'] = _src
+                if _eff and not o.get('fx_date'):
+                    o['fx_date'] = _eff
+                o['needs_manual_review'] = True
+                _fl = o.get('error_flags')
+                if isinstance(_fl, list):
+                    _m = ("currency set to USD from the supplier's dual-currency "
+                          "sheet — this image did not transcribe its own HKD/USD "
+                          "labels; verify")
+                    if _m not in _fl:
+                        _fl.append(_m)
+                db.query(OfferItemDB).filter(
+                    OfferItemDB.job_id == job_id,
+                    OfferItemDB.uid == o.get('uid')).update({
+                        'currency': 'USD',
+                        'price_per_unit_eur': o['price_per_unit_eur'],
+                        'price_per_case': None,
+                        'price_per_case_eur': None,
+                        'fx_rate': fx,
+                        'fx_source': _src,
+                        'fx_date': o.get('fx_date'),
+                        'needs_manual_review': True,
+                    }, synchronize_session=False)
+                updated += 1
+            db.commit()
+            logger.info(f"dual-currency propagate: {updated} sibling row(s) → USD "
+                        f"for job {job_id}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"dual-currency propagate failed for {job_id}: {e}")
+        return 0
+    return updated
+
+
 def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
     """Samuel 2026-11-11 deterministic offer-shape fixes, keyed on the row's
     own source text (`_raw_row_text`):
@@ -3345,6 +3431,10 @@ async def process_offer(payload, job_id: str):
             # (3) recover a dropped NUMBERED circular item (NE-410 item 06
             #     L'Oréal, a lone cosmetic the extractor skips in a spirits list).
             _recover_dropped_numbered_items(offers, _recov_src, job_id)
+            # (4) propagate USD across a dual-currency perfume batch (CHELSEA) so a
+            #     dense image that transcribed without HKD/USD labels still shows
+            #     the supplier's currency, not a stray EUR with no conversion.
+            _propagate_dual_currency(offers, job_id)
         except Exception as _cp_exc:
             logger.warning(f"completeness pass failed for {job_id}: {_cp_exc}")
 
