@@ -1020,8 +1020,32 @@ def _reconcile_multicurrency_retail(safe_data: dict) -> None:
     raw = safe_data.get('_raw_row_text') or ''
     if not raw:
         return
-    hk = _MC_HKD_RE.search(raw)
-    us = _MC_USD_RE.search(raw)
+    # _raw_row_text is the WHOLE image/chunk block (every product in an image
+    # shares it — openai_client sets _p.setdefault('_raw_row_text', chunk)). So
+    # isolate THIS product's own line first — by its barcode, else by product
+    # name — or several rows would all inherit the FIRST row's HKD/USD/Qty.
+    src = raw
+    if '\n' in raw:
+        ean = re.sub(r'\s', '', str(safe_data.get('ean_code') or ''))
+        line = None
+        if ean:
+            for ln in raw.splitlines():
+                if ean and ean in re.sub(r'\s', '', ln):
+                    line = ln
+                    break
+        if line is None:
+            _pn = str(safe_data.get('product_name') or '')
+            _tk = [t for t in re.findall(r'[A-Za-zÀ-ÿ]{4,}', _pn)][:2]
+            if _tk:
+                for ln in raw.splitlines():
+                    if all(t.lower() in ln.lower() for t in _tk):
+                        line = ln
+                        break
+        if line is None:
+            return  # cannot isolate this row — don't risk cross-wiring values
+        src = line
+    hk = _MC_HKD_RE.search(src)
+    us = _MC_USD_RE.search(src)
     if not (hk and us):
         return  # only the genuine dual-currency HK sheets
 
@@ -1050,7 +1074,7 @@ def _reconcile_multicurrency_retail(safe_data: dict) -> None:
                 safe_data[q] = None
 
     # Recover the real stock quantity (the explicit Qty column) when transcribed.
-    qm = _MC_QTY_RE.search(raw)
+    qm = _MC_QTY_RE.search(src)
     if qm:
         qv = _num(qm.group(1))
         if qv is not None and (hkd is None or abs(qv - hkd) >= 0.5) and abs(qv - usd) >= 0.5:
@@ -1374,6 +1398,135 @@ def _recover_dropped_at_priced(offers: list, source_text: str, job_id: str) -> i
                         f"for job {job_id}")
         except Exception as e:
             logger.warning(f"recover @-priced '{name}' failed: {e}")
+    return added
+
+
+_NUM_MARK_RE = re.compile(r'^\s*(0[1-9]|[1-9]|[1-4]\d)\s*$')
+_NUM_PRICE_RE = re.compile(
+    r'(EUR|USD|GBP|CHF|€|\$|£)\s*([\d][\d.,]*)\s*(?:per|/)\s*'
+    r'(bottle|btl|case|cs|piece|pcs?|unit|pallet)', re.IGNORECASE)
+_NUM_INCO_RE = re.compile(
+    r'\b(EXW|EXWORKS?|DAP|DDP|CIF|CFR|CNF|FOB|FCA|CPT|CIP|DPU|FAS)\b\s+'
+    r'([A-ZÀ-Ý][\w.\-]*)', re.IGNORECASE)
+_NUM_VOL_RE = re.compile(r'(\d+(?:[.,]\d+)?)\s*(cl|ml|l)\b', re.IGNORECASE)
+_NUM_AVAIL_RE = re.compile(
+    r'(\d[\d,]*)\s*(bottles?|btls?|cases?|cs|pieces?|pcs|pallets?|ftl)\s+available',
+    re.IGNORECASE)
+_NUM_MOQ_RE = re.compile(
+    r'MOQ\s*(\d[\d,]*)\s*(bottles?|btls?|cases?|cs|pieces?|pcs|pallets?|ftl)?',
+    re.IGNORECASE)
+
+
+def _recover_dropped_numbered_items(offers: list, source_text: str, job_id: str) -> int:
+    """Recover a NUMBERED stock-circular item the LLM dropped (NE-410 item 06
+    'L'Oréal Paris Revitalift Day Cream … EUR 7.80 per piece' — a lone cosmetic
+    in a spirits list is consistently skipped). Fires ONLY on a clearly-numbered
+    circular (≥3 standalone 'NN' markers) and ONLY for an item no extracted row
+    already covers; builds a properly-priced row from the block's own text. The
+    '@ <CUR> <num>' items are left to _recover_dropped_at_priced (no 'per basis'
+    here, so they are skipped)."""
+    if not source_text or not offers:
+        return 0
+    lines = [l.rstrip() for l in str(source_text).splitlines()]
+    marks = [i for i, ln in enumerate(lines) if _NUM_MARK_RE.match(ln)]
+    if len(marks) < 3:
+        return 0
+    seen = set()
+    for d in offers:
+        for v in (d.get('brand'), d.get('product_name')):
+            for t in re.findall(r'[a-zà-ÿ0-9]+', (v or '').lower()):
+                if len(t) > 2:
+                    seen.add(t)
+    tmpl = offers[0]
+    base_uid = str(tmpl.get('uid') or 'row').rsplit('_', 1)[0]
+    bounds = marks + [len(lines)]
+    added = 0
+    for k, mi in enumerate(marks):
+        blk = [b for b in lines[mi + 1:bounds[k + 1]] if b.strip()]
+        if not blk:
+            continue
+        name = blk[0].strip()
+        toks = [t for t in re.findall(r'[a-zà-ÿ0-9]+', name.lower()) if len(t) > 2]
+        if not toks or any(t in seen for t in toks):
+            continue
+        bt = "\n".join(blk)
+        pm = _NUM_PRICE_RE.search(bt)
+        if not pm:
+            continue  # no clear "<CUR> <num> per <basis>" price → not ours
+        cur = _CURRENCY_SYMBOLS.get(pm.group(1), pm.group(1).upper())
+        try:
+            amt = float(pm.group(2).replace(',', '.'))
+        except ValueError:
+            continue
+        if amt <= 0:
+            continue
+        basis = pm.group(3).lower()
+        per_case = basis in ('case', 'cs')
+        im = _NUM_INCO_RE.search(bt)
+        inco = ('EXW' if im and im.group(1).upper().startswith('EX')
+                else (im.group(1).upper() if im else None))
+        loc = im.group(2).strip(' .,-') if im else None
+        vol = None
+        vm = _NUM_VOL_RE.search(bt)
+        if vm:
+            v = float(vm.group(1).replace(',', '.')); u = vm.group(2).lower()
+            vol = v * 10 if u == 'cl' else v * 1000 if u == 'l' else v
+        brand = name.split()[0]
+        prod = name[len(brand):].strip() or name
+        is_eur = (cur == 'EUR')
+        od = dict(tmpl)
+        od.update(
+            uid=f"{base_uid}_num{added}", brand=brand, brand_raw=brand,
+            product_name=prod, product_name_raw=name, product_key=None,
+            unit_volume_ml=vol, units_per_case=None,
+            price_per_unit=None if per_case else amt,
+            price_per_case=amt if per_case else None,
+            price_per_unit_eur=(amt if (is_eur and not per_case) else None),
+            price_per_case_eur=(amt if (is_eur and per_case) else None),
+            currency=cur, fx_rate=1.0 if is_eur else None,
+            fx_source='identity-EUR' if is_eur else None, fx_date=None,
+            incoterm=inco, location=loc,
+            quantity_case=None, quantity_bottles=None, quantity_pallets=None,
+            quantity_ftl=None, quantity_unit=None,
+            moq_cases=None, moq_bottles=None, moq_pallets=None, moq_ftl=None,
+            moq_text=None, offer_date=None, needs_manual_review=True,
+            error_flags=[f"row recovered from numbered source item — the extractor "
+                         f"had dropped it; {cur} {amt:g} per {basis} "
+                         f"{(inco or '')} {(loc or '')}".strip()])
+        am = _NUM_AVAIL_RE.search(bt)
+        if am:
+            qv = float(am.group(1).replace(',', '')); u = am.group(2).lower()
+            if u.startswith(('bottle', 'btl')):
+                od['quantity_bottles'] = qv; od['quantity_unit'] = 'bottles'
+            elif u.startswith(('case', 'cs')):
+                od['quantity_case'] = qv; od['quantity_unit'] = 'cases'
+            elif u.startswith(('piece', 'pcs')):
+                od['quantity_bottles'] = qv; od['quantity_unit'] = 'units'
+            elif u.startswith('pallet'):
+                od['quantity_pallets'] = qv; od['quantity_unit'] = 'pallets'
+        mm = _NUM_MOQ_RE.search(bt)
+        if mm:
+            try:
+                mv = float(mm.group(1).replace(',', ''))
+            except ValueError:
+                mv = None
+            if mv is not None:
+                u = (mm.group(2) or '').lower()
+                if u.startswith(('case', 'cs')):
+                    od['moq_cases'] = mv
+                elif u.startswith('pallet'):
+                    od['moq_pallets'] = mv; od['moq_unit'] = 'pallets'
+                elif u.startswith(('piece', 'pcs', 'bottle', 'btl')):
+                    od['moq_bottles'] = mv
+        try:
+            save_offer_to_db(od, job_id)
+            offers.append(od)
+            seen.update(toks)
+            added += 1
+            logger.info(f"recovered dropped numbered item '{name}' "
+                        f"({cur} {amt:g}/{basis}) for job {job_id}")
+        except Exception as e:
+            logger.warning(f"recover numbered '{name}' failed: {e}")
     return added
 
 
@@ -3172,6 +3325,9 @@ async def process_offer(payload, job_id: str):
                           or getattr(payload, 'text_body', None)
                           or (offers[0].get('_source_text') if offers else None) or '')
             _recover_dropped_at_priced(offers, _recov_src, job_id)
+            # (3) recover a dropped NUMBERED circular item (NE-410 item 06
+            #     L'Oréal, a lone cosmetic the extractor skips in a spirits list).
+            _recover_dropped_numbered_items(offers, _recov_src, job_id)
         except Exception as _cp_exc:
             logger.warning(f"completeness pass failed for {job_id}: {_cp_exc}")
 
