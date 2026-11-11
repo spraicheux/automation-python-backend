@@ -2015,12 +2015,86 @@ def _map_structured_image_row(r: dict) -> Optional[dict]:
     return prod
 
 
-# Vision model for the single structured-image call. gpt-4o is the verified
-# baseline. gpt-4.1 was A/B-tested on the dense CHELSEA sheet and did NOT fix
-# the two illegible Etat Libre 10 ml quantities (it misread them differently:
-# 18 and 40 vs the gpt-4o 40/40), so there is no accuracy reason to switch.
-# One line to swap if a different model is wanted.
+# Primary (cheap) structured-image model. gpt-4o reads single/few-row offer
+# images correctly; it only mis-associates the Qty column on DENSE multi-row
+# tables where some rows wrap to two lines (e.g. the CHELSEA Etat Libre 10 ml
+# sheet: it read 180->40 and 90->40). gpt-4.1 was no better (180->18).
 _STRUCT_IMG_MODEL = "gpt-4o"
+
+# Targeted escalation: only on dense tables (>= this many rows) do we spend a
+# second, cheap gpt-5-nano call to re-read JUST the Qty column and correct any
+# quantity gpt-4o mis-aligned. gpt-5-nano read the Etat Libre sheet 6/6 runs
+# fully correct in testing; it is the cheapest tier that does. Few-row images
+# never trigger it, so the common case stays on gpt-4o alone.
+_QTY_VERIFY_MODEL = "gpt-5-nano"
+_QTY_VERIFY_MIN_ROWS = 4
+_QTY_VERIFY_PROMPT = (
+    "This image is a wholesale offer table. The rightmost numeric column is the "
+    "order Quantity (Qty / 數量 / Menge / quantité). Read it carefully ROW BY ROW "
+    "— some rows have a two-line product name, so align each Qty with the correct "
+    "row. For every row that has a barcode/EAN in the leftmost column, output one "
+    "line exactly as '<barcode>=<qty>'. Output only those lines, nothing else."
+)
+
+
+async def _verify_quantities_gpt5(base64_image: str, content_type: str,
+                                  products: list) -> int:
+    """Re-read the Qty column of a dense offer image with gpt-5-nano and correct
+    any quantity that disagrees with the gpt-4o pass (matched by barcode). Only
+    called for dense tables; never raises — on any error it leaves rows as-is."""
+    try:
+        resp = await client.chat.completions.create(
+            model=_QTY_VERIFY_MODEL,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": _QTY_VERIFY_PROMPT},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{content_type};base64,{base64_image}",
+                               "detail": "high"}},
+            ]}],
+            # gpt-5-nano is a reasoning model: no temperature override, and it
+            # needs headroom for reasoning tokens before the short answer.
+            max_completion_tokens=8000,
+        )
+        txt = resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.error(f"[qty_verify] gpt-5 re-read failed, keeping gpt-4o qtys: {e}")
+        return 0
+    clean = txt.replace(",", "")
+    qmap = {m.group(1): float(m.group(2))
+            for m in re.finditer(r"(\d{6,14})\s*=\s*(\d{1,7})", clean)}
+    if not qmap:
+        logger.info("[qty_verify] gpt-5 re-read returned no barcode=qty pairs")
+        return 0
+    fixed = 0
+    for p in products:
+        ean = str(p.get("ean_code") or "")
+        if ean not in qmap:
+            continue
+        newq = qmap[ean]
+        field = next((f for f in ("quantity_case", "quantity_bottles",
+                                  "quantity_pallets") if p.get(f) not in (None, "")),
+                     "quantity_bottles")
+        try:
+            oldv = float(p.get(field)) if p.get(field) not in (None, "") else None
+        except (TypeError, ValueError):
+            oldv = None
+        if oldv == newq:
+            continue
+        p[field] = newq
+        if not p.get("quantity_unit"):
+            p["quantity_unit"] = "units"
+        note = (f"Qty corrected by gpt-5 re-read: "
+                f"{('%g' % oldv) if oldv is not None else 'none'} -> {newq:g}")
+        p["commercial_conditions"] = (
+            (p.get("commercial_conditions") + " | " + note)
+            if p.get("commercial_conditions") else note)
+        rrt = p.get("_raw_row_text") or ""
+        if "Qty " in rrt:
+            p["_raw_row_text"] = re.sub(r"Qty\s+[\d.]+", f"Qty {newq:g}", rrt)
+        fixed += 1
+    logger.info(f"[qty_verify] gpt-5 re-read: {len(qmap)} rows read, "
+                f"{fixed} quantity(ies) corrected")
+    return fixed
 
 
 async def extract_structured_image(base64_image: str, content_type: str) -> Dict[str, Any]:
@@ -2055,6 +2129,14 @@ async def extract_structured_image(base64_image: str, content_type: str) -> Dict
                 out.append(clean_product_data(mapped))
         except Exception as e:
             logger.error(f"[extract_structured_image] row map failed: {e}")
+    # Dense tables (>= N rows) are the only case gpt-4o mis-aligns the Qty
+    # column (wrapped two-line rows). Spend one cheap gpt-5-nano call there to
+    # re-read and correct quantities; few-row images skip it and stay on gpt-4o.
+    if len(out) >= _QTY_VERIFY_MIN_ROWS:
+        try:
+            await _verify_quantities_gpt5(base64_image, content_type, out)
+        except Exception as e:
+            logger.error(f"[extract_structured_image] qty verify skipped: {e}")
     # Signal a genuine no-offer image so the caller does not waste a retry.
     _src = "NO_OFFER_CONTENT" if (not out and isinstance(data, dict)
                                   and data.get("is_offer") is False) else content[:50000]
