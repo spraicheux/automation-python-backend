@@ -2015,10 +2015,16 @@ def _map_structured_image_row(r: dict) -> Optional[dict]:
     return prod
 
 
+# Vision model for the single structured-image call. gpt-4.1 reads dense sheets
+# (tiny 10 ml bottles, crowded Qty columns) more reliably than gpt-4o; one line
+# to swap if a different model is wanted.
+_STRUCT_IMG_MODEL = "gpt-4.1"
+
+
 async def extract_structured_image(base64_image: str, content_type: str) -> Dict[str, Any]:
     """One structured vision call for an offer image → pipeline products."""
     resp = await client.chat.completions.create(
-        model="gpt-4o",
+        model=_STRUCT_IMG_MODEL,
         messages=[{"role": "user", "content": [
             {"type": "text", "text": _STRUCT_IMG_PROMPT},
             {"type": "image_url",
