@@ -3199,7 +3199,20 @@ PDF TEXT (pages {start_page + 1}–{end_page} of {total_pages}):
                             "role": "user",
                             "content": [
                                 {"type": "text",
-                                 "text": "Extract all commercial product offers from this image — Wines & Spirits, Perfumes, or Cosmetics (identify category per Rule 0.23). Return a JSON object with a 'products' array following the standard schema. ALWAYS correct brand names to their official spelling."},
+                                 # Samuel 2026-11-11 (CHELSEA): 8 readable perfume
+                                 # sheets with 17 references yielded 0 products. A
+                                 # single "read-and-structure" pass drops dense
+                                 # rows. Transcribe EVERY line faithfully first;
+                                 # extract_offer() then applies the full rules.
+                                 "text": ("Transcribe EVERY product line from this offer / price-sheet "
+                                          "image as plain text — one line per product reference, exactly "
+                                          "as shown, in reading order. Preserve for each row: the brand and "
+                                          "product name, any reference or barcode, the quantity/availability, "
+                                          "any tester / variant / set marker, and ALL quoted prices WITH their "
+                                          "currencies (e.g. keep BOTH HKD and USD if both are shown). Do NOT "
+                                          "summarise, do NOT skip or merge rows, do NOT add commentary. If a "
+                                          "value is unreadable write [unreadable]. If the image has no "
+                                          "commercial product offer at all, reply exactly: NO_OFFER_CONTENT.")},
                                 {
                                     "type": "image_url",
                                     "image_url": {

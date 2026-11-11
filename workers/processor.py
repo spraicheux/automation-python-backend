@@ -206,6 +206,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 moq_bottles=offer_dict.get("moq_bottles"),
                 moq_pallets=offer_dict.get("moq_pallets"),
                 moq_ftl=offer_dict.get("moq_ftl"),
+                moq_text=offer_dict.get("moq_text"),
                 valid_until=offer_dict.get("valid_until"),
                 best_before_date=offer_dict.get("best_before_date"),
                 vintage=offer_dict.get("vintage"),
@@ -213,6 +214,7 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
                 label_language=offer_dict.get("label_language"),
                 product_reference=offer_dict.get("product_reference"),
                 supplier_name=offer_dict.get("supplier_name"),
+                contact_name=offer_dict.get("contact_name"),
                 supplier_email=offer_dict.get("supplier_email"),
                 supplier_reference=offer_dict.get("supplier_reference"),
                 sender_name=offer_dict.get("sender_name"),
@@ -956,6 +958,169 @@ def _normalize_incoterm_location(safe_data: dict) -> None:
                 safe_data["incoterm"] = tok
             rest = m.group(2).strip(" .,-")
             safe_data["location"] = rest or None
+
+
+# ─── Round-4 deterministic offer-shape fixes (Samuel 2026-11-11) ────────────
+_R4_INCO = r'EXW|EXWORKS?|DAP|DDP|CIF|CFR|CNF|FOB|FCA|CPT|CIP|DPU|FAS'
+# A place is 1–3 Capitalised tokens. The leading letter is forced case-SENSITIVE
+# with a scoped inline flag (?-i:…) so that under the pattern's overall
+# re.IGNORECASE a following lowercase word ("in around 6 weeks") is NOT swallowed
+# into the location.
+_R4_PLACE = r'(?-i:[A-ZÀ-Ý])[\wÀ-ÿ.\-]*(?:\s+(?-i:[A-ZÀ-Ý])[\wÀ-ÿ.\-]*){0,2}'
+# "EXW Bordeaux or DAP Loendersloot" — two delivery terms, each its OWN place.
+# Tight (requires an explicit disjunction) so a multi-product email's separate
+# per-row terms never match and get cross-wired.
+_R4_DISJ_RE = re.compile(
+    r'\b(' + _R4_INCO + r')\s+(' + _R4_PLACE + r')\s*(?:\bor\b|/|,|&|\band\b)\s*'
+    r'(' + _R4_INCO + r')\s+(' + _R4_PLACE + r')', re.IGNORECASE)
+_R4_MOQ_FULLLOT_RE = re.compile(
+    r'MOQ\b[^A-Za-z0-9]{0,4}(full\s+lot|entire\s+lot|whole\s+lot|full\s+load)', re.IGNORECASE)
+_R4_MOQ_PALLETS_RE = re.compile(r'MOQ\b[^0-9A-Za-z]{0,6}(\d+(?:[.,]\d+)?)\s*pallets?', re.IGNORECASE)
+_R4_DEPOSIT_RE = re.compile(
+    r'deposit\s+confirmation\s+required|deposit\s+confirmation|deposit\s+required', re.IGNORECASE)
+_R4_EXW_BASIS_RE = re.compile(
+    r'unless\s+otherwise\s+stated|ex[\s\-]?works|\bex[\s\-](?:cellars?|warehouse)\b', re.IGNORECASE)
+_R4_DELIVERED = {'DAP', 'DDP', 'CIF', 'CFR', 'CNF', 'CIP', 'CPT', 'DPU'}
+
+
+def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
+    """Samuel 2026-11-11 deterministic offer-shape fixes, keyed on the row's
+    own source text (`_raw_row_text`):
+      (1) pair each incoterm with its OWN location — Yamazaki "EXW Bordeaux or
+          DAP Loendersloot" must not become "Bordeaux OR Loendersloot" on both;
+      (2) qualify a delivered-term row that only carries the ex-works basis price
+          (no separate delivered price was confirmed);
+      (3) preserve a non-numeric MOQ ("Full lot") and a pallet MOQ verbatim;
+      (4) carry a per-line deposit condition into commercial_conditions;
+      (5) stop asserting "loose" when the source states no case configuration.
+    """
+    raw = safe_data.get('_raw_row_text') or ''
+    flags = safe_data.get('error_flags')
+    if not isinstance(flags, list):
+        flags = []
+        safe_data['error_flags'] = flags
+
+    def _norm_ic(v):
+        v = str(v or '').strip().upper()
+        return 'EXW' if v.startswith('EX') else v
+
+    # (1) incoterm → location pairing (explicit disjunction only)
+    src_pairs = raw if _R4_DISJ_RE.search(raw) else (body or '')
+    dm = _R4_DISJ_RE.search(src_pairs)
+    if dm:
+        pairs = {_norm_ic(dm.group(1)): dm.group(2).strip(' .,-'),
+                 _norm_ic(dm.group(3)): dm.group(4).strip(' .,-')}
+        row_ic = _norm_ic(safe_data.get('incoterm'))
+        if row_ic in pairs and str(safe_data.get('location') or '') != pairs[row_ic]:
+            safe_data['location'] = pairs[row_ic]
+            _m = (f"location paired to incoterm {row_ic} → {pairs[row_ic]} "
+                  f"(source states one place per delivery term)")
+            if _m not in flags:
+                flags.append(_m)
+
+    # (2) delivered-term row carrying only the ex-works basis price
+    row_ic2 = _norm_ic(safe_data.get('incoterm'))
+    if row_ic2 in _R4_DELIVERED and _R4_EXW_BASIS_RE.search(f"{raw}\n{body or ''}"):
+        _m = (f"price shown is the ex-works basis — no separate {row_ic2} "
+              f"delivered price was confirmed in the source; delivered price TBC")
+        if _m not in flags:
+            flags.append(_m)
+            safe_data['needs_manual_review'] = True
+
+    # (3) non-numeric MOQ "Full lot" + pallet MOQ, verbatim
+    if raw and not safe_data.get('moq_text') and _R4_MOQ_FULLLOT_RE.search(raw):
+        safe_data['moq_text'] = 'Full lot'
+    if raw and not safe_data.get('moq_pallets'):
+        mpl = _R4_MOQ_PALLETS_RE.search(raw)
+        if mpl:
+            try:
+                safe_data['moq_pallets'] = float(mpl.group(1).replace(',', '.'))
+                safe_data['moq_unit'] = 'pallets'
+                _m = f"MOQ {mpl.group(1)} pallets (from source)"
+                if _m not in flags:
+                    flags.append(_m)
+            except ValueError:
+                pass
+
+    # (4) per-line deposit condition → commercial_conditions
+    if raw and _R4_DEPOSIT_RE.search(raw):
+        _dep = 'Deposit confirmation required'
+        cc = safe_data.get('commercial_conditions')
+        if not cc:
+            safe_data['commercial_conditions'] = _dep
+        elif _dep.lower() not in str(cc).lower():
+            safe_data['commercial_conditions'] = f"{cc}; {_dep}"
+
+    # (5) "loose" → honest "case configuration not stated"
+    upc = _safe_float(safe_data.get('units_per_case'))
+    if raw and upc in (None, 1.0) and not re.search(
+            r'\d+\s*[x×]\s*\d|/\s*cs|per\s*case|\bcases?\b|\bcs\b', raw, re.IGNORECASE):
+        changed = False
+        newflags = []
+        for f in flags:
+            if isinstance(f, str) and 'loose pack' in f.lower():
+                newflags.append(re.sub(r'loose pack', 'case configuration not stated',
+                                       f, flags=re.IGNORECASE))
+                changed = True
+            else:
+                newflags.append(f)
+        if changed:
+            safe_data['error_flags'] = newflags
+
+
+# A full personal name ("Bob Curtis") vs a company token.
+_R4_PERSON_RE = re.compile(r"^[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ'\-]+){1,2}$")
+_R4_CO_SUFFIX_RE = re.compile(
+    r'\b(ltd|llc|inc|gmbh|srl|sarl|b\.?v|n\.?v|s\.?a|a\.?g|co|company|trading|group|'
+    r'import|export|wholesale|spirits|wines?|beverages?|desk|broker|market|estate)\b',
+    re.IGNORECASE)
+
+
+def _company_from_domain(company, body, supplier_email):
+    """Upgrade an abbreviated company ("T&T") to the full name found in the body
+    signature whose alphanumeric form matches the supplier email's domain root
+    ("terroirettradition" ← "Terroir & Tradition"). Returns the fuller name or
+    None."""
+    if not (body and supplier_email and '@' in str(supplier_email)):
+        return None
+    try:
+        domain_root = str(supplier_email).split('@')[-1].split('.')[0].lower()
+    except Exception:
+        return None
+    if len(domain_root) < 4:
+        return None
+    for line in str(body).splitlines():
+        ln = line.strip().lstrip('>').strip()
+        if not ln or len(ln) > 60:
+            continue
+        low = ln.lower()
+        if re.sub(r'[^a-z0-9]', '', low.replace('&', 'et')) == domain_root or \
+           re.sub(r'[^a-z0-9]', '', low.replace('&', 'and')) == domain_root or \
+           re.sub(r'[^a-z0-9]', '', low) == domain_root:
+            return ln.strip(' .,-')
+    return None
+
+
+def _split_company_contact(name, body=None, supplier_email=None):
+    """'T&T - Bob Curtis' → ('Terroir & Tradition', 'Bob Curtis'): split a
+    "Company - Person" supplier string into the trading company and the human
+    contact, and upgrade an abbreviated company from the body signature. The
+    supplier field must hold ONLY the company (Samuel 2026-11-11, Yamazaki)."""
+    if not name:
+        return (name, None)
+    company, contact = str(name).strip(), None
+    m = re.match(r'^(.*?)\s*[—–|/]\s*(.+)$|^(.*?\S)\s+-\s+(.+)$', company)
+    if m:
+        left = (m.group(1) if m.group(1) is not None else m.group(3) or '').strip()
+        right = (m.group(2) if m.group(2) is not None else m.group(4) or '').strip()
+        if right and _R4_PERSON_RE.match(right) and not _R4_CO_SUFFIX_RE.search(right):
+            company, contact = left, right
+        elif left and _R4_PERSON_RE.match(left) and not _R4_CO_SUFFIX_RE.search(left):
+            company, contact = right, left
+    upgraded = _company_from_domain(company, body, supplier_email)
+    if upgraded:
+        company = upgraded
+    return (company or name, contact)
 
 
 _PALLET_PER_CASE_RE = re.compile(
@@ -2233,6 +2398,9 @@ async def process_offer(payload, job_id: str):
                     safe_data = _normalize_moq_and_quantity(safe_data, _flag_bucket)
                     safe_data['error_flags'] = _flag_bucket
 
+                    # Round-4 deterministic offer-shape fixes (Samuel 2026-11-11).
+                    _apply_round4_shape_fixes(safe_data, getattr(payload, 'text_body', '') or '')
+
                     # client §5 — MOQ unit follows the SOURCE. When the source
                     # stated the MOQ in cases (moq_cases populated) and no other
                     # unit was captured, record "cases" so the display never
@@ -2301,6 +2469,10 @@ async def process_offer(payload, job_id: str):
                         _sr = _resolve_supplier_ref(_sup_name, payload)
                         if _sr:
                             safe_data['supplier_reference'] = _sr
+                    # Split "Company - Person" into company + contact (Yamazaki).
+                    _sup_company, _sup_contact = _split_company_contact(
+                        _resolve_supplier_name(_sup_name, payload),
+                        getattr(payload, 'text_body', None), _sup_email)
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -2351,6 +2523,7 @@ async def process_offer(payload, job_id: str):
                         moq_bottles=safe_data.get('moq_bottles'),
                         moq_pallets=safe_data.get('moq_pallets'),
                         moq_ftl=safe_data.get('moq_ftl'),
+                        moq_text=safe_data.get('moq_text'),
                         valid_until=safe_data['valid_until'],
                         offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
@@ -2363,7 +2536,8 @@ async def process_offer(payload, job_id: str):
                         date_received=_received_at(payload),
                         best_before_date=safe_data['best_before_date'],
                         vintage=safe_data['vintage'],
-                        supplier_name=_resolve_supplier_name(_sup_name, payload),
+                        supplier_name=_sup_company,
+                        contact_name=_sup_contact,
                         supplier_email=_sup_email,
                         sender_name=payload.sender_name,
                         sender_email=payload.sender_email,
@@ -2570,6 +2744,8 @@ async def process_offer(payload, job_id: str):
                 # client §5 — MOQ unit follows the source (see batch path note).
                 if safe_data.get('moq_cases') is not None and not safe_data.get('moq_unit'):
                     safe_data['moq_unit'] = 'cases'
+                # Round-4 deterministic offer-shape fixes (Samuel 2026-11-11).
+                _apply_round4_shape_fixes(safe_data, getattr(payload, 'text_body', '') or '')
                 _final_key = build_product_key(
                     safe_data.get('brand'), safe_data.get('product_name'),
                     safe_data.get('unit_volume_ml'),
@@ -2589,6 +2765,10 @@ async def process_offer(payload, job_id: str):
                     _sr = _resolve_supplier_ref(_sup_name, payload)
                     if _sr:
                         safe_data['supplier_reference'] = _sr
+                # Split "Company - Person" into company + contact (Yamazaki).
+                _sup_company, _sup_contact = _split_company_contact(
+                    _resolve_supplier_name(_sup_name, payload),
+                    getattr(payload, 'text_body', None), _sup_email)
 
                 offer = OfferItem(
                     uid=uid,
@@ -2631,6 +2811,7 @@ async def process_offer(payload, job_id: str):
                     moq_bottles=safe_data.get('moq_bottles'),
                     moq_pallets=safe_data.get('moq_pallets'),
                     moq_ftl=safe_data.get('moq_ftl'),
+                    moq_text=safe_data.get('moq_text'),
                     valid_until=safe_data['valid_until'],
                     offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),
@@ -2643,7 +2824,8 @@ async def process_offer(payload, job_id: str):
                     date_received=_received_at(payload),
                     best_before_date=safe_data['best_before_date'],
                     vintage=safe_data['vintage'],
-                    supplier_name=_resolve_supplier_name(_sup_name, payload),
+                    supplier_name=_sup_company,
+                    contact_name=_sup_contact,
                     supplier_email=_sup_email,
                     sender_name=payload.sender_name,
                     sender_email=payload.sender_email,

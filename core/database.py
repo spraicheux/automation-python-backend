@@ -125,6 +125,10 @@ def init_db():
             ("commercial_conditions", "TEXT"),
             # client §2: what the extraction ran on (never a signature logo).
             ("source_type",           "VARCHAR(255)"),
+            # Samuel 2026-11-11: non-numeric MOQ ("Full lot") and the contact
+            # person split out of a "Company - Person" supplier string.
+            ("moq_text",              "VARCHAR(64)"),
+            ("contact_name",          "VARCHAR(255)"),
         ]
         with engine.begin() as conn:
             for col, coltype in added_columns:

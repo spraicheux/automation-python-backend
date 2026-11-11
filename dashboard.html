@@ -1074,8 +1074,13 @@
   function intakeRowHtml(i) {
     const colors = { queued: '#f59e0b', processing: '#3b82f6', done: '#16a34a',
                      failed: '#ef4444', duplicate: '#8b5cf6', skipped: '#64748b',
-                     no_credits: '#ef4444' };
-    const labels = { no_credits: 'NO CREDITS' };
+                     no_credits: '#ef4444',
+                     // A readable offer that yielded 0 rows is NOT a success —
+                     // amber "NEEDS REVIEW", never a green DONE (Samuel 2026-11-11,
+                     // CHELSEA images shown as "DONE – 0 products").
+                     no_offer_content: '#d97706', needs_review: '#d97706' };
+    const labels = { no_credits: 'NO CREDITS', no_offer_content: 'NEEDS REVIEW',
+                     needs_review: 'NEEDS REVIEW' };
     const st = (i.status || 'queued');
     const c = colors[st] || '#64748b';
     const chan = (i.channel || '—').toUpperCase();
@@ -2021,7 +2026,9 @@
   function supplierCell(i) {
     if (i.supplier_name) {
       const country = i.supplier_country ? `<span class="sup-country">${escapeHtml(i.supplier_country)}</span>` : '';
-      return `<b>${escapeHtml(i.supplier_name)}</b>${country}`;
+      // Contact person split out of a "Company - Person" supplier (Samuel 2026-11-11).
+      const contact = i.contact_name ? `<span class="sup-country" title="Contact">· ${escapeHtml(i.contact_name)}</span>` : '';
+      return `<b>${escapeHtml(i.supplier_name)}</b>${contact}${country}`;
     }
     if (i.sender_name) return `<b>${escapeHtml(i.sender_name)}</b><span class="sup-country">(sender)</span>`;
     return nullCell();
@@ -2154,6 +2161,9 @@
     const moqUnit = (i.moq_unit || '').toLowerCase().trim();
     const moqBtls = i.moq_bottles != null ? Number(i.moq_bottles) : null;
     const wrap = inner => `<span>${inner}</span>`;
+    // A qualitative MOQ the supplier stated verbatim ("Full lot") has no numeric
+    // case/bottle count — show it instead of a blank MOQ (Samuel 2026-11-11).
+    if (i.moq_text) return wrap(escapeHtml(String(i.moq_text)));
     // client §5 (2026-11-06) — the MOQ unit MUST follow the source and must
     // never inherit the product's stock/price unit. A source "MOQ 10 cs" stays
     // "10 cs" even on a loose/pieces item; silently turning it into "10 pieces"
@@ -2351,7 +2361,11 @@
     const pcEur = fmtEur2Str(i.price_per_case_eur);
     const originalPuStr = (i.currency && i.price_per_unit != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_unit) ?? '—'}` : null;
     const originalPcStr = (i.currency && i.price_per_case != null && i.currency !== 'EUR') ? `${escapeHtml(i.currency)} ${fmtPriceRaw(i.price_per_case) ?? '—'}` : null;
-    const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
+    // FX provenance (Samuel 2026-11-11): show the rate, its effective date, AND
+    // the provider so a buyer can reconcile the EUR figure. "approx" is called
+    // out when a live rate was unavailable and a static fallback was used.
+    const _fxProv = i.fx_source ? (/fallback|static|approx/i.test(i.fx_source) ? 'approx' : (/frankfurter|ecb/i.test(i.fx_source) ? 'ECB' : (/source.?doc/i.test(i.fx_source) ? 'source doc' : String(i.fx_source).slice(0,18)))) : '';
+    const fxStr = i.fx_rate != null && i.fx_rate !== 1 ? `FX ${Number(i.fx_rate).toFixed(4)}${i.fx_date ? ` · ${escapeHtml(i.fx_date)}` : ''}${_fxProv ? ` · ${escapeHtml(_fxProv)}` : ''}` : (i.currency && i.currency !== 'EUR' ? 'FX 1.0000' : null);
     // Cosmetics / perfume / accessories are counted in pieces, never bottles —
     // the price-hero label must match the quantity noun (Samuel 2026-11-01: NARS
     // showed "100 pieces" but the price read "per bottle"; 2026-11-10 round 3:

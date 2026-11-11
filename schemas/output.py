@@ -52,6 +52,8 @@ class OfferItem(BaseModel):
     # the drawer shows "1 plt" / "1 FTL" instead of blank (Samuel E07 2026-11-10).
     moq_pallets: Optional[float] = None
     moq_ftl: Optional[float] = None
+    # Non-numeric MOQ preserved verbatim — "Full lot" (Samuel 2026-11-11).
+    moq_text: Optional[str] = None
     # Source counts in native units — see model doc. Nullable; only populated
     # when the source stated availability in bottles / pallets / FTL.
     quantity_bottles: Optional[float] = None
@@ -76,6 +78,8 @@ class OfferItem(BaseModel):
     best_before_date: Optional[str] = None
     vintage: Optional[str] = None
     supplier_name: Optional[str] = None
+    # Human contact split out of a "Company - Person" supplier (Samuel 2026-11-11).
+    contact_name: Optional[str] = None
     supplier_email: Optional[str] = None
     sender_email:Optional[str] = None
     sender_name: Optional[str] = None

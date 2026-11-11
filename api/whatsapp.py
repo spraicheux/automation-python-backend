@@ -42,6 +42,50 @@ _MEDIA_TYPES = {"document", "image", "video", "audio"}
 _MIN_TEXT_OFFER_CHARS = 25         # ignore greetings / one-word texts
 _SEEN_PREFIX = "wa:seen:"          # + wamid
 _SEEN_TTL = 7 * 24 * 3600          # a week is plenty to cover retries
+_HINT_PREFIX = "wa:supplier_hint:" # + sender; links a text instruction to media
+_HINT_TTL = 30 * 60                # images usually follow within minutes
+
+# A standalone instruction naming the supplier for the images that follow, e.g.
+# "offres de CHELSEA HK" / "offer from CHELSEA HK" / "fournisseur: CHELSEA HK".
+_SUPPLIER_INSTRUCTION_RE = re.compile(
+    r'^\s*(?:offres?\s+(?:de|pour|from)|offer\s+from|supplier|fournisseur|from)'
+    r'\s*[:\-]?\s*(.+?)\s*$', re.IGNORECASE)
+
+
+def _supplier_instruction(body: str):
+    """Return the supplier named by a short standalone instruction, else None."""
+    if not body:
+        return None
+    b = str(body).strip()
+    if len(b) > 60 or "\n" in b:
+        return None  # a real offer, not a one-line instruction
+    m = _SUPPLIER_INSTRUCTION_RE.match(b)
+    if m:
+        name = m.group(1).strip(" . ")
+        if 2 <= len(name) <= 40:
+            return name
+    return None
+
+
+def _set_supplier_hint(sender: str, name: str) -> None:
+    try:
+        from core.redis_client import redis_manager
+        if sender and name and redis_manager.use_redis and redis_manager.client:
+            redis_manager.client.set(_HINT_PREFIX + sender, name, ex=_HINT_TTL)
+            logger.info(f"wa: supplier hint '{name}' stashed for sender {sender}")
+    except Exception as e:
+        logger.warning(f"wa: could not stash supplier hint: {e}")
+
+
+def _get_supplier_hint(sender: str):
+    try:
+        from core.redis_client import redis_manager
+        if sender and redis_manager.use_redis and redis_manager.client:
+            v = redis_manager.client.get(_HINT_PREFIX + sender)
+            return v.decode() if isinstance(v, bytes) else v
+    except Exception:
+        return None
+    return None
 
 
 def _token_ok(token_q: str | None, token_h: str | None) -> bool:
@@ -200,7 +244,27 @@ async def whatsapp_inbound(
 
     for msg in messages:
         try:
+            # A standalone supplier instruction ("offres de CHELSEA HK") names
+            # the supplier for the images that follow it. Stash it per sender so
+            # the (caption-less) media inherit it — even across webhook deliveries
+            # (Samuel 2026-11-11: 8 CHELSEA images landed with no supplier).
+            if msg.get("type") == "text":
+                _instr = _supplier_instruction((msg.get("text") or {}).get("body") or "")
+                if _instr:
+                    _set_supplier_hint(msg.get("from") or "", _instr)
+
             plan = _plan_message(msg, contacts)
+            # Apply a pending supplier hint to media that carries no caption-derived
+            # supplier, so an image batch is attributed to the named supplier.
+            if plan.get("status") == "ingest":
+                _k = plan["kwargs"]
+                if (_k.get("attachments") and
+                        (_k.get("supplier_name") in (None, "", "Not Found"))):
+                    _hint = _get_supplier_hint(plan.get("sender") or "")
+                    if _hint:
+                        _k["supplier_name"] = _hint
+                        logger.info(f"wa {plan['wamid']}: applied supplier hint "
+                                    f"'{_hint}' to media")
             if plan["status"] == "skip":
                 skipped += 1
                 logger.info(f"wa {plan['wamid'] or '?'}: {plan['reason']} — skipped")

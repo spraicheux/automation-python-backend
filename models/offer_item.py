@@ -94,6 +94,10 @@ class OfferItemDB(Base):
     # "MOQ 1 pallet" / "MOQ 1 FTL" survive as a count (Samuel E07 2026-11-10).
     moq_pallets       = Column(Float, nullable=True)
     moq_ftl           = Column(Float, nullable=True)
+    # Non-numeric MOQ preserved verbatim — e.g. "Full lot" (Samuel 2026-11-11,
+    # Elixe Jack Daniel's OF-2026-02098). A qualitative MOQ has no case/bottle
+    # count, so it is stored here and shown instead of a blank MOQ.
+    moq_text          = Column(String(64), nullable=True)
     valid_until       = Column(String(64), nullable=True)
     best_before_date  = Column(String(64), nullable=True)
     vintage           = Column(String(64), nullable=True)
@@ -103,6 +107,11 @@ class OfferItemDB(Base):
 
     # Supplier / sender (denormalised for quick access without joining)
     supplier_name      = Column(String(255), nullable=True)
+    # The human contact split out of a "Company - Person" supplier string, e.g.
+    # "T&T - Bob Curtis" → supplier_name "Terroir & Tradition", contact "Bob
+    # Curtis" (Samuel 2026-11-11, Yamazaki). The supplier field holds ONLY the
+    # trading company.
+    contact_name       = Column(String(255), nullable=True)
     supplier_email     = Column(String(255), nullable=True)
     supplier_reference = Column(String(255), nullable=True)
     sender_name        = Column(String(255), nullable=True)
@@ -288,6 +297,7 @@ class OfferItemDB(Base):
             "moq_bottles": self.moq_bottles,
             "moq_pallets": self.moq_pallets,
             "moq_ftl": self.moq_ftl,
+            "moq_text": self.moq_text,
             "valid_until": self.valid_until,
             "best_before_date": self.best_before_date,
             "vintage": self.vintage,
@@ -295,6 +305,7 @@ class OfferItemDB(Base):
             "label_language": self.label_language,
             "product_reference": self.product_reference,
             "supplier_name": self.supplier_name,
+            "contact_name": self.contact_name,
             "supplier_email": self.supplier_email,
             "supplier_reference": self.supplier_reference,
             "sender_name": self.sender_name,
