@@ -66,6 +66,7 @@ def init_db():
     try:
         # Import models so their tables are registered on Base.metadata
         from models import offer_item, source_file, price_event  # noqa: F401
+        from models import raw_blob  # noqa: F401  durable raw-bytes archive
         engine = get_engine()
         Base.metadata.create_all(bind=engine)
         logger.info("✓ Database tables verified / created")

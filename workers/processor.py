@@ -834,8 +834,22 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
         fx = ai_fx
         fx_source = 'source-document'
     else:
-        fx = _FALLBACK_FX.get(currency, 1.0)
-        fx_source = f'fallback-table-static-{currency}-{fx}'
+        # Samuel 2026-11-11: no more silent static rate. Fetch the ECB daily
+        # reference rate for the offer's date, record it + its effective date +
+        # provider. A static approximation is used ONLY if the live lookup
+        # fails, and is flagged so the EUR figure is never shown as exact.
+        from core.fx_rates import get_eur_rate
+        _on = safe_data.get('offer_date') or safe_data.get('date_received')
+        fx, _fx_eff, fx_source, _fx_fallback = get_eur_rate(currency, _on)
+        if _fx_eff and not safe_data.get('fx_date'):
+            safe_data['fx_date'] = _fx_eff
+        if _fx_fallback:
+            _fl = safe_data.get('error_flags')
+            if isinstance(_fl, list):
+                _m = (f'FX {currency}→EUR is an approximate static fallback '
+                      f'(live ECB rate unavailable) — EUR figures indicative, not exact')
+                if _m not in _fl:
+                    _fl.append(_m)
     safe_data['fx_rate'] = fx
     # Only overwrite fx_source if the pipeline hasn't already set one upstream
     # (keeps future ECB-daily or dated-rate injections intact).
@@ -1418,6 +1432,51 @@ def _resolve_offer_date(raw, source_filename: str, received: datetime) -> Option
     return None
 
 
+def _offer_date_corroborated(parsed: Optional[datetime], raw_row_text: str,
+                             received: Optional[datetime]) -> bool:
+    """Is an LLM-extracted offer_date actually supported by the source?
+
+    Samuel 2026-11-11: the Jim Beam White Bourbon row carried offer_date
+    2026-03-11 (→ "8 months old") though nothing in the source stated any date —
+    the model invented it, and every sibling row from the same email had no
+    offer_date. A commercial offer date must trace to the source, so we accept it
+    only when it is (a) within 2 days of receipt — the ordinary same-day forward,
+    or (b) literally present, in a common textual form, in the row's own source
+    text. Otherwise it is an invention and is dropped (freshness then falls back
+    to the received date, labelled)."""
+    if parsed is None:
+        return True
+    try:
+        if received and abs((parsed.date() - received.date()).days) <= 2:
+            return True
+    except Exception:
+        pass
+    raw = raw_row_text or ""
+    if not raw:
+        return False
+    y, m, d = parsed.year, parsed.month, parsed.day
+    # Numeric forms (ISO + day/month/year in either order, several separators).
+    numeric = {
+        f"{y:04d}-{m:02d}-{d:02d}", f"{y:04d}/{m:02d}/{d:02d}",
+        f"{d:02d}/{m:02d}/{y}", f"{d}/{m}/{y}",
+        f"{d:02d}.{m:02d}.{y}", f"{d}.{m}.{y}",
+        f"{d:02d}-{m:02d}-{y}", f"{d}-{m}-{y}",
+        f"{m:02d}/{d:02d}/{y}", f"{m}/{d}/{y}",
+    }
+    if any(tok in raw for tok in numeric):
+        return True
+    # Month-name forms (English + French): "11 March", "March 11", "11 mars".
+    low = raw.lower()
+    months_en = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
+                 'august', 'september', 'october', 'november', 'december']
+    fr_names = [name for name, num in _FRENCH_MONTHS.items() if num == m]
+    names = [months_en[m - 1]] + fr_names
+    for nm in names:
+        if f"{d} {nm}" in low or f"{nm} {d}" in low:
+            return True
+    return False
+
+
 def _offer_date_or_flag(raw, source_filename: str, received: datetime,
                        safe_data: dict) -> Optional[datetime]:
     """Client §4 (2026-11-06): the COMMERCIAL offer_date is only ever a date the
@@ -1430,6 +1489,21 @@ def _offer_date_or_flag(raw, source_filename: str, received: datetime,
     safe_data plus the appropriate labelled review flag.
     """
     commercial = _parse_offer_date(raw)
+    # Reject an invented offer_date not supported by the source (Samuel Jim Beam).
+    if commercial is not None and not _offer_date_corroborated(
+            commercial, safe_data.get('_raw_row_text') or '', received):
+        try:
+            _fl = safe_data.get('error_flags') or []
+            if isinstance(_fl, list):
+                _msg = (f"offer_date {commercial.date().isoformat()} was not stated "
+                        f"anywhere in the source — dropped as unverified; freshness "
+                        f"shown from the received date")
+                if _msg not in _fl:
+                    _fl.append(_msg)
+                safe_data['error_flags'] = _fl
+        except Exception:
+            pass
+        commercial = None
     from_name = _date_from_filename(source_filename or "",
                                     (received or datetime.utcnow()).year)
     try:
@@ -1757,6 +1831,18 @@ async def process_offer(payload, job_id: str):
                         logger.warning(f"Could not parse file data for {file_name}")
                         _empty_attachments.append(file_name)
                         continue
+
+                    # Durable archive (never-lose-files, Samuel 2026-11-11):
+                    # persist the raw bytes to Postgres. /home on this App Service
+                    # is ephemeral and is wiped on every restart/deploy, so a
+                    # binary attachment saved only there is lost (this is why the
+                    # CHELSEA images / Alder PDF could not be recovered). The DB
+                    # copy survives. Best-effort — never breaks extraction.
+                    try:
+                        from core.raw_blob import save_blob
+                        save_blob(job_id, file_name, attachment.contentType, file_bytes)
+                    except Exception as _be:
+                        logger.warning(f"raw_blob archive skipped for {file_name}: {_be}")
 
                     with tempfile.NamedTemporaryFile(
                             delete=False,

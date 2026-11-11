@@ -134,6 +134,32 @@ async def download_saved(pattern: str):
                         media_type="application/octet-stream")
 
 
+@router.get("/debug/archived-files", dependencies=[Depends(_require_admin)])
+async def archived_files(pattern: str = "", limit: int = 300):
+    """List raw offer files durably archived in Postgres (never-lose-files).
+    Metadata only — no bytes. Survives restarts/deploys unlike /home storage."""
+    from core.raw_blob import list_blobs
+    items = list_blobs(limit=limit, pattern=(pattern or None))
+    return {"count": len(items), "files": items}
+
+
+@router.get("/debug/download-archived", dependencies=[Depends(_require_admin)])
+async def download_archived(id: str = "", job_id: str = "", name: str = ""):
+    """Download a durably-archived raw offer file by blob id, job_id, or filename
+    substring (most recent match). This is the recovery path for binary
+    attachments (images / PDFs) after the ephemeral /home copy is gone."""
+    from fastapi.responses import Response
+    from core.raw_blob import load_blob
+    if not (id or job_id or name):
+        return {"error": "pass id, job_id, or name"}
+    data, ctype, fname = load_blob(blob_id=(id or None), job_id=(job_id or None),
+                                   filename=(name or None))
+    if not data:
+        return {"error": "no archived blob matches", "id": id, "job_id": job_id, "name": name}
+    return Response(content=data, media_type=(ctype or "application/octet-stream"),
+                    headers={"Content-Disposition": f'attachment; filename="{fname or "file"}"'})
+
+
 @router.get("/debug/inspect-saved-xlsx", dependencies=[Depends(_require_admin)])
 async def inspect_saved_xlsx(pattern: str, rows: int = 45):
     """Read a saved XLSX exactly as the extractor sees it (pandas) AND with

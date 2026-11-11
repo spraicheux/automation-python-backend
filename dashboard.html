@@ -1717,14 +1717,21 @@
     if (isNaN(d)) return null;
     const diffMs = Date.now() - d.getTime();
     const days = Math.floor(diffMs / (24*60*60*1000));
+    // A commercial offer DATE carries no time-of-day; it is stored at midnight.
+    // Measuring sub-day hours from 00:00 makes a few-minutes-old offer read
+    // "16h" (Samuel 2026-11-11, Yamazaki). When the value is date-only, report
+    // at day granularity ("today"), never spurious hours.
+    const dateOnly = typeof dateStr === 'string'
+      && (dateStr.length <= 10 || /T00:00(:00)?(\.0+)?(Z|[+\-]\d\d:?\d\d)?$/.test(dateStr));
     // Verbose title includes both exact date and relative age
     const exact = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-      + (d.getHours() || d.getMinutes() ? ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
+      + (!dateOnly && (d.getHours() || d.getMinutes()) ? ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '');
     const title = `Offer date: ${exact}`;
     // `ago` tells callers whether an " ago" suffix reads correctly. "future"
     // and "now" are not past-relative, so they must never render "future ago".
     if (days < 0) return { text: 'future', cls: 'old', title, ago: false };
     if (days < 1) {
+      if (dateOnly) return { text: 'today', cls: 'fresh', title, ago: false };
       const hrs = Math.floor(diffMs / (60*60*1000));
       return { text: hrs <= 0 ? 'now' : hrs + 'h', cls: 'fresh', title, ago: hrs > 0 };
     }
