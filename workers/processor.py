@@ -1187,8 +1187,12 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
 
     # (5) "loose" → honest "case configuration not stated"
     upc = _safe_float(safe_data.get('units_per_case'))
-    if row_src and upc in (None, 1.0) and not re.search(
-            r'\d+\s*[x×]\s*\d|/\s*cs|per\s*case|\bcases?\b|\bcs\b', row_src, re.IGNORECASE):
+    # Fall back to the document text when the row carries no per-row text (an
+    # attachment-only offer like the Yamazaki PDF), so the honest "case
+    # configuration not stated" rewrite still reaches the 'loose pack' flag.
+    _loose_src = row_src or (body or '')
+    if _loose_src and upc in (None, 1.0) and not re.search(
+            r'\d+\s*[x×]\s*\d|/\s*cs|per\s*case|\bcases?\b|\bcs\b', _loose_src, re.IGNORECASE):
         changed = False
         newflags = []
         for f in flags:
