@@ -83,8 +83,25 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "brand": "brand", "maker": "brand", "marque": "brand",
     "product": "product_name", "product name": "product_name",
     "description": "product_name", "item": "product_name", "designation": "product_name",
+    # "Line" is the product-description column in the Dutch/EU wholesale template
+    # (EXW · ID · BarCode · Type · Brand · Line · QTY · EUR · ORDER — Samuel's
+    # W23/W39/W46/Cosmetics/LOREAL files). It was previously ignored as a
+    # row-number, so the whole family fell to the lossy LLM path. Genuine
+    # line-NUMBER columns ("Line no") are still ignored via _IGNORE_HEADERS.
+    "line": "product_name", "product line": "product_name",
+    "line description": "product_name", "article": "product_name",
     "size": "_size", "volume": "_size", "format": "_size", "capacity": "_size",
-    "category": "_category", "type": "_category",
+    # A column whose header is a bare currency ("EUR", "USD") holds the unit
+    # price in that currency (the price column in the EU wholesale template and
+    # hot-offer sheets). A header literally named "Currency"/"Ccy" stays the
+    # currency field above.
+    "eur": "price_per_unit", "euro": "price_per_unit", "usd": "price_per_unit",
+    "gbp": "price_per_unit", "eur btl": "price_per_unit",
+    "eur bottle": "price_per_unit", "eur per bottle": "price_per_unit",
+    # "Type" in the wholesale template carries the retail/customs state
+    # (Tester / Sample / Clean EU / CLN), not a product category — routed in the
+    # row loop; real category words still fall through to category.
+    "category": "_category", "type": "_type_state", "state": "_type_state",
     "notes": "notes", "note": "notes", "comment": "notes", "comments": "notes",
     "remarks": "notes",
     "supplier reference": "supplier_reference", "supplier ref": "supplier_reference",
@@ -93,7 +110,16 @@ _FIELD_SYNONYMS: Dict[str, str] = {
 }
 
 # Headers we recognise but intentionally ignore (keeps the match score honest).
-_IGNORE_HEADERS = {"test id", "id", "no", "line", "row", "index"}
+# "Line" is NO LONGER ignored (it is the product column in the EU wholesale
+# template); genuine line-NUMBER columns are ignored by their explicit names.
+_IGNORE_HEADERS = {"test id", "id", "no", "line no", "line number", "line id",
+                   "row", "row no", "index"}
+
+# Incoterm literals that appear AS a column header ("EXW" over location codes
+# like "NL"). The header IS the incoterm for every row; the cell is the stock
+# location. Distinct from an "Incoterm" column whose CELLS hold EXW/DAP/…
+_INCOTERM_LITERALS = {"exw", "fca", "fob", "cif", "cfr", "cpt", "cip",
+                      "dap", "dpu", "ddp", "dat", "fas", "exworks"}
 
 # Fields that make a row a real product line (need at least one). "_price_value"
 # is the bare "Price" column resolved later against its "Price basis".
@@ -105,6 +131,8 @@ def _match_header(norm: str) -> Optional[str]:
         return None
     if norm in _IGNORE_HEADERS:
         return "_ignore"
+    if norm in _INCOTERM_LITERALS:
+        return "_incoterm_header"
     if norm in _FIELD_SYNONYMS:
         return _FIELD_SYNONYMS[norm]
     # token-subset fallback: "offer date (utc)" → "offer date"
@@ -385,6 +413,40 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     if slug:
                         prod["category_slug"] = slug
                     prod["category"] = str(val).strip()
+                elif field == "_incoterm_header":
+                    # Header is the incoterm (EXW/FCA/…); the cell is the stock
+                    # location (e.g. "NL", "NL-1w"). A numeric cell would be a
+                    # per-incoterm PRICE, not a location — leave location unset.
+                    hdr = str(ws.cell(row=header_row, column=col).value or "").strip().upper()
+                    if hdr:
+                        prod.setdefault("incoterm", hdr)
+                    sv = str(val).strip()
+                    if sv and _to_float(val) is None:
+                        prod.setdefault("location", sv)
+                elif field == "_type_state":
+                    # "Type" column: route retail vs customs state; fall through
+                    # to category only for a genuine category word.
+                    sv = str(val).strip()
+                    lv = sv.lower()
+                    if any(k in lv for k in ("clean", "cln", "duty", "bond",
+                                             "t1", "t2", "customs", "unpaid", "paid")):
+                        prod.setdefault("custom_status", sv)
+                    elif any(k in lv for k in ("tester", "sample", "miniature",
+                                               "gift", "display", "retail",
+                                               "unbox", "coffret", "promo")):
+                        if "tester" in lv:
+                            prod.setdefault("retail_state", "tester")
+                        elif "sample" in lv:
+                            prod.setdefault("retail_state", "sample")
+                        elif "miniature" in lv:
+                            prod.setdefault("retail_state", "miniature")
+                        else:
+                            prod.setdefault("retail_state", lv)
+                    else:
+                        slug = _category_slug(sv)
+                        if slug:
+                            prod["category_slug"] = slug
+                        prod["category"] = sv
                 elif field == "vintage":
                     prod["vintage"] = str(int(_to_float(val))) if _to_float(val) else str(val).strip()
                 elif field == "ean_code":
