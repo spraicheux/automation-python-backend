@@ -475,6 +475,10 @@ def is_valid_offer(offer_dict: dict) -> bool:
                     # confirmed). Keep it visible as a TBC delivery option rather
                     # than dropping it for having no price/qty (Samuel 2026-11-12).
                     or 'delivered price TBC' in f
+                    # Same-lot SECONDARY option blanked by shape-fix (2b) — the
+                    # mirror case (Moët: EXW "also collected" option, price not
+                    # confirmed). Same rationale: keep it visible, never drop.
+                    or 'price not confirmed (TBC)' in f
                 )
                 for f in flags):
             # A "price on request" row must never read €0 on the dashboard — null a
@@ -986,6 +990,28 @@ _R4_DEPOSIT_RE = re.compile(
 _R4_EXW_BASIS_RE = re.compile(
     r'unless\s+otherwise\s+stated|ex[\s\-]?works|\bex[\s\-](?:cellars?|warehouse)\b', re.IGNORECASE)
 _R4_DELIVERED = {'DAP', 'DDP', 'CIF', 'CFR', 'CNF', 'CIP', 'CPT', 'DPU'}
+# Samuel 2026-11-12: a single lot quoted on a PRIMARY priced delivery term with
+# a SECONDARY "same stock can also be collected/delivered <INCO> <place>" option
+# whose price the source says to confirm — the MIRROR of (2) where the priced
+# term is the delivered one and the ex-works option is the unconfirmed
+# alternative (Moët: "EUR 171.00/case, DAP Antwerp. Same stock can also be
+# collected EXW Breda; please confirm whether the quoted price is the same for
+# both options."). The LLM copies the primary price onto the secondary row → two
+# priced rows for ONE lot. _R4_SAMELOT_ALT_RE captures the SECONDARY incoterm
+# (the one after "also collected/delivered"); _R4_PRICE_UNCONFIRMED_RE is the
+# explicit "price is not (yet) confirmed" cue that gates the blanking.
+_R4_SAMELOT_ALT_RE = re.compile(
+    r'\b(?:same|this)\s+(?:stock|lot|goods?|products?)\b.{0,80}?'
+    r'(?:can\s+)?(?:also\s+)?(?:be\s+)?'
+    r'(?:collected|delivered|picked\s*up|shipped|supplied|available|offered)\b'
+    r'.{0,25}?\b(' + _R4_INCO + r')\b',
+    re.IGNORECASE | re.DOTALL)
+_R4_PRICE_UNCONFIRMED_RE = re.compile(
+    r'confirm\s+whether\s+the\s+(?:quoted\s+)?price|'
+    r'\bprice\b[^.\n]{0,40}\b(?:to\s+be\s+confirmed|tbc|not\s+confirmed|'
+    r'same\s+for\s+both)\b|'
+    r'please\s+confirm\b[^.\n]{0,40}\bprice\b',
+    re.IGNORECASE)
 
 
 def _block_for_ref(text: str, ref: str) -> str:
@@ -1294,6 +1320,49 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
                 safe_data['commercial_conditions'] = _note
             elif 'not confirmed' not in str(cc).lower():
                 safe_data['commercial_conditions'] = f"{cc}; {_note}"
+
+    # (2b) same-lot SECONDARY delivery option with an unconfirmed price — the
+    # MIRROR of (2). Here the PRIMARY priced term is the delivered one and the
+    # ex-works "can also be collected" option is the unconfirmed alternative
+    # (Moët: DAP Antwerp priced / EXW Breda TBC). There is no explicit "A or B"
+    # disjunction, so (1)/(2) don't fire. Scope the scan to THIS product's own
+    # paragraph (located by brand) so an unrelated same-incoterm row is never
+    # touched, and require BOTH an explicit same-lot "also collected/delivered
+    # <INCO>" cue AND a "price not confirmed / confirm whether the price is the
+    # same" cue. Blank the SECONDARY row's qty+price and flag TBC, exactly as the
+    # Yamazaki shared-lot row — so one lot is never double-counted and the
+    # secondary price is never shown as confirmed.
+    _row_ic3 = _norm_ic(safe_data.get('incoterm'))
+    _brandtok = str(safe_data.get('brand') or '').strip()
+    _pblock = ''
+    if body and _brandtok and len(_brandtok) >= 3:
+        _bm = re.search(re.escape(_brandtok), body, re.IGNORECASE)
+        if _bm:
+            _seg = body[_bm.start():]
+            _nx = re.search(r'\r?\n\s*\r?\n', _seg)
+            _pblock = _seg[:_nx.start()] if _nx else _seg[:400]
+    _altm = _R4_SAMELOT_ALT_RE.search(_pblock) if _pblock else None
+    if (_altm and _R4_PRICE_UNCONFIRMED_RE.search(_pblock)
+            and _row_ic3 and _row_ic3 == _norm_ic(_altm.group(1))):
+        for _pf in ('price_per_unit', 'price_per_case',
+                    'price_per_unit_eur', 'price_per_case_eur'):
+            safe_data[_pf] = None
+        for _qf in ('quantity_bottles', 'quantity_case',
+                    'quantity_pallets', 'quantity_ftl'):
+            safe_data[_qf] = None
+        safe_data['needs_manual_review'] = True
+        _fl = f"same lot — {_row_ic3} price not confirmed (TBC)"
+        if _fl not in flags:
+            flags.append(_fl)
+        _note2 = (f"Same lot as the priced row (not additional stock); "
+                  f"{_row_ic3} price not confirmed — the source asks to confirm "
+                  f"whether the quoted price applies to both delivery options "
+                  f"(TBC).")
+        cc = safe_data.get('commercial_conditions')
+        if not cc:
+            safe_data['commercial_conditions'] = _note2
+        elif 'not confirmed' not in str(cc).lower():
+            safe_data['commercial_conditions'] = f"{cc}; {_note2}"
 
     # (3) non-numeric MOQ "Full lot" + pallet MOQ, verbatim
     if row_src and not safe_data.get('moq_text') and _R4_MOQ_FULLLOT_RE.search(row_src):
@@ -2525,7 +2594,17 @@ async def process_offer(payload, job_id: str):
                     # Client §2/§7 — a signature / decorative image is NOT an
                     # offer source. Skip it before extraction (no wasted vision
                     # call, no phantom source) and record that it was ignored.
-                    if is_signature_attachment(attachment):
+                    # BUT the name-based signature filter exists for EMAIL inline
+                    # decorations (Outlook "image001.gif" logos). A WhatsApp photo
+                    # offer arrives with NO filename and is given the generic
+                    # fallback name "image.jpg", which matches that filter — so
+                    # every caption-less WhatsApp photo (a core offer channel) was
+                    # being dropped before vision (0 OpenAI calls, no source row,
+                    # DONE with 0 products — Samuel's TRADOR image, 2026-11-12).
+                    # WhatsApp media is a deliberately-sent offer, never an inline
+                    # signature: never signature-skip it.
+                    _is_wa = _channel in ("whatsapp", "wa")
+                    if not _is_wa and is_signature_attachment(attachment):
                         logger.info(
                             f"Skipping signature/decorative image (not an offer "
                             f"source): {file_name}")

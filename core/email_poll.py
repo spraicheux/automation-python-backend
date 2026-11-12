@@ -46,7 +46,17 @@ def _lock(name: str, ttl: int) -> bool:
 
 def _text_source_filename(m: Dict[str, Any]) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]", "_", (m.get("from_email") or "email"))[:40]
-    mid = re.sub(r"[^A-Za-z0-9]", "", (m.get("message_id") or str(m.get("uid", ""))))[-12:] or "nomid"
+    # Unique per message. The Message-ID's TAIL is the sender's domain
+    # (…@oxofrance.com → "oxofrancecom"), identical across every email from one
+    # mail system — so taking the last 12 chars collapsed all of Samuel's text
+    # offers to ONE filename and the 2nd+ were wrongly refused as duplicate_file
+    # (BuzzBallz rejected as a dup of an unrelated earlier offer, 2026-11-12).
+    # Hash the WHOLE Message-ID (fall back to the IMAP uid) so distinct emails
+    # get distinct names, while a genuine re-delivery of the SAME message-id
+    # still dedupes correctly.
+    raw_id = (m.get("message_id") or str(m.get("uid", "")) or "").strip()
+    mid = (hashlib.sha1(raw_id.encode("utf-8", "ignore")).hexdigest()[:12]
+           if raw_id else "nomid")
     return f"email-{stem}-{mid}.txt"
 
 
@@ -73,7 +83,16 @@ def run_email_poll() -> Dict[str, Any]:
         subject = (m.get("subject") or "")
         msg_id = m.get("message_id") or f"imap-uid-{m.get('uid')}"
         try:
-            supplier = detect_supplier_from_text(body, subject)  # text only, never sender
+            # Body only — NOT the subject. The subject carries the forwarder/
+            # sender envelope identity ("Offer from TEST Company France"), not
+            # the commercial supplier, which sits in the body letterhead
+            # ("Harbor & Vale QA Trading Ltd."). Feeding the subject here let the
+            # envelope name win as the priority-1 hint over the body/LLM supplier
+            # (Samuel 2026-11-12: email offers mis-attributed to the sender while
+            # the WhatsApp copy read the body correctly). _resolve_supplier_name
+            # still consults the subject as a LAST-resort fallback when the body
+            # and the LLM both find nothing, so a subject-only supplier survives.
+            supplier = detect_supplier_from_text(body)  # body only, never sender/subject
             if atts:
                 # Persist each attachment to durable storage and reference it,
                 # so nothing is lost and the job can be retried. Fall back to an
