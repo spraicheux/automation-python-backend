@@ -364,6 +364,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             price_on_request = False
             size_raw: Any = None
             any_value = False
+            nobox = False
 
             for col, field in colmap.items():
                 cell = ws.cell(row=r, column=col)
@@ -428,6 +429,15 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # to category only for a genuine category word.
                     sv = str(val).strip()
                     lv = sv.lower()
+                    # A "no box" / unboxed tester is a DISTINCT line from the
+                    # boxed one (same EAN/price, different condition). Flag it so
+                    # it survives the ingest-time _canon_key dedup, which keys on
+                    # product_name + retail_state (Samuel W46 2026-11-13: two
+                    # "Givenchy Enflamme" rows — "Tester*" and "Tester no box*").
+                    if ("no box" in lv or "no-box" in lv or "nobox" in lv
+                            or "without box" in lv or "unbox" in lv):
+                        nobox = True
+                        prod["gift_box"] = False
                     if any(k in lv for k in ("clean", "cln", "duty", "bond",
                                              "t1", "t2", "customs", "unpaid", "paid")):
                         prod.setdefault("custom_status", sv)
@@ -463,6 +473,17 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # A product line needs a name or a brand.
             if not (prod.get("product_name") or prod.get("brand")):
                 continue
+
+            # ── "No box" tester → make it a distinct line ───────────────────
+            # Reflect the unboxed condition in the name (visible in the drawer /
+            # export) so the ingest dedup keeps it separate from the boxed line.
+            if nobox:
+                _nm = prod.get("product_name") or ""
+                if "no box" not in _nm.lower():
+                    if not prod.get("product_name_raw"):
+                        prod["product_name_raw"] = _nm
+                    prod["product_name"] = (f"{_nm} (No Box)".strip()
+                                            if _nm else "No Box")
 
             # ── Customs tier embedded in the description ("Dry Gin T2") ──────
             # No dedicated Customs column: lift the T1/T2 token into
