@@ -470,6 +470,11 @@ def is_valid_offer(offer_dict: dict) -> bool:
                     # "Price on request — no price stated" (Samuel 2026-11-10 r3).
                     or 'basis unspecified' in f
                     or 'basis ambiguous' in f
+                    # Shared-lot delivered-term option we deliberately blanked
+                    # (Yamazaki DAP: same lot as the EXW row, delivered price not
+                    # confirmed). Keep it visible as a TBC delivery option rather
+                    # than dropping it for having no price/qty (Samuel 2026-11-12).
+                    or 'delivered price TBC' in f
                 )
                 for f in flags):
             # A "price on request" row must never read €0 on the dashboard — null a
