@@ -20,6 +20,7 @@ from workers.processor import process_offer
 from core.redis_client import redis_manager
 from core.intake_log import update_intake
 from core.openai_health import OpenAICreditsExhausted, queue_pending_credit_job
+from core.openai_client import usage_begin, usage_finish
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,23 @@ def process_document_task(self, job_id: str, payload_dict: dict):
 
         loop = get_or_create_eventloop()
 
+        # Per-file token/cost metering: bracket the extraction and persist the
+        # per-job usage to Redis (read-only accounting; see core.openai_client).
+        usage_begin(job_id)
+        def _persist_usage():
+            try:
+                _u = usage_finish(job_id)
+                if not _u:
+                    return
+                logger.info(f"[usage] job={job_id} calls={_u.get('calls')} "
+                            f"prompt={_u.get('prompt_tokens')} completion={_u.get('completion_tokens')} "
+                            f"cost_usd={_u.get('cost_usd')} by_model={_u.get('by_model')}")
+                if redis_manager.use_redis and redis_manager.client:
+                    import json as _json
+                    redis_manager.client.setex(f"usage:{job_id}", 86400, _json.dumps(_u))
+            except Exception as _e:
+                logger.error(f"[usage] persist failed job={job_id}: {_e}")
+
         # Hard timeout on the whole extraction (90 min). asyncio.wait_for works
         # regardless of celery pool type, unlike soft_time_limit which is a
         # no-op under --pool=solo. On timeout the task marks the job "failed"
@@ -72,8 +90,10 @@ def process_document_task(self, job_id: str, payload_dict: dict):
             logger.error(f"Extraction timed out (>90min) for JobID: {job_id}. Marking failed, moving on.")
             redis_manager.set_job_status(job_id, "failed")
             update_intake(job_id, status="failed", error="extraction timed out (>90min)")
+            _persist_usage()
             return
 
+        _persist_usage()
         result = redis_manager.get_job_result(job_id)
         if result:
             status = result.get("status")

@@ -1259,6 +1259,30 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
         if _m not in flags:
             flags.append(_m)
             safe_data['needs_manual_review'] = True
+        # Samuel 2026-11-12: when this delivered term shares ONE lot with an
+        # ex-works term via an explicit disjunction (Yamazaki "EXW Bordeaux or
+        # DAP Loendersloot"), it is the SAME stock and its delivered price is NOT
+        # confirmed. So the app must not present a quantity or a price as
+        # confirmed for this row — blank both (the lot quantity and the firm
+        # price stay on the ex-works row); incoterm + location remain so the
+        # delivery option is still visible. Gated on the ROW-SCOPED disjunction
+        # so a standalone confirmed delivered price (e.g. NE-410 Moët DAP
+        # €171/case) is never touched.
+        if _R4_DISJ_RE.search(row_src):
+            for _pf in ('price_per_unit', 'price_per_case',
+                        'price_per_unit_eur', 'price_per_case_eur'):
+                safe_data[_pf] = None
+            for _qf in ('quantity_bottles', 'quantity_case',
+                        'quantity_pallets', 'quantity_ftl'):
+                safe_data[_qf] = None
+            _note = (f"Same lot as the ex-works row (not additional stock); "
+                     f"{row_ic2} delivered price not confirmed (ex-works basis "
+                     f"only, TBC).")
+            cc = safe_data.get('commercial_conditions')
+            if not cc:
+                safe_data['commercial_conditions'] = _note
+            elif 'not confirmed' not in str(cc).lower():
+                safe_data['commercial_conditions'] = f"{cc}; {_note}"
 
     # (3) non-numeric MOQ "Full lot" + pallet MOQ, verbatim
     if row_src and not safe_data.get('moq_text') and _R4_MOQ_FULLLOT_RE.search(row_src):

@@ -303,6 +303,22 @@ async def reprocess(job_id: str, force: bool = False):
         return {"skipped": "already ingested", "detail": e.detail}
 
 
+@router.get("/debug/usage/{job_id}")
+async def debug_usage(job_id: str):
+    """Exact token usage + cost captured for a processed job (per-file metering).
+    Returns calls, prompt/completion tokens, per-model breakdown and cost_usd."""
+    r = redis_manager.client if (redis_manager.use_redis and redis_manager.client) else None
+    if not r:
+        return {"job_id": job_id, "usage": None, "error": "redis unavailable"}
+    v = r.get(f"usage:{job_id}")
+    if v is None:
+        return {"job_id": job_id, "usage": None}
+    import json as _json
+    if isinstance(v, bytes):
+        v = v.decode()
+    return {"job_id": job_id, "usage": _json.loads(v)}
+
+
 @router.get("/debug/intake-clear")
 async def intake_clear(status: str = "", filename: str = "", all: bool = False):
     """Remove entries from the live Intake feed — e.g. stale 'processing' /

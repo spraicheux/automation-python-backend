@@ -22,6 +22,74 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=90.0, max_retries=1)
 
 
+# ─── Per-job token/cost metering ────────────────────────────────────────────────
+# Read-only accounting: a thin pass-through on the completions endpoint records
+# response.usage per job so we can report exact tokens + cost per file. It never
+# alters the response and never raises. The worker runs one job at a time
+# (--pool=solo), so a module-level "current job" is safe; the worker brackets a
+# run with usage_begin()/usage_finish().
+_USAGE_CURRENT_JOB: Optional[str] = None
+_USAGE_ACC: Dict[str, Dict[str, Any]] = {}
+
+# USD per 1M tokens (input, output). Token COUNTS are exact from the API; only this
+# $ conversion is a rate — reconcile against the OpenAI invoice if rates change.
+_PRICE_PER_M = {
+    "gpt-4o":     (2.50, 10.00),
+    "gpt-5-nano": (0.05,  0.40),
+}
+
+def usage_begin(job_id: str) -> None:
+    """Start metering for a job (worker calls this before process_offer)."""
+    global _USAGE_CURRENT_JOB
+    if not job_id:
+        return
+    _USAGE_CURRENT_JOB = job_id
+    _USAGE_ACC[job_id] = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}}
+
+def _usage_record(model: Any, usage: Any) -> None:
+    jid = _USAGE_CURRENT_JOB
+    if not jid or jid not in _USAGE_ACC or usage is None:
+        return
+    acc = _USAGE_ACC[jid]
+    pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    ct = int(getattr(usage, "completion_tokens", 0) or 0)
+    acc["calls"] += 1
+    acc["prompt_tokens"] += pt
+    acc["completion_tokens"] += ct
+    bm = acc["by_model"].setdefault(str(model), {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+    bm["calls"] += 1; bm["prompt_tokens"] += pt; bm["completion_tokens"] += ct
+
+def usage_finish(job_id: str) -> Dict[str, Any]:
+    """Stop metering and return {calls, prompt_tokens, completion_tokens, by_model,
+    cost_usd}. Empty dict if nothing was recorded."""
+    global _USAGE_CURRENT_JOB
+    acc = _USAGE_ACC.pop(job_id, None)
+    if _USAGE_CURRENT_JOB == job_id:
+        _USAGE_CURRENT_JOB = None
+    if not acc:
+        return {}
+    cost = 0.0
+    for m, b in acc["by_model"].items():
+        pin, pout = _PRICE_PER_M.get(m, _PRICE_PER_M["gpt-4o"])
+        c = b["prompt_tokens"] / 1_000_000 * pin + b["completion_tokens"] / 1_000_000 * pout
+        b["cost_usd"] = round(c, 4)
+        cost += c
+    acc["cost_usd"] = round(cost, 4)
+    acc["pricing_per_million_usd"] = _PRICE_PER_M
+    return acc
+
+# Install the metering wrapper once, so all ~9 call sites are covered with no edits.
+_orig_chat_create = client.chat.completions.create
+async def _metered_chat_create(*args, **kwargs):
+    resp = await _orig_chat_create(*args, **kwargs)
+    try:
+        _usage_record(kwargs.get("model"), getattr(resp, "usage", None))
+    except Exception:
+        pass
+    return resp
+client.chat.completions.create = _metered_chat_create
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # SHARED EXTRACTION RULES — used in BOTH extract_offer and Excel batch prompts
 # ──────────────────────────────────────────────────────────────────────────────
