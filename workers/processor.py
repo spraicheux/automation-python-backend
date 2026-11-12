@@ -1265,10 +1265,16 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
         # confirmed. So the app must not present a quantity or a price as
         # confirmed for this row — blank both (the lot quantity and the firm
         # price stay on the ex-works row); incoterm + location remain so the
-        # delivery option is still visible. Gated on the ROW-SCOPED disjunction
-        # so a standalone confirmed delivered price (e.g. NE-410 Moët DAP
-        # €171/case) is never touched.
-        if _R4_DISJ_RE.search(row_src):
+        # delivery option is still visible. The disjunction may live in the
+        # row's own text OR (single-offer attachment like the Yamazaki PDF,
+        # whose row carries no reference block) in the document body — mirror
+        # section (1)'s fallback. Blank ONLY when this row's delivered incoterm
+        # is one named side of an EXW-vs-this-term disjunction, so a standalone
+        # confirmed delivered price (e.g. NE-410 Moet DAP) is never touched.
+        _disj_src = raw if _R4_DISJ_RE.search(raw) else (body or '')
+        _dm2 = _R4_DISJ_RE.search(_disj_src)
+        _sides = {_norm_ic(_dm2.group(1)), _norm_ic(_dm2.group(3))} if _dm2 else set()
+        if row_ic2 in _sides and 'EXW' in _sides:
             for _pf in ('price_per_unit', 'price_per_case',
                         'price_per_unit_eur', 'price_per_case_eur'):
                 safe_data[_pf] = None
