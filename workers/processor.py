@@ -2552,6 +2552,40 @@ async def process_offer(payload, job_id: str):
 
         redis_manager.set_job_status(job_id, "processing")
 
+        # Idempotent (re)processing — Samuel 2026-11-12. A big file whose task is
+        # hard-killed mid-import (OOM / Azure container recycle on the B1 box) is
+        # redelivered by the broker (acks_late + visibility_timeout) and re-runs
+        # under the SAME job_id. Without this, the re-run APPENDED a second copy
+        # of every row — W46 reached 646 rows for a 367-row file and burned a
+        # second full extraction. Clear any rows this job wrote on a previous
+        # attempt so the redelivery rewrites ONE clean set (never duplicates),
+        # and reset the source-file counters it rolls up. First run: a no-op.
+        try:
+            from core.database import get_session_factory
+            from models.offer_item import OfferItemDB
+            from models.source_file import SourceFileDB
+            _idb = get_session_factory()()
+            try:
+                _prior = (_idb.query(OfferItemDB)
+                              .filter(OfferItemDB.job_id == job_id)
+                              .delete(synchronize_session=False))
+                _sf = (_idb.query(SourceFileDB)
+                           .filter(SourceFileDB.job_id == job_id).first())
+                if _sf:
+                    _sf.product_count = 0
+                    _sf.imported_row_count = 0
+                    _sf.import_incomplete = False
+                _idb.commit()
+                if _prior:
+                    logger.warning(
+                        f"Idempotent re-process: cleared {_prior} row(s) from a "
+                        f"previous attempt of job {job_id} before re-writing "
+                        f"(redelivery/retry of an interrupted import).")
+            finally:
+                _idb.close()
+        except Exception as _ce:
+            logger.warning(f"Idempotent pre-clear skipped for job {job_id}: {_ce}")
+
         logger.info(f"Processing job {job_id} for supplier: {payload.supplier_name}")
         logger.info(f"Text body length: {len(payload.text_body) if payload.text_body else 0}")
         logger.info(f"Attachment count: {len(payload.attachments) if payload.attachments else 0}")
