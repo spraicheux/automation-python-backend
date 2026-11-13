@@ -1538,6 +1538,7 @@ async def extract_offer(text: str) -> dict:
 
     text_chunks: list[str] = []
     chunk_block_counts: list[int] = []  # how many product blocks each chunk contains
+    chunk_is_list_item: list[bool] = []  # True when a chunk is ONE numbered-list item
 
     if len(marker_positions) >= 2:
         # Each product block runs from one marker to the next (last block to EOT).
@@ -1553,28 +1554,50 @@ async def extract_offer(text: str) -> dict:
         for blk in blocks:
             text_chunks.append(header_block + blk)
             chunk_block_counts.append(1)
+        chunk_is_list_item = [False] * len(text_chunks)
         logger.info(
             f"[extract_offer] BLOCK-AWARE chunking: {len(marker_positions)} "
             f"product markers → {len(text_chunks)} chunk(s), "
             f"block_counts={chunk_block_counts}"
         )
     else:
-        # No per-product markers detected: fall back to line-based chunking
-        # (free-form email / catalogue text).
-        if len(body_lines) <= LINES_PER_CHUNK:
+        # No per-product reference markers. If the body is a numbered / bulleted
+        # list ("1) … 2) …"), give each item its OWN chunk — exactly like the
+        # block-aware path above. Each product is then extracted from ONLY its
+        # own line, so the processor's row-level parsers (pallet math, MOQ,
+        # currency) can never read and broadcast a NEIGHBOUR's figures across the
+        # chunk (Samuel Harbor & Vale, 2026-11-14). This is more robust than
+        # post-hoc matching because it does not depend on the LLM returning
+        # exactly one product per item.
+        _list_items = _split_numbered_items(body_text)
+        if 2 <= len(_list_items) <= 60:
+            text_chunks = [header_block + it for it in _list_items]
+            chunk_block_counts = [1] * len(text_chunks)
+            chunk_is_list_item = [True] * len(text_chunks)
+            logger.info(
+                f"[extract_offer] LIST-ITEM chunking: {len(_list_items)} numbered "
+                f"items → one item per chunk (marker-less list)"
+            )
+        elif len(body_lines) <= LINES_PER_CHUNK:
             text_chunks = [text]
             chunk_block_counts = [0]
+            chunk_is_list_item = [False]
+            logger.info(
+                f"[extract_offer] Line-based chunking: 1 chunk — "
+                f"total_lines={len(all_lines)}, body_lines={len(body_lines)}"
+            )
         else:
             text_chunks = [
                 header_block + ''.join(body_lines[i:i + LINES_PER_CHUNK])
                 for i in range(0, len(body_lines), LINES_PER_CHUNK)
             ]
             chunk_block_counts = [0] * len(text_chunks)
-        logger.info(
-            f"[extract_offer] Line-based chunking: {len(text_chunks)} chunk(s) — "
-            f"LINES_PER_CHUNK={LINES_PER_CHUNK}, total_lines={len(all_lines)}, "
-            f"header_lines={HEADER_LINES}, body_lines={len(body_lines)}"
-        )
+            chunk_is_list_item = [False] * len(text_chunks)
+            logger.info(
+                f"[extract_offer] Line-based chunking: {len(text_chunks)} chunk(s) — "
+                f"LINES_PER_CHUNK={LINES_PER_CHUNK}, total_lines={len(all_lines)}, "
+                f"header_lines={HEADER_LINES}, body_lines={len(body_lines)}"
+            )
 
     all_products = []
 
@@ -1590,7 +1613,16 @@ async def extract_offer(text: str) -> dict:
     def _build_chunk_prompt(idx, chunk):
         _block_hint = ""
         _expected_in_chunk = chunk_block_counts[idx] if idx < len(chunk_block_counts) else 0
-        if _expected_in_chunk >= 1:
+        _is_list_item = chunk_is_list_item[idx] if idx < len(chunk_is_list_item) else False
+        if _is_list_item:
+            _block_hint = (
+                "\n\n⚠️ This chunk is ONE offer line taken from a numbered list. "
+                "Return EXACTLY 1 product for it — plus duplicates ONLY for multiple "
+                "incoterms per Rule 6, and NEVER for alternative locations per Rule 7 "
+                "(a single lot offered at two collection points is ONE row). Every "
+                "field MUST come from THIS line only; there are no other products here."
+            )
+        elif _expected_in_chunk >= 1:
             _block_hint = (
                 f"\n\n⚠️ BLOCK COUNT (hard rule for this chunk): the chunk contains "
                 f"EXACTLY {_expected_in_chunk} product block(s), each starting with a "
