@@ -605,6 +605,123 @@ def patch_quantity_by_ref(
     return {"applied": apply, "patches": results}
 
 
+# Fields a targeted correction is allowed to set, with their coercion kind.
+# Whitelist only — a typo or an unexpected key is reported, never written, so a
+# correction script can never touch identity/audit columns (uid, source_file_id,
+# created_at, job_id, …). error_flags is stored as a JSON array (Text column).
+_PATCH_FIELD_KINDS = {
+    "quantity_case": "float", "quantity_bottles": "float", "quantity_pallets": "float",
+    "quantity_ftl": "float", "quantity_unit": "str", "cases_per_pallet": "float",
+    "units_per_case": "float",
+    "moq_cases": "float", "moq_bottles": "float", "moq_pallets": "float",
+    "moq_ftl": "float", "moq_unit": "str", "moq_text": "str",
+    "price_per_unit": "float", "price_per_case": "float",
+    "price_per_unit_eur": "float", "price_per_case_eur": "float",
+    "currency": "str", "fx_rate": "float", "fx_date": "str", "fx_source": "str",
+    "incoterm": "str", "location": "str", "lead_time": "str",
+    "commercial_conditions": "str", "error_flags": "flags",
+    "needs_manual_review": "bool",
+    "supplier_name": "str", "contact_name": "str",
+    "product_name": "str", "retail_state": "str", "brand": "str",
+}
+
+
+def _coerce_patch_value(kind: str, value):
+    """Coerce an incoming JSON value to the column's storage form. None always
+    clears the field. 'flags' expects a list and is stored as a JSON array."""
+    import json as _json
+    if value is None:
+        return None
+    if kind == "float":
+        return float(value)
+    if kind == "bool":
+        return bool(value)
+    if kind == "flags":
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("error_flags must be a list (or null)")
+        return _json.dumps([str(v) for v in value])
+    return str(value)
+
+
+@router.post("/admin/patch-fields-by-uid", dependencies=[Depends(_require_admin)])
+def patch_fields_by_uid(
+    patches: list = Body(...),
+    source_filename: str = "",
+    apply: bool = False,
+    db: Session = Depends(get_db),
+):
+    """
+    Deterministic, source-verified correction of specific offer_items rows,
+    keyed by uid. Use when a file's rows were ingested with values that do not
+    match the verified source document (e.g. a chunk-level fill-down broadcast
+    one row's quantity/MOQ to its neighbours) and a re-ingest would waste OpenAI
+    credits or risk a non-deterministic regression.
+
+    Body JSON array:
+      [{"uid": "<row uid>", "set": {"quantity_case": 85, "currency": "EUR",
+        "error_flags": ["...","..."], "moq_pallets": null}}, ...]
+
+    Only fields in _PATCH_FIELD_KINDS may be set (identity/audit columns can
+    never be touched); unknown keys are reported, not written. null clears a
+    field; error_flags takes a list and is stored as a JSON array. Scope with
+    source_filename to refuse a uid that is not in the expected file. Idempotent:
+    re-running with the same body is a no-op. apply=false is a dry-run that
+    returns the before/after for every field without committing.
+    """
+    import json as _json
+    results = []
+    touched = 0
+    for patch in patches:
+        uid = (patch.get("uid") or "").strip()
+        fields = patch.get("set") or {}
+        if not uid or not isinstance(fields, dict):
+            results.append({"uid": uid, "error": "missing uid or set{}"})
+            continue
+        q = db.query(OfferItemDB).filter(OfferItemDB.uid == uid)
+        if source_filename:
+            q = q.filter(OfferItemDB.source_filename == source_filename)
+        row = q.first()
+        if row is None:
+            results.append({"uid": uid, "error": "no row for this uid"
+                            + (" in file" if source_filename else "")})
+            continue
+        changes, rejected = {}, []
+        for key, raw_val in fields.items():
+            kind = _PATCH_FIELD_KINDS.get(key)
+            if kind is None:
+                rejected.append(key)
+                continue
+            try:
+                new_stored = _coerce_patch_value(kind, raw_val)
+            except (TypeError, ValueError) as e:
+                rejected.append(f"{key} ({e})")
+                continue
+            old_stored = getattr(row, key)
+            # Present error_flags as a decoded list on both sides for a readable diff.
+            if kind == "flags":
+                old_show = _json.loads(old_stored) if old_stored else None
+                new_show = _json.loads(new_stored) if new_stored else None
+            else:
+                old_show, new_show = old_stored, new_stored
+            if old_stored != new_stored:
+                changes[key] = {"from": old_show, "to": new_show}
+                if apply:
+                    setattr(row, key, new_stored)
+        if apply and changes:
+            touched += 1
+        results.append({
+            "uid": uid, "brand": row.brand, "product_name": row.product_name,
+            "changes": changes,
+            **({"rejected_unknown_fields": rejected} if rejected else {}),
+        })
+    if apply:
+        db.commit()
+    return {"applied": apply, "source_filename": source_filename or None,
+            "rows_touched": touched, "patches": results}
+
+
 @router.post("/admin/rename-supplier-in-file", dependencies=[Depends(_require_admin)])
 def rename_supplier_in_file(
     source_filename: str,
