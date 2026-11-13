@@ -206,6 +206,33 @@ def _parse_size_with_header_unit(raw: Any, header: Any) -> Optional[float]:
     return v  # ml (default when the header gives no unit)
 
 
+# The EU wholesale template carries the bottle size INSIDE the product
+# description ("… EDP 100ml"), with no dedicated Size column, so unit_volume_ml
+# was left blank for the whole file and later coerced to 0 (Samuel W46
+# 2026-11-13 — "volume_ml is 0 for all 367 rows"). Derive it from the name:
+# the bounded form ("100ml", "0,7l", "70cl") OR a size glued to a format code
+# ("100mlEDP"). A solid measured in grams ("210gr" candle) has no ml and stays
+# blank — never 0. A bare "l" must be word-bounded so "12 Limited" is not read
+# as 12 litres.
+_NAME_VOL_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(ml|cl|l)\b", re.IGNORECASE)
+_NAME_VOL_GLUED_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(ml|cl)(?=[A-Za-z])", re.IGNORECASE)
+
+
+def _volume_from_name(name: Any) -> Optional[float]:
+    s = str(name if name is not None else "")
+    best: Optional[float] = None
+    for m in _NAME_VOL_RE.finditer(s):
+        v = float(m.group(1).replace(",", "."))
+        u = m.group(2).lower()
+        best = v * 1000 if u == "l" else v * 10 if u == "cl" else v
+    if best is None:
+        m = _NAME_VOL_GLUED_RE.search(s)
+        if m:
+            v = float(m.group(1).replace(",", "."))
+            best = v * 10 if m.group(2).lower() == "cl" else v
+    return best
+
+
 # Customs tier (T1 / T2) is often embedded in the product-description column
 # ("Dry Gin T2") with no dedicated Customs column. Capture it into
 # custom_status at extraction time and strip it from the name BEFORE anything
@@ -416,14 +443,30 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     prod["category"] = str(val).strip()
                 elif field == "_incoterm_header":
                     # Header is the incoterm (EXW/FCA/…); the cell is the stock
-                    # location (e.g. "NL", "NL-1w"). A numeric cell would be a
+                    # location (e.g. "NL", "NL-1w", "Rotterdam"). A location cell
+                    # starts with letters; a purely-numeric cell would be a
                     # per-incoterm PRICE, not a location — leave location unset.
                     hdr = str(ws.cell(row=header_row, column=col).value or "").strip().upper()
                     if hdr:
                         prod.setdefault("incoterm", hdr)
                     sv = str(val).strip()
-                    if sv and _to_float(val) is None:
-                        prod.setdefault("location", sv)
+                    # Take the leading location token ("NL" from "NL-1w"); a
+                    # trailing "<n>w" / "<n> week(s)" / "<n>d" is a lead time,
+                    # lifted into lead_time. Previously "NL-1w" read as numeric
+                    # (_to_float stripped it to -1) so NL was dropped entirely and
+                    # the two Kajal rows showed location "Not Found" (Samuel W46
+                    # 2026-11-13).
+                    _lm = re.match(r"^([A-Za-z][A-Za-z .]*)", sv)
+                    if _lm:
+                        prod.setdefault("location", _lm.group(1).strip(" .-"))
+                        _ltm = re.search(
+                            r"(\d+)\s*(weeks?|wks?|w|days?|d|months?|mo?)\b",
+                            sv, re.IGNORECASE)
+                        if _ltm and not prod.get("lead_time"):
+                            _n, _u = _ltm.group(1), _ltm.group(2).lower()
+                            _uw = ("week" if _u.startswith("w")
+                                   else "day" if _u.startswith("d") else "month")
+                            prod["lead_time"] = f"{_n} {_uw}" + ("s" if _n != "1" else "")
                 elif field == "_type_state":
                     # "Type" column: route retail vs customs state; fall through
                     # to category only for a genuine category word.
@@ -500,6 +543,15 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         prod["product_name_raw"] = _nm
                     prod["product_name"] = re.sub(
                         r"\s{2,}", " ", _CUSTOMS_TOKEN_RE.sub("", _nm)).strip(" -,")
+
+            # ── Volume from the product name (no dedicated Size column) ─────
+            # The EU wholesale template puts the size in the Line ("… 100ml").
+            # Fill unit_volume_ml from the name so it is populated, not blank /
+            # zero (Samuel W46 2026-11-13). Candles / solids in grams → blank.
+            if not prod.get("unit_volume_ml"):
+                _vml = _volume_from_name(prod.get("product_name"))
+                if _vml is not None:
+                    prod["unit_volume_ml"] = _vml
 
             # ── Resolve the Price / Price-basis pair ───────────────────────
             if price_value is not None:

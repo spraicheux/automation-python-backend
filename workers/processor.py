@@ -2437,6 +2437,33 @@ def _extract_commercial_conditions(text: str, anchor: Optional[datetime]):
                  r'delivery\s+to\s+excise', t, re.IGNORECASE):
         found.append("Delivery to an excise-bonded warehouse")
 
+    # Minimum order value (MOV) / minimum order — captured verbatim with its
+    # amount when stated nearby ("MOV 2.500 EUR"). Samuel W46 2026-11-13 — the
+    # €2,500 MOV in the cover email was missing from every row.
+    if re.search(r'\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order(?:\s+(?:value|quantity))?',
+                 t, re.IGNORECASE):
+        _mov = re.search(
+            r'(?:\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order(?:\s+(?:value|quantity))?)'
+            r'[^\d€$£]{0,15}([€$£]?\s?\d[\d.,\s]*\d|\d)\s*(eur|euro|usd|gbp|€|\$|£)?',
+            t, re.IGNORECASE)
+        if _mov and _mov.group(1):
+            _amt = _mov.group(1).strip()
+            _cur = (_mov.group(2) or '').upper().replace('EURO', 'EUR')
+            found.append(f"MOV: {_amt} {_cur}".strip())
+        else:
+            found.append("Minimum order value applies")
+
+    # "Subject to unsold" / "subject to prior sale" / "while stocks last" —
+    # the stock is offered only while it remains available.
+    if re.search(r'subject\s+to\s+(?:prior\s+|being\s+)?unsold|'
+                 r'subject\s+to\s+prior\s+sale|while\s+stocks?\s+last',
+                 t, re.IGNORECASE):
+        found.append("Subject to unsold")
+
+    # "Goods on the floor" — immediately available physical stock.
+    if re.search(r'goods?\s+on\s+the\s+floor', t, re.IGNORECASE):
+        found.append("Goods on the floor")
+
     if not found:
         return None, resolved_valid_until, flags
     return "; ".join(found), resolved_valid_until, flags
@@ -2532,7 +2559,13 @@ def _apply_offer_defaults(data: dict) -> dict:
         'price_per_unit_eur': 0,
         'price_per_case': 0,
         'price_per_case_eur': 0,
-        'unit_volume_ml': 0,
+        # A missing volume must stay BLANK, never 0 — a 0 reads as "0 ml" in the
+        # export/drawer, which Samuel flagged on W46 (all 367 rows showed 0 while
+        # the size lived in the product name). sku_identity / peer_group_id
+        # coalesce None→0 for their keys, so this is a display-only fix with no
+        # grouping impact. units_per_case keeps its 0 default (loose-pack logic
+        # downstream treats 0/1 as loose and nulls it).
+        'unit_volume_ml': None,
         'units_per_case': 0,
     }
 
