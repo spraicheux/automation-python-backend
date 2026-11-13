@@ -371,6 +371,7 @@ def sync_category_display(
 @router.post("/admin/sync-review-flags", dependencies=[Depends(_require_admin)])
 def sync_review_flags(
     category_slug: str = "perfumes",
+    source_file_id: str = "",
     apply: bool = False,
     db: Session = Depends(get_db),
 ):
@@ -436,11 +437,17 @@ def sync_review_flags(
         "offer date not stated",
     )
 
-    # category_slug="all" recomputes every row regardless of category — needed to
-    # reach NULL-category rows (which an equality filter can't match) and to
-    # backfill the whole corpus in one pass (Samuel 2026-11-13).
+    # source_file_id scopes the recompute to ONE ingested file — the surgical,
+    # safe path: it touches only that file's rows, so a targeted reclassification
+    # (e.g. W46's offer-date / GS1-invalid notes) never churns the review state
+    # of unrelated rows elsewhere in the corpus (Samuel 2026-11-13). Prefer this
+    # over the broad category/all backfill, which bi-directionally re-promotes
+    # legacy rows. category_slug="all" recomputes every row regardless of
+    # category (reaches NULL-category rows too); otherwise it scopes by category.
     _q = db.query(OfferItemDB)
-    if category_slug and category_slug != "all":
+    if source_file_id:
+        _q = _q.filter(OfferItemDB.source_file_id == source_file_id)
+    elif category_slug and category_slug != "all":
         _q = _q.filter(OfferItemDB.category_slug == category_slug)
     rows = _q.all()
     touched = 0
@@ -477,6 +484,7 @@ def sync_review_flags(
     if apply:
         db.commit()
     return {"applied": apply, "category_slug": category_slug,
+            "source_file_id": source_file_id or None,
             "rows_examined": len(rows), "rows_touched": touched,
             "sample": sample}
 
