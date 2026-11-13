@@ -304,6 +304,61 @@ def file_attachment(file_name: str, content_type: Optional[str], path: str,
     }
 
 
+# ─── never-lose-a-file: archive the raw intake BEFORE any gate ─────────────────
+
+def _attachment_bytes(att: Dict[str, Any]) -> Optional[bytes]:
+    """Best-effort raw bytes of an attachment at intake, whatever its shape:
+    inline Buffer (email / multipart upload), a durable file path, or None for a
+    media-id reference whose bytes are only fetched later."""
+    try:
+        d = att.get("data")
+        if isinstance(d, dict):
+            if isinstance(d.get("data"), list):
+                return bytes(d["data"])
+            if d.get("path"):
+                from core.file_store import load_file
+                return load_file(d["path"])
+        if isinstance(d, (bytes, bytearray)):
+            return bytes(d)
+        if att.get("carrier") == "path" and att.get("path"):
+            from core.file_store import load_file
+            return load_file(att["path"])
+    except Exception:
+        return None
+    return None
+
+
+def archive_raw_intake(job_id: str, dedup_filename: Optional[str],
+                       channel: Optional[str], text_body: Optional[str],
+                       attachments: Optional[List[Dict[str, Any]]]) -> None:
+    """Durably archive the raw intake (email/body text + each attachment's bytes)
+    in Postgres BEFORE the dedup/validation gates run. This is what makes
+    "never lose a file" actually hold at the door: a DUPLICATE or otherwise
+    rejected intake is bounced before processing, so without this it was never
+    archived, never saved, gone (Samuel's BuzzBallz email, 2026-11-12). Entirely
+    best-effort — it must never block or fail an ingest."""
+    try:
+        from core.raw_blob import save_blob
+    except Exception:
+        return
+    try:
+        if text_body and text_body.strip():
+            base = dedup_filename or f"{channel or 'intake'}-{job_id}"
+            name = base if base.lower().endswith(".txt") else base + ".body.txt"
+            save_blob(job_id, name, "text/plain",
+                      text_body.encode("utf-8", "ignore"))
+    except Exception as e:
+        logger.warning(f"intake archive (body) failed for {job_id}: {e}")
+    for att in (attachments or []):
+        try:
+            b = _attachment_bytes(att)
+            if b:
+                save_blob(job_id, att.get("fileName") or att.get("name"),
+                          att.get("contentType"), b)
+        except Exception as e:
+            logger.warning(f"intake archive (attachment) failed for {job_id}: {e}")
+
+
 # ─── the single enqueue path ──────────────────────────────────────────────────
 
 def enqueue_offer(*, source_channel: Optional[str] = None,
@@ -338,9 +393,30 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
         supplier_email=supplier_email, supplier_name=supplier_name,
         source_message_id=source_message_id, job_id=job_id)
 
-    check_duplicate_filename(dedup_filename)
-    if check_content_hash:
-        check_duplicate_content_hash(content_hash)
+    # Archive the raw intake BEFORE the dedup gate, so nothing is ever lost at the
+    # door — even a (possibly false) duplicate stays fully recoverable.
+    archive_raw_intake(job_id, dedup_filename, source_channel, text_body, attachments)
+
+    try:
+        check_duplicate_filename(dedup_filename)
+        if check_content_hash:
+            check_duplicate_content_hash(content_hash)
+    except DuplicateIngest as dup:
+        # Make the rejection VISIBLE (a dashboard "duplicate" row) instead of a
+        # silent 400 that leaves no trace — so it can be reviewed and, if the
+        # dedup was wrong, recovered from the archive above.
+        try:
+            from core.intake_log import record_intake, update_intake
+            record_intake(job_id, channel=source_channel,
+                          source_filename=dedup_filename, sender_name=sender_name,
+                          sender_email=sender_email, supplier_name=supplier_name,
+                          attachment_count=len(attachments),
+                          has_text=bool(text_body), status="duplicate")
+            _msg = dup.detail.get("message") if isinstance(dup.detail, dict) else None
+            update_intake(job_id, error=_msg or "duplicate")
+        except Exception as _e:
+            logger.warning(f"duplicate intake record failed for {job_id}: {_e}")
+        raise
 
     payload_dict = {
         "source_channel": source_channel,
