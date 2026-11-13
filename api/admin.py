@@ -423,11 +423,26 @@ def sync_review_flags(
         "compound location",
         "alternative-location row backfilled",
         "alternative locations",
+        # A barcode that fails the GS1 check digit is kept verbatim (shown as a
+        # read-only identifier) with its matching EAN field blanked — a handled
+        # exclusion, not a review item (Samuel 2026-11-13). Reclassify ONLY: the
+        # flag stays in error_flags so the raw code remains visible/auditable;
+        # deliberately NOT added to strip-info-flags or the ingest silencer
+        # _INFO_PREFIXES, which would delete it.
+        "ean_code invalid",
+        # Offer date not stated: commercial date unknown but handled — the
+        # filename date is kept separately as the document date, freshness falls
+        # back to the received date (labelled), never used for expiry/alerts.
+        "offer date not stated",
     )
 
-    rows = (db.query(OfferItemDB)
-              .filter(OfferItemDB.category_slug == category_slug)
-              .all())
+    # category_slug="all" recomputes every row regardless of category — needed to
+    # reach NULL-category rows (which an equality filter can't match) and to
+    # backfill the whole corpus in one pass (Samuel 2026-11-13).
+    _q = db.query(OfferItemDB)
+    if category_slug and category_slug != "all":
+        _q = _q.filter(OfferItemDB.category_slug == category_slug)
+    rows = _q.all()
     touched = 0
     sample = []
     for r in rows:

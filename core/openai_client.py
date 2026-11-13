@@ -4081,7 +4081,13 @@ def clean_product_data(product: dict) -> dict:
             if flag_text not in flags:
                 flags.append(flag_text)
                 cleaned_product['error_flags'] = flags
-            cleaned_product['needs_manual_review'] = True
+            # Blank the EAN so a bad barcode never drives SKU identity or peer
+            # matching, but keep the row calm: the raw code is preserved in the
+            # flag (and shown as a read-only identifier on the dashboard), and
+            # this handled exclusion is informational, NOT a review item — so it
+            # no longer forces needs_manual_review (Samuel 2026-11-13). Mirrors
+            # api.admin sync-review-flags INFO_PATTERNS + dashboard
+            # INFO_FLAG_PREFIXES.
             cleaned_product['ean_code'] = None
             logger.warning(f"[clean_product_data] EAN {raw_ean!r} unfixable — nulled: {repair_reason}")
         else:

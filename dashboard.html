@@ -1978,12 +1978,12 @@
         ? `<div class="tip-sec needs">⚠ Needs Review</div>` +
           (i.needs_manual_review && flags.needs.length === 0
             ? `<div class="tip-item needs">Marked for manual review</div>` : '') +
-          flags.needs.map(f => `<div class="tip-item needs">${escapeHtml(f)}</div>`).join('')
+          flags.needs.map(f => `<div class="tip-item needs">${escapeHtml(prettyFlag(f))}</div>`).join('')
         : '';
       const infoPart = hasInfo
         ? (hasNeeds ? `<div class="tip-gap"></div>` : '') +
           `<div class="tip-sec info">ℹ Calculated / Inferred</div>` +
-          flags.info.map(f => `<div class="tip-item info">${escapeHtml(f)}</div>`).join('')
+          flags.info.map(f => `<div class="tip-item info">${escapeHtml(prettyFlag(f))}</div>`).join('')
         : '';
       dotHtml = `<span class="review-dot ${dotCls}" title="${escapeAttr(dotAria)}"></span><div class="${tipCls}">${needsPart}${infoPart}</div>`;
     }
@@ -2242,6 +2242,15 @@
     'compound location',
     'alternative-location row backfilled',
     'alternative locations',
+    // A barcode that fails the GS1 check digit: the raw code is kept (shown as a
+    // read-only identifier) and blanked from the matching EAN field. A handled
+    // exclusion, not a review item (Samuel 2026-11-13). Mirrors api.admin
+    // INFO_PATTERNS — NOT the ingest silencer (the flag must stay visible).
+    'ean_code invalid',
+    // Offer date not stated: commercial date unknown, but handled — the filename
+    // date is kept separately as the document date, freshness falls back to the
+    // received date (labelled), never used for expiry/alerts. Informational.
+    'offer date not stated',
   ];
   // Packaging filter key = CASE-PACK dimension ONLY (bottles per case).
   // Bottle size has its own filter (filter-bottle), so the packaging filter must
@@ -2283,6 +2292,42 @@
       else needs.push(f); // default to material — safer
     }
     return { info, needs };
+  }
+
+  // Rewrite the raw "ean_code invalid (original: N; reason: length=13
+  // check_ok=False)" audit string into a human sentence for display. The raw
+  // digits are preserved (shown here and in the EAN/barcode field); only the
+  // presentation changes (Samuel 2026-11-13).
+  function prettyFlag(f) {
+    const s = String(f);
+    const m = /ean_code invalid \(original:\s*([0-9]+);\s*reason:\s*([^)]*)\)/i.exec(s);
+    if (!m) return s;
+    const reason = m[2] || '';
+    const lm = /length=(\d+)/.exec(reason);
+    const cm = /check_ok=(\w+)/.exec(reason);
+    let why = 'fails GS1 validation';
+    if (lm && lm[1] !== '13') why = `not 13 digits (length ${lm[1]})`;
+    else if (cm && /false/i.test(cm[1])) why = 'EAN-13 check digit fails';
+    return `Source barcode ${m[1]} — GS1 invalid (${why}); kept for reference, excluded from matching`;
+  }
+
+  // Raw source barcode + GS1 status as a read-only drawer field. A code that
+  // passes GS1 is the validated EAN; one that fails is kept here verbatim (from
+  // the audit flag) while its matching EAN field stays blank.
+  function barcodeField(i) {
+    let raw = (i.ean_code && i.ean_code !== 'Not Found') ? String(i.ean_code) : '';
+    const valid = !!raw;
+    if (!raw) {
+      for (const f of (i.error_flags || [])) {
+        const m = /ean_code invalid \(original:\s*([0-9]+)/i.exec(String(f));
+        if (m) { raw = m[1]; break; }
+      }
+    }
+    if (!raw) return kv('EAN / barcode', null, true, 'ean_code');
+    const note = valid
+      ? '<span style="color:var(--muted);font-size:11px;">valid GS1</span>'
+      : '<span style="color:var(--muted);font-size:11px;">GS1 invalid (EAN-13 check digit) — excluded from matching</span>';
+    return kv('EAN / barcode', `<span class="mono">${escapeHtml(raw)}</span> &nbsp;·&nbsp; ${note}`, false, 'ean_code');
   }
 
   // ─── Drawer ─────────────────────────────────────────────────────────────────
@@ -2455,6 +2500,7 @@
           ${kv('MOQ', formatMoq(i), true, 'moq_cases')}
           ${kv('Incoterm', i.incoterm && i.incoterm !== 'Not Found' ? i.incoterm : null, true, 'incoterm')}
           ${kv('Location', i.location && i.location !== 'Not Found' ? i.location : null, false, 'location')}
+          ${barcodeField(i)}
           ${kv('Customs status (T1/T2)', (i.custom_status && i.custom_status !== 'Not Found') ? statusBadge(i.custom_status) : null, true, 'custom_status')}
           ${kv('Lead time', i.lead_time && i.lead_time !== 'Not Found' ? i.lead_time : null, false, 'lead_time')}
           ${kv('Offer date', i.offer_date ? formatDate(i.offer_date) : '<span style="color:var(--muted)">unknown — not stated in the offer</span>', false, 'offer_date')}
@@ -2477,13 +2523,13 @@
             <div class="flag-block needs">
               <div class="flag-head">⚠ Needs review</div>
               ${(i.needs_manual_review && !flags.needs.length) ? `<div class="flag-item">Marked for manual review</div>` : ''}
-              ${flags.needs.map(f => `<div class="flag-item">${escapeHtml(f)}</div>`).join('')}
+              ${flags.needs.map(f => `<div class="flag-item">${escapeHtml(prettyFlag(f))}</div>`).join('')}
             </div>
           ` : ''}
           ${flags.info.length ? `
             <div class="flag-block info">
               <div class="flag-head">ℹ Calculated / inferred</div>
-              ${flags.info.map(f => `<div class="flag-item">${escapeHtml(f)}</div>`).join('')}
+              ${flags.info.map(f => `<div class="flag-item">${escapeHtml(prettyFlag(f))}</div>`).join('')}
             </div>
           ` : ''}
         </div>

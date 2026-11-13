@@ -2318,7 +2318,14 @@ def _offer_date_or_flag(raw, source_filename: str, received: datetime,
                         "fallback, never as a commercial offer date)")
             if _msg not in flags:
                 flags.append(_msg)
-            safe_data['needs_manual_review'] = True
+            # A missing commercial offer date is a HANDLED, informational state:
+            # the filename date is kept separately as the document date, freshness
+            # falls back to the received date (labelled), and it is never used for
+            # the commercial date, expiry or alerts. It is surfaced as an info
+            # note, NOT a review item, so it no longer forces needs_manual_review
+            # (Samuel 2026-11-13). Mirrors api.admin sync-review-flags INFO_PATTERNS
+            # and dashboard INFO_FLAG_PREFIXES. A genuinely anomalous row still
+            # gets needs_manual_review from its own trigger (ABV, zero price, etc.).
         safe_data['error_flags'] = flags
     except Exception:
         pass
