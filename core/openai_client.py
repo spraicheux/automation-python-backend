@@ -1467,6 +1467,27 @@ def _reconcile_source_authoritative(text, products):
         return products
 
 
+import re as _re_items
+# A numbered / bulleted offer list: "1) …", "2. …", "- …", "• …". Each item is
+# one product's own source text. Used to give every product its OWN
+# `_raw_row_text` when the chunk has no per-product Reference markers — without
+# it each product inherits the WHOLE chunk and the processor's row-level parsers
+# (pallet math, MOQ, currency) read a NEIGHBOUR's figures and broadcast them
+# across the chunk (Samuel Harbor & Vale, 2026-11-14).
+_LIST_ITEM_RE = _re_items.compile(r'(?m)^\s*(?:\d{1,3}[\).]|[-*•])\s+')
+
+
+def _split_numbered_items(text: str) -> list:
+    """Split a numbered/bulleted list into per-item blocks. Returns [] when the
+    text is not such a list (fewer than 2 item markers), so callers can safely
+    fall back to the whole-chunk text."""
+    hits = list(_LIST_ITEM_RE.finditer(text or ''))
+    if len(hits) < 2:
+        return []
+    bounds = [h.start() for h in hits] + [len(text)]
+    return [text[bounds[i]:bounds[i + 1]].strip() for i in range(len(hits))]
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -1716,6 +1737,31 @@ async def extract_offer(text: str) -> dict:
             except Exception as _salvage_err:
                 logger.warning(f"[extract_offer] Chunk {idx + 1}: block-level salvage skipped: {_salvage_err}")
             # ──────────────────────────────────────────────────────────────────
+
+            # ─── Per-row _raw_row_text for a marker-less numbered/bulleted list ──
+            # The Ref-marker salvage above only assigns per-row source text when
+            # each product has its own "Reference:/SKU:" line. A plain numbered
+            # list ("1) … 2) …") with a single file-level ref leaves every
+            # product on the whole-chunk fallback, so the processor's row-level
+            # parsers broadcast one row's pallet math / MOQ / currency across the
+            # chunk. Split the list and give each product its OWN item block,
+            # by position, only when the item count matches the product count.
+            try:
+                _dict_products = [p for p in products if isinstance(p, dict)]
+                if any(p.get('_raw_row_text') == chunk for p in _dict_products):
+                    _items = _split_numbered_items(chunk)
+                    if len(_items) >= 2 and len(_items) == len(_dict_products):
+                        _ii = 0
+                        for _p in products:
+                            if isinstance(_p, dict):
+                                if _p.get('_raw_row_text') == chunk:
+                                    _p['_raw_row_text'] = _items[_ii]
+                                _ii += 1
+                        logger.info(
+                            f"[extract_offer] Chunk {idx + 1}: assigned per-item "
+                            f"_raw_row_text to {len(_items)} list items")
+            except Exception as _list_err:
+                logger.warning(f"[extract_offer] Chunk {idx + 1}: numbered-list split skipped: {_list_err}")
 
             cleaned_products = []
             for p_idx, product in enumerate(products):

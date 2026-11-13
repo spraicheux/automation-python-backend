@@ -685,6 +685,7 @@ _FALLBACK_FX = {
     "USD": 0.92,   # 1 USD ≈ 0.92 EUR
     "GBP": 1.17,   # 1 GBP ≈ 1.17 EUR
     "CHF": 1.05,   # 1 CHF ≈ 1.05 EUR
+    "HKD": 0.117,  # 1 HKD ≈ 0.117 EUR (approx; live ECB rate used when reachable)
     "EUR": 1.0,
 }
 
@@ -804,6 +805,28 @@ def _snap_duplicated_row_per_unit(safe_data: dict) -> None:
         safe_data["price_per_unit"] = round(pc_f / upc_f, 4)
 
 
+_ROW_CUR_RE = re.compile(
+    r'(?:(EUR|USD|GBP|HKD|CHF|US\$|€|£)\s*\d)'
+    r'|(?:\d\s*(EUR|USD|GBP|HKD|CHF|€|£))',
+    re.IGNORECASE)
+_ROW_CUR_CANON = {'EUR': 'EUR', 'USD': 'USD', 'GBP': 'GBP', 'HKD': 'HKD',
+                  'CHF': 'CHF', 'US$': 'USD', '€': 'EUR', '£': 'GBP'}
+
+
+def _row_currency_from_text(raw: str):
+    """The single, unambiguous currency a row's own source line quotes next to a
+    price — or None when none is quoted or two different ones are. Lets the
+    processor override the LLM's per-chunk 'apply the detected currency to ALL
+    products' broadcast on a mixed-currency offer (Samuel Harbor & Vale)."""
+    found = set()
+    for m in _ROW_CUR_RE.finditer(raw or ''):
+        tok = (m.group(1) or m.group(2) or '').upper()
+        c = _ROW_CUR_CANON.get(tok)
+        if c:
+            found.add(c)
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def _normalize_currency_and_prices(safe_data: dict) -> dict:
     """Detect currency from sign characters and populate EUR price fields.
 
@@ -814,6 +837,25 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
        - If currency == EUR: EUR fields = native price fields.
        - Otherwise: EUR = native * fx_rate (using AI-provided fx_rate or fallback)
     """
+    # Per-row currency override: when the row's OWN source line quotes a single
+    # currency different from the (possibly chunk-broadcast) value the LLM set,
+    # trust the source line and force an FX recompute. Guarded to one unambiguous
+    # currency, so a multi-currency row or a currency-less row is left untouched
+    # (Samuel Harbor & Vale mixed-currency offer, 2026-11-14).
+    _rrt = safe_data.get('_raw_row_text')
+    if _rrt:
+        _row_cur = _row_currency_from_text(_rrt)
+        _cur_now = (safe_data.get('currency') or 'EUR').strip()
+        _cur_now = _CURRENCY_SYMBOLS.get(_cur_now, _cur_now).upper()
+        if _row_cur and _row_cur != _cur_now:
+            safe_data['currency'] = _row_cur
+            safe_data['fx_rate'] = None  # drop the stale rate so FX recomputes
+            _ef = safe_data.get('error_flags')
+            if isinstance(_ef, list):
+                _note = f'currency normalized to {_row_cur} from the source line'
+                if _note not in _ef:
+                    _ef.append(_note)
+
     currency = (safe_data.get('currency') or 'EUR').strip()
 
     # Resolve symbol to ISO code
@@ -1242,7 +1284,14 @@ def _apply_round4_shape_fixes(safe_data: dict, body: str = "") -> None:
     # attachment offers Samuel sends (Elixe 'Full lot' / deposit).
     _ref = (safe_data.get('product_reference')
             or safe_data.get('supplier_reference') or '')
-    _block = _block_for_ref(body, _ref) if (body and _ref) else ''
+    # The document-level block fallback is ONLY for rows whose own per-row text
+    # is absent (attachment / vision extractions carry no `_raw_row_text`). When
+    # `raw` already holds the row's own line, pulling a doc slice by a FILE-LEVEL
+    # ref (one ref shared by every row) re-introduces neighbours' MOQ / pallet
+    # figures — the same broadcast we removed by giving each row its own
+    # `_raw_row_text` (Samuel Harbor & Vale, 2026-11-14).
+    _need_fallback = len(raw.strip()) < 30
+    _block = _block_for_ref(body, _ref) if (_need_fallback and body and _ref) else ''
     row_src = (raw + "\n" + _block) if _block else raw
     flags = safe_data.get('error_flags')
     if not isinstance(flags, list):
