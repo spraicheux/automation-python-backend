@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import calendar
 import logging
+import re
 import time
-from typing import Dict
+from typing import Dict, Optional, Set
 
 from core.redis_client import redis_manager
 from core.intake_log import list_intakes, update_intake
@@ -48,6 +49,40 @@ _MAX_ATTEMPTS = 5
 # A delivered job moves queued → processing within seconds; wait a little longer
 # than a worker poll before deciding a non-delivered "queued" row is an orphan.
 _ORPHAN_GRACE_SECONDS = 180
+# Before auto-retrying a genuinely FAILED job, give Celery's own in-task retry
+# (max_retries=2, backoff up to ~2 min) time to finish so we never double-run.
+_FAILED_RETRY_GRACE_SECONDS = 300
+# A job stuck in "processing" this long has outlived the 95-min hard time-limit
+# AND the 100-min broker (acks_late) redelivery window — the worker was hard-
+# killed (OOM / Azure recycle) and nothing recovered it. Re-enqueue it (idempotent
+# re-processing rewrites one clean set). Kept past both windows so we never
+# re-run a job that is still legitimately in flight or being redelivered.
+_STUCK_PROCESSING_SECONDS = 130 * 60
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _active_job_ids(celery_app) -> Optional[Set[str]]:
+    """job_ids currently running on a LIVE worker, or None when that can't be
+    determined (broker hiccup). None ⇒ we must NOT touch 'processing' jobs this
+    round, since we can't prove no worker is on them."""
+    try:
+        insp = celery_app.control.inspect(timeout=3)
+        active = insp.active()
+    except Exception:
+        return None
+    if active is None:
+        return None
+    ids: Set[str] = set()
+    for tasks in active.values():
+        for t in (tasks or []):
+            a = t.get("args")
+            if isinstance(a, (list, tuple)) and a:
+                ids.add(str(a[0]))
+            elif isinstance(a, str):
+                m = _UUID_RE.search(a)
+                if m:
+                    ids.add(m.group(0))
+    return ids
 
 
 def _r():
@@ -93,6 +128,19 @@ def _is_enqueue_failure(entry: Dict) -> bool:
     return "could not reach the processing queue" in err
 
 
+# A slow/timeout failure replays the SAME long extraction and will likely time
+# out again, hogging the single worker from everyone else — so it gets far fewer
+# retries than a transient crash.
+_TIMEOUT_MAX_ATTEMPTS = 2
+
+
+def _retry_cap(entry: Dict) -> int:
+    err = (entry.get("error") or "").lower()
+    if "timed out" in err or "time limit" in err:
+        return _TIMEOUT_MAX_ATTEMPTS
+    return _MAX_ATTEMPTS
+
+
 def sweep_stuck_jobs() -> Dict[str, int]:
     """Re-enqueue orphaned jobs and tidy stale terminal errors. Returns a small
     summary {scanned, requeued, cleaned}. Safe to call repeatedly."""
@@ -101,9 +149,15 @@ def sweep_stuck_jobs() -> Dict[str, int]:
     scanned = requeued = cleaned = 0
     try:
         from workers.celery_tasks import process_document_task
+        from core.celery_app import celery_app
     except Exception as e:
         logger.warning(f"job sweep: cannot import task: {e}")
         return {"scanned": 0, "requeued": 0, "cleaned": 0}
+
+    # Snapshot what live workers are actually running, so we never re-enqueue a
+    # job that is still in flight. None ⇒ unknown (broker hiccup) ⇒ leave
+    # "processing" jobs alone this round.
+    active_ids = _active_job_ids(celery_app)
 
     for entry in list_intakes(limit=300):
         scanned += 1
@@ -118,23 +172,52 @@ def sweep_stuck_jobs() -> Dict[str, int]:
             cleaned += 1
             continue
 
-        # Only queued orphans, or our own "could not reach the queue" failures.
+        age = _age_seconds(entry.get("updated_at") or entry.get("received_at") or "")
+
+        # Decide whether, and why, this job should be re-enqueued. Every path is
+        # safe to replay: idempotent re-processing clears any prior rows for the
+        # job_id and writes ONE clean set (see workers.processor.process_offer).
+        reason: Optional[str] = None
         if status == "queued":
-            pass
+            # Orphan: the broker hand-off never landed. Only safe to replay when
+            # it was never delivered (else it is in flight / will be redelivered).
+            if was_delivered(job_id) or age < _ORPHAN_GRACE_SECONDS:
+                continue
+            reason = "orphaned-queued"
         elif status == "failed" and _is_enqueue_failure(entry):
-            pass
+            # Our own "could not reach the queue" failure — same as an orphan.
+            if was_delivered(job_id) or age < _ORPHAN_GRACE_SECONDS:
+                continue
+            reason = "enqueue-failed"
+        elif status in ("failed", "error"):
+            # A genuine extraction failure (timeout, soft-limit, exhausted Celery
+            # retries, or a crash). Never abandon it — auto-retry, bounded by the
+            # attempt cap. Wait out Celery's own in-task retry first so we don't
+            # double-run, and never replay a timeout past the cap (it would just
+            # time out again and hog the single worker).
+            if age < _FAILED_RETRY_GRACE_SECONDS:
+                continue
+            reason = "failed-retry"
+        elif status == "processing":
+            # Stuck past the hard limit AND the broker redelivery window, with no
+            # live worker on it ⇒ hard-killed and unrecovered. Re-enqueue.
+            if age < _STUCK_PROCESSING_SECONDS:
+                continue
+            if active_ids is None or job_id in active_ids:
+                continue  # still (or might still be) running — don't double-run
+            reason = "stuck-processing"
         else:
             continue
 
-        # Delivered to the broker already ⇒ it is in flight or will be redelivered
-        # by Celery (acks_late); re-enqueuing would risk a duplicate. Skip.
-        if was_delivered(job_id):
-            continue
-
-        if _age_seconds(entry.get("updated_at") or entry.get("received_at") or "") < _ORPHAN_GRACE_SECONDS:
-            continue
-
-        if _attempts(job_id) >= _MAX_ATTEMPTS:
+        if _attempts(job_id) >= _retry_cap(entry):
+            # Tried hard and it still won't complete — stop replaying (don't hog
+            # the worker / burn credits forever). A stuck "processing" row that
+            # has exhausted its retries is parked as "failed" so it stops being
+            # re-scanned and is visibly actionable, instead of looking live.
+            if status == "processing":
+                redis_manager.set_job_status(job_id, "failed")
+                update_intake(job_id, status="failed",
+                              error="stuck in processing; auto-recovery exhausted — needs manual review")
             continue
 
         payload = load_job_payload(job_id)
@@ -144,15 +227,15 @@ def sweep_stuck_jobs() -> Dict[str, int]:
 
         _bump_attempts(job_id)
         try:
-            # Same job_id ⇒ updates the SAME intake row (no clutter). Never ran
-            # and never delivered, so this is its first real trip through the
-            # worker — no duplicate, no wasted credits.
+            # Same job_id ⇒ the SAME intake row is updated (no clutter) and the
+            # idempotent write path guarantees exactly one clean result set.
             process_document_task.delay(job_id, payload)
             mark_delivered(job_id)
             update_intake(job_id, status="queued", clear_error=True)
             requeued += 1
-            logger.info(f"job sweep: recovered orphaned job {job_id} "
-                        f"({entry.get('source_filename')})")
+            logger.info(f"job sweep: recovered {reason} job {job_id} "
+                        f"({entry.get('source_filename')}) attempt "
+                        f"{_attempts(job_id)}/{_MAX_ATTEMPTS}")
         except Exception as e:
             logger.warning(f"job sweep: re-enqueue failed for {job_id}: {e}")
 
