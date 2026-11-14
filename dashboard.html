@@ -2120,8 +2120,28 @@
       const src = plt ? ` <span class="qty-source" title="source quantity">(${plt} plt × ${cpp} cs/plt)</span>` : '';
       return `<span>${qc} cs${src}</span>`;
     }
-    if (raw === 'bottles' || raw === 'bottle' || raw === 'btls' ||
-        raw === 'pieces' || raw === 'piece' || raw === 'pcs') {
+    // Pieces / loose units / inner boxes are counted in PIECES, never cases.
+    // Honour the source unit whichever quantity field the count landed in
+    // (quantity_case or quantity_bottles) — Samuel 2026-11-15: L'Oréal
+    // "36 pieces" and Montblanc "48 pieces (4 inner boxes × 12)" had rendered
+    // "36 cs" / "4 cs", and Clarins/Armani "N pieces" rows rendered "N cs",
+    // because the old combined branch only showed a piece noun when
+    // quantity_case was null. A stated piece unit must win regardless.
+    if (raw === 'pieces' || raw === 'piece' || raw === 'pcs' ||
+        raw === 'units' || raw === 'unit' || raw === 'each' ||
+        raw === 'inner boxes' || raw === 'inner box') {
+      // For 'inner boxes' the case field holds the BOX count and the piece
+      // total lives in quantity_bottles (or boxes × units/box), so prefer the
+      // piece total; for plain pieces/units the count field itself is pieces.
+      const isBox = (raw === 'inner boxes' || raw === 'inner box');
+      const n = isBox
+        ? (qBottles != null ? qBottles
+           : (qc != null ? (upc && upc > 0 ? Math.round(qc * upc) : qc) : null))
+        : (qc != null ? qc : qBottles);
+      if (n == null) return `<span class="qty-loose" title="Loose pack — no count">—</span>`;
+      return `<span class="qty-loose" title="Counted in pieces">${n} pieces</span>`;
+    }
+    if (raw === 'bottles' || raw === 'bottle' || raw === 'btls') {
       // Loose pack (A07/B05/H02 cosmetics, "100 pieces"): no case
       // equivalent available, but surface the source count prominently
       // so the drawer isn't a dash.
@@ -2133,8 +2153,7 @@
           // NARS foundation "100 pieces" rendered "100 btls"). A loose
           // cosmetic is counted in pieces, never bottles — honour the source
           // noun by category so the drawer matches what the supplier wrote.
-          const unitLabel = (raw === 'pieces' || raw === 'piece' || raw === 'pcs'
-            || (i.category_slug || '').toLowerCase() === 'cosmetics')
+          const unitLabel = ((i.category_slug || '').toLowerCase() === 'cosmetics')
             ? 'pieces' : 'btls';
           return `<span class="qty-loose" title="Loose pack — case equivalent N/A">${qBottles} ${unitLabel}</span>`;
         }
