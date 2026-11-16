@@ -261,6 +261,87 @@ def check_duplicate_content_hash(content_hash: str) -> None:
         logger.warning(f"Content-hash duplicate check failed: {e}")
 
 
+# Supplier values that carry no identifying signal. A supplier equal to one of
+# these (or null/blank) is treated as UNKNOWN so it never splits a true duplicate
+# nor forces a false one — essential because many real offers have no supplier and
+# the supplier is usually not yet extracted at enqueue time.
+_UNKNOWN_SUPPLIERS = {"", "not found", "unknown", "n/a", "na", "none", "null", "-"}
+
+
+def _norm_supplier(name) -> Optional[str]:
+    """Normalise a supplier for dedup comparison; return None when it is unknown."""
+    s = (name or "").strip().lower()
+    return None if s in _UNKNOWN_SUPPLIERS else s
+
+
+def check_duplicate_composite(filename: Optional[str],
+                              content_hash: Optional[str],
+                              supplier_name: Optional[str],
+                              use_content_hash: bool = True) -> None:
+    """Composite dedup keyed on (source_filename + content_hash + supplier).
+
+    An incoming file is a duplicate of a prior source ONLY when ALL hold:
+      1. the source_filename matches, AND
+      2. the content_hash matches — when a hash is available on the incoming file
+         (binary attachments). Text-only intakes have no hash, so they fall back
+         to filename (their generated name is stable per message), AND
+      3. the supplier is COMPATIBLE: supplier only discriminates when it is known
+         on BOTH sides and differs. A missing/"Not Found" supplier on either side
+         is a wildcard.
+
+    Why the supplier wildcard matters: at enqueue time the supplier is usually not
+    yet extracted (null), and many offers have no supplier at all — so requiring an
+    exact supplier match would silently DISABLE dedup and spawn a duplicate on every
+    re-poll. The wildcard keeps re-polls idempotent while still letting a genuinely
+    different supplier keep its own row.
+
+    This replaces the old filename-ONLY check, which wrongly dropped the second of
+    two genuinely different offers that merely shared a filename (different bytes).
+    Different bytes now mean different content_hash → both are kept.
+    """
+    if not filename and not (use_content_hash and content_hash):
+        return
+    inc_sup = _norm_supplier(supplier_name)
+    try:
+        from core.database import get_session_factory
+        from models.source_file import SourceFileDB
+
+        db = get_session_factory()()
+        try:
+            q = db.query(SourceFileDB.source_filename,
+                         SourceFileDB.content_hash,
+                         SourceFileDB.supplier_name)
+            if filename:
+                q = q.filter(SourceFileDB.source_filename == filename)
+            if use_content_hash and content_hash:
+                q = q.filter(SourceFileDB.content_hash == content_hash)
+            for ex_fn, ex_hash, ex_sup in q.all():
+                # Supplier blocks a match ONLY when both sides are known and differ.
+                ex_sup_n = _norm_supplier(ex_sup)
+                if inc_sup is not None and ex_sup_n is not None and inc_sup != ex_sup_n:
+                    continue
+                same_bytes = bool(use_content_hash and content_hash)
+                raise DuplicateIngest({
+                    "error": "duplicate_file",
+                    "message": (
+                        f"File {filename!r} already ingested ("
+                        + ("same name & contents" if same_bytes else "same name")
+                        + (f", supplier {ex_sup!r}" if ex_sup_n else "")
+                        + "). Re-ingest refused; the raw copy is archived if this "
+                          "dedup was wrong."
+                    ),
+                    "existing_filename": ex_fn,
+                    "content_hash": content_hash,
+                    "supplier_name": ex_sup,
+                })
+        finally:
+            db.close()
+    except DuplicateIngest:
+        raise
+    except Exception as e:  # a DB hiccup must never block intake
+        logger.warning(f"Composite duplicate check failed: {e}")
+
+
 # ─── attachment builders ──────────────────────────────────────────────────────
 
 def buffer_attachment(file_name: str, content_type: Optional[str],
@@ -398,9 +479,11 @@ def enqueue_offer(*, source_channel: Optional[str] = None,
     archive_raw_intake(job_id, dedup_filename, source_channel, text_body, attachments)
 
     try:
-        check_duplicate_filename(dedup_filename)
-        if check_content_hash:
-            check_duplicate_content_hash(content_hash)
+        # Composite dedup: filename + content_hash + supplier (supplier is a
+        # wildcard when unknown). Fixes the old filename-only collision that
+        # dropped a genuinely different offer sharing a filename.
+        check_duplicate_composite(dedup_filename, content_hash, supplier_name,
+                                  use_content_hash=check_content_hash)
     except DuplicateIngest as dup:
         # Make the rejection VISIBLE (a dashboard "duplicate" row) instead of a
         # silent 400 that leaves no trace — so it can be reviewed and, if the

@@ -267,6 +267,49 @@ class TestIngestService:
             svc.check_duplicate_filename("dup.pdf")
         svc.check_duplicate_filename("other.pdf")  # different name → no raise
 
+    def test_duplicate_composite(self, monkeypatch):
+        """Composite dedup = filename + content_hash + supplier, with supplier a
+        wildcard when unknown. Covers the filename-collision fix and the
+        no-supplier cases the client flagged."""
+        import core.ingest_service as svc
+        from models.source_file import SourceFileDB
+        Session = self._session_factory()
+        s = Session()
+        # A binary PDF source: name NE410.pdf, bytes-hash H, supplier Alder Coast.
+        s.add(SourceFileDB(id="sf1", job_id="j1", source_filename="NE410.pdf",
+                           content_hash="H", supplier_name="Alder Coast Trading Ltd"))
+        # A text source: name pricelist.txt, NO hash, NO supplier.
+        s.add(SourceFileDB(id="sf2", job_id="j2", source_filename="pricelist.txt",
+                           content_hash=None, supplier_name=None))
+        s.commit(); s.close()
+        monkeypatch.setattr("core.database.get_session_factory", lambda: Session)
+        C, D = svc.check_duplicate_composite, svc.DuplicateIngest
+
+        def dup(*a, **k):
+            with pytest.raises(D):
+                C(*a, **k)
+
+        # A. re-poll identical (same name+hash; supplier null at enqueue) → DUP
+        dup("NE410.pdf", "H", None)
+        # B. THE FIX: same filename, DIFFERENT bytes → two different offers kept
+        C("NE410.pdf", "H2", None)
+        # C. different filename, same bytes → kept (filename is part of the key)
+        C("OTHER.pdf", "H", None)
+        # D. same name+hash, existing supplier known, incoming unknown → DUP (wildcard)
+        dup("NE410.pdf", "H", None)
+        # E. same name+hash, both suppliers known but DIFFERENT → kept
+        C("NE410.pdf", "H", "Harbor & Vale QA Trading Ltd")
+        # F. same name+hash, same supplier (case-insensitive) → DUP
+        dup("NE410.pdf", "H", "alder coast trading ltd")
+        # G. text re-poll: same name, no hash, no supplier → DUP (idempotent)
+        dup("pricelist.txt", None, None)
+        # H. text: different filename → kept
+        C("pricelist2.txt", None, None)
+        # I. "Not Found" is treated as unknown → wildcard → DUP
+        dup("NE410.pdf", "H", "Not Found")
+        # J. content-hash disabled (JSON path): dedups on filename (+supplier) only
+        dup("NE410.pdf", None, None, use_content_hash=False)
+
     def test_enqueue_offer_happy_path(self, monkeypatch):
         import core.ingest_service as svc
         import workers.celery_tasks as ct
