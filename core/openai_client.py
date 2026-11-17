@@ -1513,7 +1513,19 @@ async def extract_offer(text: str) -> dict:
     if _det:
         logger.info(f"[extract_offer] deterministic parser → {len(_det)} "
                     f"product(s); skipping LLM")
-        return {"products": _det}
+        # Run them through the SAME normaliser the LLM path uses, so they get a
+        # product_key (the persistence loop drops any row without one), brand
+        # correction, EUR price derivation, etc. Without this every
+        # deterministically-parsed row was silently skipped at persistence.
+        _cleaned = []
+        for _p in _det:
+            try:
+                _cleaned.append(clean_product_data(_p))
+            except Exception as _ce:
+                logger.warning(f"[extract_offer] clean_product_data failed on a "
+                               f"deterministic row: {_ce}")
+                _cleaned.append(_p)
+        return {"products": _cleaned}
 
     # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
     # the lines they govern before chunking (Samuel ATV delivery-terms fix).
