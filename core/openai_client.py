@@ -1492,6 +1492,23 @@ async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
+
+    # Deterministic recovery of a flattened HTML price table (EPIC / Brevo-style
+    # offers where every table cell arrives on its own line). The LLM mis-aligns
+    # the columns across brands and drops SKUs; a strictly type-validated parser
+    # reconstructs the rows exactly. Returns None for ANY other email, so every
+    # other intake still uses the LLM path below (Samuel EPIC 2026-11-17).
+    try:
+        from core.email_table import parse_flattened_price_table
+        _tbl = parse_flattened_price_table(text)
+    except Exception as _te:  # a parser hiccup must never block extraction
+        logger.warning(f"[extract_offer] flattened-table parse skipped: {_te}")
+        _tbl = None
+    if _tbl:
+        logger.info(f"[extract_offer] flattened price table → {len(_tbl)} "
+                    f"product(s) parsed deterministically; skipping LLM")
+        return {"products": _tbl}
+
     # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
     # the lines they govern before chunking (Samuel ATV delivery-terms fix).
     text = _annotate_section_headings(text)

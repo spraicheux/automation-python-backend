@@ -60,6 +60,8 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "available quantity": "_quantity", "quantity available": "_quantity",
     "quantity": "_quantity", "qty": "_quantity", "stock": "_quantity",
     "available": "_quantity", "stock quantity": "_quantity",
+    "availability": "_quantity", "availability quantity": "_quantity",
+    "quantity as stated": "_quantity", "availability quantity as stated": "_quantity",
     "quantity unit": "quantity_unit", "qty unit": "quantity_unit",
     "offer date": "offer_date", "date of offer": "offer_date",
     "valid until": "valid_until", "validity": "valid_until",
@@ -83,12 +85,14 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "brand": "brand", "maker": "brand", "marque": "brand",
     "product": "product_name", "product name": "product_name",
     "description": "product_name", "item": "product_name", "designation": "product_name",
-    # "Line" is the product-description column in the Dutch/EU wholesale template
-    # (EXW · ID · BarCode · Type · Brand · Line · QTY · EUR · ORDER — Samuel's
-    # W23/W39/W46/Cosmetics/LOREAL files). It was previously ignored as a
-    # row-number, so the whole family fell to the lossy LLM path. Genuine
-    # line-NUMBER columns ("Line no") are still ignored via _IGNORE_HEADERS.
-    "line": "product_name", "product line": "product_name",
+    # "Line" is AMBIGUOUS: in the Dutch/EU wholesale template it is the product-
+    # description column (EXW · ID · BarCode · Type · Brand · Line · QTY · EUR ·
+    # ORDER — Samuel's W23/W39/W46/Cosmetics/LOREAL files), but in other sheets
+    # it is a genuine line-NUMBER column sitting next to a real "Product
+    # description" column (Samuel AQT 2026-11-17). Map it to a WEAK alias and let
+    # _detect_header_row resolve it: it becomes product_name only when no strong
+    # product/description column is present, otherwise it is dropped as a number.
+    "line": "_line_name", "product line": "_line_name",
     "line description": "product_name", "article": "product_name",
     "size": "_size", "volume": "_size", "format": "_size", "capacity": "_size",
     # A column whose header is a bare currency ("EUR", "USD") holds the unit
@@ -157,6 +161,19 @@ def _detect_header_row(ws, scan: int = 12) -> Optional[Tuple[int, Dict[int, str]
                 if field not in seen_fields:
                     colmap[c] = field
                     seen_fields.add(field)
+        # Resolve the ambiguous "Line" column: it is the product name only when
+        # no strong product/description column exists (EU wholesale template);
+        # when a real product column is present it is a line NUMBER -> drop it
+        # (Samuel AQT 2026-11-17).
+        if "_line_name" in seen_fields:
+            if "product_name" in seen_fields:
+                colmap = {c: f for c, f in colmap.items() if f != "_line_name"}
+                seen_fields.discard("_line_name")
+            else:
+                colmap = {c: ("product_name" if f == "_line_name" else f)
+                          for c, f in colmap.items()}
+                seen_fields.discard("_line_name")
+                seen_fields.add("product_name")
         score = len(seen_fields)
         has_product = "product_name" in seen_fields or "brand" in seen_fields
         has_price = bool(_PRICE_FIELDS & seen_fields)
@@ -292,7 +309,8 @@ _QTY_UNIT = {"bottle", "bottles", "btl", "unit", "units", "piece", "pieces",
 _NUM_UNIT_RE = re.compile(r'(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+)?')
 _ON_REQUEST_RE = re.compile(
     r'on\s*request|price\s*on\s*req|\bp\.?o\.?a\.?\b|\bpoa\b|\btbc\b|'
-    r'to\s*be\s*(?:confirmed|advised)|\bask\b', re.IGNORECASE)
+    r'to\s*be\s*(?:confirmed|advised)|\bask\b|'
+    r'call\s*for\s*(?:quot\w*|price|offer)|\bquotation\b', re.IGNORECASE)
 
 
 def _split_num_unit(raw: Any) -> Tuple[Optional[float], Optional[str]]:
@@ -316,6 +334,136 @@ def _split_num_unit(raw: Any) -> Tuple[Optional[float], Optional[str]]:
 def _is_on_request(val: Any) -> bool:
     """A Price / Price-basis cell that means 'price on request' — never 0."""
     return bool(_ON_REQUEST_RE.search(str(val if val is not None else "")))
+
+
+def _num_thousands(raw: Any) -> Optional[float]:
+    """Parse a number whose comma is a THOUSANDS separator ('1,440' -> 1440.0,
+    '765.00' -> 765.0). Distinct from _to_float, which treats a comma as a
+    decimal point (European sheets)."""
+    try:
+        return float(str(raw).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Composite free-text price cells ────────────────────────────────────────
+# A single "Price" column often carries the currency AND one or more basis-
+# specific prices: "EUR 534.00/case (EUR 89.00/bottle)", "USD 16.25/bottle;
+# USD 195.00/case", "HKD 765.00/case". _to_float stripped the letters/slashes
+# and concatenated the two numbers into an invalid float -> None, so the whole
+# row was silently dropped (Samuel AQT 2026-11-17: Glenfiddich / Chivas 12 /
+# JD Tennessee lost; HKD/USD/GBP all collapsed to EUR). Parse them properly.
+_CUR_WORDS = {
+    "eur": "EUR", "euro": "EUR", "euros": "EUR", "€": "EUR",
+    "usd": "USD", "us$": "USD", "$": "USD", "dollar": "USD", "dollars": "USD",
+    "gbp": "GBP", "£": "GBP", "pound": "GBP", "pounds": "GBP",
+    "hkd": "HKD", "hk$": "HKD", "chf": "CHF", "sgd": "SGD", "aed": "AED",
+    "jpy": "JPY", "¥": "JPY", "cny": "CNY", "rmb": "CNY", "cad": "CAD",
+    "aud": "AUD", "nzd": "NZD", "sek": "SEK", "dkk": "DKK", "nok": "NOK",
+    "pln": "PLN", "zar": "ZAR",
+}
+_CUR_RE = re.compile(
+    r'(hk\$|us\$|€|£|\$|¥|\b(?:eur|euro|usd|gbp|hkd|chf|sgd|aed|jpy|cny|rmb|'
+    r'cad|aud|nzd|sek|dkk|nok|pln|zar)\b)', re.IGNORECASE)
+# A number tied to an explicit per-unit basis: "534.00/case", "89 per bottle".
+_BASIS_PRICE_RE = re.compile(
+    r'(\d[\d,]*(?:\.\d+)?)\s*(?:/|per)\s*'
+    r'(case|cases|carton|cartons|ctn|bottle|bottles|btl|unit|units|'
+    r'piece|pieces|pcs|pc|each|can|cans)\b', re.IGNORECASE)
+_BARE_NUM_RE = re.compile(r'(\d[\d,]*(?:\.\d+)?)')
+# A cell that deliberately withholds the basis ("basis not stated", "per bottle
+# or per case?") — never guess a basis; retain the amount as-quoted + review.
+_AMBIG_BASIS_RE = re.compile(
+    r'basis\s*(?:not\s*stated|unclear|unknown|unspecified|\?)|'
+    r'per\s+\w+\s+or\s+per\s+\w+|not\s*stated[^.]*basis', re.IGNORECASE)
+_CASE_WORDS = {"case", "cases", "carton", "cartons", "ctn"}
+
+
+def _detect_currency(s: str) -> Optional[str]:
+    m = _CUR_RE.search(s or "")
+    return _CUR_WORDS.get(m.group(1).lower()) if m else None
+
+
+def _parse_price_cell(val: Any) -> Dict[str, Any]:
+    """Parse a free-text price cell -> {currency, price_per_case,
+    price_per_unit, price_value, basis_ambiguous, on_request, raw}. price_value
+    is a basisless number for the caller to resolve against a Price-basis column
+    (or default). Basis-tagged numbers go straight to case/unit."""
+    out: Dict[str, Any] = {"currency": None, "price_per_case": None,
+                           "price_per_unit": None, "price_value": None,
+                           "basis_ambiguous": False, "on_request": False,
+                           "raw": "" if val is None else str(val).strip()}
+    s = out["raw"]
+    if not s:
+        return out
+    out["currency"] = _detect_currency(s)
+    found = False
+    for m in _BASIS_PRICE_RE.finditer(s):
+        num = _num_thousands(m.group(1))
+        if num is None:
+            continue
+        if m.group(2).lower() in _CASE_WORDS:
+            out["price_per_case"] = out["price_per_case"] or num
+        else:
+            out["price_per_unit"] = out["price_per_unit"] or num
+        found = True
+    if found:
+        return out
+    bm = _BARE_NUM_RE.search(s)
+    if bm:
+        out["price_value"] = _to_float(bm.group(1))
+        if _AMBIG_BASIS_RE.search(s):
+            out["basis_ambiguous"] = True
+    elif _is_on_request(s):
+        out["on_request"] = True
+    return out
+
+
+# ── Pack size ("6 bottles/case", "4 inner boxes × 12 pieces = 48 pieces") ──
+def _parse_pack(val: Any) -> Optional[float]:
+    """Units-per-case from a free-text pack cell. Prefers the total after '='
+    ("… = 48 pieces" -> 48), else the count before '/case' or 'per case'
+    ("6 bottles/case" -> 6), else the first integer. 'Individual pieces',
+    'Single candle/piece' and other non-case packs -> None (never 0 and never a
+    concatenation of every digit — Samuel AQT 2026-11-17 Montblanc = 41248)."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    low = s.lower()
+    m = re.search(r'=\s*(\d[\d,]*)', s)
+    if m:
+        return _num_thousands(m.group(1))
+    m = re.search(r'(\d[\d,]*)\s*[A-Za-z ]*?(?:/|per)\s*case', s, re.IGNORECASE)
+    if m:
+        return _num_thousands(m.group(1))
+    if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
+        return None
+    m = re.search(r'(\d[\d,]*)', s)
+    return _num_thousands(m.group(1)) if m else None
+
+
+# ── Quantity cell ("12 pallets × 48 cases/pallet = 576 cases",
+#    "1,440 bottles available (= 120 cases)") ─────────────────────────────────
+_PAREN_RE = re.compile(r'\([^)]*\)')
+
+
+def _parse_quantity_cell(val: Any) -> Tuple[Optional[float], Optional[str]]:
+    """Stated availability -> (number, unit). Prefers a '= N unit' TOTAL that is
+    NOT inside parentheses ("… = 576 cases"), else the first "N unit" outside any
+    parentheses (so "1,440 bottles available (= 120 cases)" keeps the stated
+    1,440 bottles, not the parenthetical case equivalent)."""
+    if val is None:
+        return (None, None)
+    if isinstance(val, (int, float)):
+        return (float(val), None)
+    outside = _PAREN_RE.sub(" ", str(val).strip())  # drop parenthetical equivalents
+    m = re.search(r'=\s*(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+)', outside)
+    if m:
+        return (_num_thousands(m.group(1)), (m.group(2) or "").strip().lower() or None)
+    num, unit = _split_num_unit(outside)
+    return (num, unit)
 
 
 def _assign_quantity(prod: Dict[str, Any], qty: Optional[float], unit: Optional[str]) -> None:
@@ -389,6 +537,8 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             price_value: Optional[float] = None
             price_basis: str = ""
             price_on_request = False
+            basis_ambiguous = False
+            price_cell_raw = ""
             size_raw: Any = None
             any_value = False
             nobox = False
@@ -403,22 +553,45 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 if field == "alcohol_percent":
                     prod["alcohol_percent"] = _scale_percent(cell)
                 elif field == "_price_value":
-                    # Bare "Price" column; basis decides unit vs case below.
-                    if _is_on_request(val):
+                    # Free-text "Price" cell: may carry the currency and one or
+                    # more basis-tagged prices ("EUR 534/case (EUR 89/bottle)",
+                    # "USD 16.25/bottle; USD 195/case"). Parse rather than letting
+                    # _to_float concatenate two numbers into None (= a dropped row).
+                    price_cell_raw = str(val).strip()
+                    pc = _parse_price_cell(val)
+                    if pc["currency"] and not prod.get("currency"):
+                        prod["currency"] = pc["currency"]
+                    if pc["on_request"]:
                         price_on_request = True
-                    else:
-                        price_value = _to_float(val)
+                    elif pc["price_per_case"] is not None or pc["price_per_unit"] is not None:
+                        if pc["price_per_case"] is not None:
+                            prod["price_per_case"] = pc["price_per_case"]
+                        if pc["price_per_unit"] is not None:
+                            prod["price_per_unit"] = pc["price_per_unit"]
+                    elif pc["price_value"] is not None:
+                        price_value = pc["price_value"]
+                        basis_ambiguous = pc["basis_ambiguous"]
                 elif field == "_price_basis":
                     price_basis = str(val).strip().lower()
                     if _is_on_request(val):
                         price_on_request = True
-                elif field in ("price_per_unit", "price_per_case", "units_per_case"):
-                    prod[field] = _to_float(val)
+                elif field in ("price_per_unit", "price_per_case"):
+                    pc = _parse_price_cell(val)
+                    if pc["currency"] and not prod.get("currency"):
+                        prod["currency"] = pc["currency"]
+                    prod[field] = (pc["price_per_case"] if field == "price_per_case"
+                                   else pc["price_per_unit"])
+                    if prod[field] is None:
+                        prod[field] = pc["price_value"]
+                    if prod[field] is None:
+                        prod[field] = _to_float(val)
+                elif field == "units_per_case":
+                    prod[field] = _parse_pack(val)
                 elif field == "moq_cases":
                     # MOQ may carry its own inline unit ("1 pallet", "1 FTL").
                     moq_val, moq_unit_inline = _split_num_unit(val)
                 elif field == "_quantity":
-                    qty_val, _qu = _split_num_unit(val)
+                    qty_val, _qu = _parse_quantity_cell(val)
                     if _qu:
                         qty_unit = _qu
                 elif field == "quantity_unit":
@@ -503,9 +676,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 elif field == "vintage":
                     prod["vintage"] = str(int(_to_float(val))) if _to_float(val) else str(val).strip()
                 elif field == "ean_code":
-                    # preserve verbatim (leading zeros matter)
-                    prod["ean_code"] = (str(int(val)) if isinstance(val, float) and val.is_integer()
-                                        else str(val).strip())
+                    # preserve verbatim (leading zeros matter); a dash / blank
+                    # placeholder ("—", "-", "n/a") is NOT a barcode — skip it so
+                    # it neither stores junk nor keeps an otherwise-empty row alive.
+                    _ev = (str(int(val)) if isinstance(val, float) and val.is_integer()
+                           else str(val).strip())
+                    if any(ch.isdigit() for ch in _ev):
+                        prod["ean_code"] = _ev
                 elif field in ("_ignore",):
                     continue
                 else:
@@ -555,7 +732,21 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
             # ── Resolve the Price / Price-basis pair ───────────────────────
             if price_value is not None:
-                if "case" in price_basis or "carton" in price_basis:
+                if basis_ambiguous:
+                    # An amount was quoted but the basis was deliberately
+                    # withheld ("USD 75.00 — price basis not stated (per bottle
+                    # or per case?)"). Never guess it into a per-unit/per-case
+                    # field; retain it as-quoted and flag for review (Samuel AQT
+                    # 2026-11-17 Beefeater, mirroring the NE-410 rule).
+                    cur = (prod.get("currency") or "").strip()
+                    prod["commercial_conditions"] = (
+                        f"As quoted: {cur} {price_value:g}".strip()
+                        + " — price basis not stated; excluded from price comparison.")
+                    flags = prod.setdefault("error_flags", [])
+                    flags.append("price basis not stated — amount retained "
+                                 "as-quoted, excluded from comparison")
+                    prod["needs_manual_review"] = True
+                elif "case" in price_basis or "carton" in price_basis:
                     prod["price_per_case"] = price_value
                 elif any(w in price_basis for w in
                          ("bottle", "btl", "unit", "piece", "each")):
@@ -563,6 +754,17 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 elif prod.get("price_per_unit") is None and prod.get("price_per_case") is None:
                     # basis unstated → the common bottle price
                     prod["price_per_unit"] = price_value
+            # A priced line that still carries a TBC / on-request clause for a
+            # second delivery option keeps its price but is flagged for review
+            # ("EUR 171.00/case applies to DAP Antwerp only; EXW Breda TBC").
+            if (not price_on_request and not basis_ambiguous and price_cell_raw
+                    and _is_on_request(price_cell_raw)
+                    and (prod.get("price_per_unit") is not None
+                         or prod.get("price_per_case") is not None)):
+                flags = prod.setdefault("error_flags", [])
+                flags.append("partial pricing — some delivery terms quoted "
+                             "TBC / on request; review")
+                prod["needs_manual_review"] = True
             if price_on_request:
                 # Samuel 2026-11-07 (E07-08): a "price on request" line is NEVER
                 # €0 and is NEVER dropped — keep it with null prices and flag it
