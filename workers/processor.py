@@ -276,7 +276,11 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
             # on every save so the last one lands the final truth.
             source_file.imported_row_count = source_file.product_count
             _expected = offer_dict.get("_expected_row_count")
-            if _expected and _expected > source_file.product_count:
+            # Flag a mismatch in EITHER direction: fewer rows than the source
+            # (a drop) OR more (an LLM over-split). Recomputed on every save, so
+            # the last row lands the final truth (Samuel 2026-11-18 — FBC 13→17
+            # over-split must flag, not just undercounts).
+            if _expected and _expected != source_file.product_count:
                 source_file.import_incomplete = True
             elif _expected and _expected == source_file.product_count:
                 source_file.import_incomplete = False
@@ -2962,6 +2966,26 @@ async def process_offer(payload, job_id: str):
         # Create offers
         offers = []
 
+        # ── Self-check: deterministic expected count from the RAW source ──────
+        # For a pure text / email / WhatsApp offer, estimate the product count
+        # straight from the source so a mismatch vs what we extracted (an LLM
+        # over-split or a drop) is flagged on the source (import_incomplete). The
+        # previous code defaulted "expected" to len(extracted), so a wrong count
+        # could never be detected for text (Samuel 2026-11-18).
+        _src_row_estimate = None
+        try:
+            if payload.text_body and not payload.attachments:
+                from core.completeness import estimate_text_source_rows
+                _est = estimate_text_source_rows(payload.text_body)
+                if _est.get("confidence") in ("high", "medium") and _est.get("count"):
+                    _src_row_estimate = _est["count"]
+                    logger.info(
+                        f"[process_offer] source self-check: expected "
+                        f"~{_src_row_estimate} ({_est['method']}, {_est['confidence']}) "
+                        f"vs {len(all_products)} extracted for job {job_id}")
+        except Exception as _sce:
+            logger.warning(f"[process_offer] source self-check skipped: {_sce}")
+
         if all_products:
             logger.info(f"Processing {len(all_products)} products from Excel for job {job_id}")
 
@@ -3315,7 +3339,7 @@ async def process_offer(payload, job_id: str):
                     # Phase 3 M1: thread content-hash + source-row estimate
                     # so save_offer_to_db can persist them on the SourceFileDB.
                     offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
-                    offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
+                    offer_dict["_expected_row_count"] = _src_row_estimate or extracted_data.get("_source_row_estimate") or len(all_products)
                     offer_dict["_source_text"] = _durable_source_text
 
                     if not is_valid_offer(offer_dict):
@@ -3616,7 +3640,7 @@ async def process_offer(payload, job_id: str):
                 offer_dict = offer.model_dump(mode='json')
                 # Phase 3 M1: thread content-hash + source-row estimate
                 offer_dict["_content_hash"] = getattr(payload, "content_hash", None)
-                offer_dict["_expected_row_count"] = extracted_data.get("_source_row_estimate") or len(all_products)
+                offer_dict["_expected_row_count"] = _src_row_estimate or extracted_data.get("_source_row_estimate") or len(all_products)
                 offer_dict["_source_text"] = _durable_source_text
 
                 # Loose-unit €/case cleanup — see multi-product path above.

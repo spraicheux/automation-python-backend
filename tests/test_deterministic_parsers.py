@@ -105,6 +105,21 @@ def test_parsers_noop_on_prose():
     assert parse_flattened_price_table(prose) is None
 
 
+def test_source_selfcheck_estimate():
+    # The self-check estimate must equal the deterministic parser's exact count
+    # for recognised formats, count price lines for a free-text offer, and give
+    # NO usable estimate (low confidence) for prose so it never false-flags.
+    from core.completeness import estimate_text_source_rows
+    assert estimate_text_source_rows(FBC)["count"] == 4
+    assert estimate_text_source_rows(AQT_WA)["count"] == 3
+    assert estimate_text_source_rows(EPIC)["count"] == 3
+    milanako = ("Aperol Intl Label\n1650 cases\n8.45 USD EXW\n"
+                "Aperol Greece\n2250 cases\n8.45 GBP DAP\n"
+                "Aperol Hungary\n2250 cases\n8.30 JPY DAP\nPayment 20% deposit")
+    assert estimate_text_source_rows(milanako)["count"] == 3
+    assert estimate_text_source_rows("Hi, call +65 6561 8718. Regards.")["confidence"] == "low"
+
+
 def test_deterministic_rows_get_product_key():
     # The persistence loop drops any row without a product_key — every
     # deterministic row MUST get one from clean_product_data.

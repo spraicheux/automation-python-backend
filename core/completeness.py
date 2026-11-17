@@ -297,6 +297,51 @@ def estimate_pdf_source_rows(all_pages_text: list[str]) -> dict:
             "signals": signals, "confidence": conf}
 
 
+# A genuine price mention in a free-text line: a currency token next to a
+# number, an "@ <number>" quote, or "<number> per case/bottle". Stricter than
+# _cell_has_price (which treats any digits as a price), so a phone number, a
+# date, or a "20% deposit" footer line is NOT miscounted as a product.
+_CUR_TOK = r'€|£|\$|¥|\b(?:eur|euro|usd|gbp|hkd|chf|sgd|aed|jpy|cny|cad|aud)\b'
+_TEXT_PRICE_RE = re.compile(
+    rf'(?:{_CUR_TOK})\s*\d'                                   # USD 112, € 56.00
+    rf'|\d[\d.,]*\s*(?:{_CUR_TOK})'                           # 8.45 USD
+    r'|@\s*[^\d\n]{0,6}\d'                                    # @ 112
+    r'|\d[\d.,]*\s*(?:per|/)\s*(?:case|carton|bottle|btl|unit|piece|pc|can)\b',
+    re.IGNORECASE)
+
+
+def estimate_text_source_rows(text: str) -> dict:
+    """Deterministic estimate of how many products an email / WhatsApp offer
+    carries, for the completeness self-check (Samuel 2026-11-18). Prefers a
+    deterministic parser's EXACT count; otherwise counts lines with a genuine
+    price token. Returns {count, method, confidence}. A 'low' confidence (or
+    count 0) means 'no usable estimate' — the caller must NOT flag on it."""
+    if not text or not text.strip():
+        return {"count": 0, "method": "text", "confidence": "low"}
+    # 1) A deterministic parser that recognises the format IS the exact count.
+    try:
+        from core.email_table import (parse_flattened_price_table,
+                                       parse_pipe_list_offer,
+                                       parse_line_list_offer)
+        for _fn in (parse_flattened_price_table, parse_pipe_list_offer,
+                    parse_line_list_offer):
+            r = _fn(text)
+            if r:
+                return {"count": len(r), "method": "deterministic_parser",
+                        "confidence": "high"}
+    except Exception:
+        pass
+    # 2) Heuristic: count lines carrying a real price token (skip header/footer).
+    price_lines = 0
+    for ln in text.split("\n"):
+        if _is_header_footer_line(ln):
+            continue
+        if _TEXT_PRICE_RE.search(ln):
+            price_lines += 1
+    return {"count": price_lines, "method": "text_price_lines",
+            "confidence": "medium" if price_lines >= 2 else "low"}
+
+
 if __name__ == "__main__":
     import pandas as pd
     import sys
