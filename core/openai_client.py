@@ -1493,21 +1493,27 @@ async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
     logger.info(f"[extract_offer] Text preview (first 300 chars): {text[:300]!r}")
 
-    # Deterministic recovery of a flattened HTML price table (EPIC / Brevo-style
-    # offers where every table cell arrives on its own line). The LLM mis-aligns
-    # the columns across brands and drops SKUs; a strictly type-validated parser
-    # reconstructs the rows exactly. Returns None for ANY other email, so every
-    # other intake still uses the LLM path below (Samuel EPIC 2026-11-17).
+    # Deterministic recovery for the three regular supplier formats that the LLM
+    # mis-handles — a flattened HTML price table (EPIC: columns drift, SKUs lost),
+    # a pipe-delimited numbered list (AQT WhatsApp: a two-delivery-option line gets
+    # split and double-counted) and a one-product-per-line "@ price" list (FBC:
+    # phantom duplicate rows). Each parser is strictly guarded and returns None for
+    # anything that is not unmistakably its format, so every other email still uses
+    # the LLM path below (Samuel 2026-11-17).
     try:
-        from core.email_table import parse_flattened_price_table
-        _tbl = parse_flattened_price_table(text)
+        from core.email_table import (parse_flattened_price_table,
+                                       parse_pipe_list_offer,
+                                       parse_line_list_offer)
+        _det = (parse_flattened_price_table(text)
+                or parse_pipe_list_offer(text)
+                or parse_line_list_offer(text))
     except Exception as _te:  # a parser hiccup must never block extraction
-        logger.warning(f"[extract_offer] flattened-table parse skipped: {_te}")
-        _tbl = None
-    if _tbl:
-        logger.info(f"[extract_offer] flattened price table → {len(_tbl)} "
-                    f"product(s) parsed deterministically; skipping LLM")
-        return {"products": _tbl}
+        logger.warning(f"[extract_offer] deterministic parse skipped: {_te}")
+        _det = None
+    if _det:
+        logger.info(f"[extract_offer] deterministic parser → {len(_det)} "
+                    f"product(s); skipping LLM")
+        return {"products": _det}
 
     # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
     # the lines they govern before chunking (Samuel ATV delivery-terms fix).
