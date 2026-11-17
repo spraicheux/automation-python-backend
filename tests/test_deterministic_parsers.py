@@ -120,6 +120,22 @@ def test_source_selfcheck_estimate():
     assert estimate_text_source_rows("Hi, call +65 6561 8718. Regards.")["confidence"] == "low"
 
 
+def test_generic_delimited_table():
+    # A tabular supplier we have no specific parser for — columns classified by
+    # content — extracts deterministically; prose does not.
+    from core.email_table import parse_delimited_table_offer
+    pipe = ("Grey Goose | 1L | 6/case | 300 cases | USD 104/case | EXW Rotterdam | T1\n"
+            "Belvedere | 1L | 6/case | 320 cases | EUR 98/case | DAP Loen | T1\n"
+            "Bombay Sapphire | 1L | 12/case | 720 cases | HKD 765/case | FCA Hong Kong | T2\n"
+            "Hennessy VS | 700ml | 6/case | 100 cases | EUR 147/case | EXW Rotterdam | T1")
+    prods = parse_delimited_table_offer(pipe)
+    assert prods is not None and len(prods) == 4, prods
+    by = {p["product_name"]: p for p in prods}
+    assert by["Bombay Sapphire"]["currency"] == "HKD"
+    assert by["Grey Goose"]["price_per_case"] == 104.0
+    assert parse_delimited_table_offer("Hi, call +65 6561 8718. Thanks.") is None
+
+
 def test_reconcile_names_the_missed_and_phantom_rows():
     # Tier-2: price-join the source to the stored rows and name exactly what is
     # missing / extra, not just a count.

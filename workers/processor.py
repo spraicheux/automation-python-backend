@@ -2986,6 +2986,17 @@ async def process_offer(payload, job_id: str):
         except Exception as _sce:
             logger.warning(f"[process_offer] source self-check skipped: {_sce}")
 
+        # ── Schema cache: remember how this supplier's offer was extracted ────
+        try:
+            from core.schema_cache import record as _sc_record
+            _method = extracted_data.get("_extract_method") if isinstance(extracted_data, dict) else None
+            if not _method:
+                _method = "attachment" if payload.attachments else "unknown"
+            _sc_record(getattr(payload, "sender_email", None), _method,
+                       len(all_products), getattr(payload, "subject", None))
+        except Exception as _sce2:
+            logger.warning(f"[process_offer] schema-cache record skipped: {_sce2}")
+
         if all_products:
             logger.info(f"Processing {len(all_products)} products from Excel for job {job_id}")
 

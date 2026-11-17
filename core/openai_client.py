@@ -1500,19 +1500,27 @@ async def extract_offer(text: str) -> dict:
     # phantom duplicate rows). Each parser is strictly guarded and returns None for
     # anything that is not unmistakably its format, so every other email still uses
     # the LLM path below (Samuel 2026-11-17).
+    _det = None
+    _det_method = None
     try:
         from core.email_table import (parse_flattened_price_table,
                                        parse_pipe_list_offer,
-                                       parse_line_list_offer)
-        _det = (parse_flattened_price_table(text)
-                or parse_pipe_list_offer(text)
-                or parse_line_list_offer(text))
+                                       parse_line_list_offer,
+                                       parse_delimited_table_offer)
+        for _fn, _nm in ((parse_flattened_price_table, "flattened_table"),
+                         (parse_pipe_list_offer, "pipe_list"),
+                         (parse_line_list_offer, "line_list"),
+                         (parse_delimited_table_offer, "delimited_table")):
+            _r = _fn(text)
+            if _r:
+                _det, _det_method = _r, _nm
+                break
     except Exception as _te:  # a parser hiccup must never block extraction
         logger.warning(f"[extract_offer] deterministic parse skipped: {_te}")
         _det = None
     if _det:
-        logger.info(f"[extract_offer] deterministic parser → {len(_det)} "
-                    f"product(s); skipping LLM")
+        logger.info(f"[extract_offer] deterministic parser '{_det_method}' → "
+                    f"{len(_det)} product(s); skipping LLM")
         # Run them through the SAME normaliser the LLM path uses, so they get a
         # product_key (the persistence loop drops any row without one), brand
         # correction, EUR price derivation, etc. Without this every
@@ -1525,7 +1533,7 @@ async def extract_offer(text: str) -> dict:
                 logger.warning(f"[extract_offer] clean_product_data failed on a "
                                f"deterministic row: {_ce}")
                 _cleaned.append(_p)
-        return {"products": _cleaned}
+        return {"products": _cleaned, "_extract_method": _det_method}
 
     # Carry standalone section-heading locations (Ex Loen / Ex Newcorp) down onto
     # the lines they govern before chunking (Samuel ATV delivery-terms fix).
@@ -1940,7 +1948,7 @@ async def extract_offer(text: str) -> dict:
     # product's own source line and re-injects dropped lines. Strict no-op for any
     # other format; never raises.
     all_products = _reconcile_source_authoritative(text, all_products)
-    return {"products": all_products}
+    return {"products": all_products, "_extract_method": "llm"}
 
 
 _EXCEL_CTS = {

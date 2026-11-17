@@ -27,6 +27,20 @@ def _git_sha() -> str:
         return "unknown"
 
 
+@router.get("/debug/schema-cache")
+def debug_schema_cache():
+    """Per-supplier extraction memory: which method (deterministic parser vs LLM)
+    handled each sender and the product count. Suppliers still on 'llm' are the
+    ones that would benefit from a parser."""
+    from core.schema_cache import all_entries
+    entries = all_entries()
+    llm = sorted([v for v in entries.values() if v.get("llm_path")],
+                 key=lambda e: e.get("seen", 0), reverse=True)
+    return {"suppliers": entries,
+            "needs_parser": [e["domain"] for e in llm],
+            "total": len(entries)}
+
+
 @router.get("/debug/version")
 def debug_version():
     """What code this process is actually running. Compare boot_time before/after

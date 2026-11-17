@@ -453,3 +453,167 @@ def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
     logger.info(f"[email_table] pipe-delimited numbered offer recognised — "
                 f"{len(products)} product(s) parsed deterministically")
     return products
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Generic delimited table (schema engine) — any delimiter, columns classified
+# by CONTENT rather than a hard-coded layout. This is what lets a tabular
+# supplier we have never seen extract deterministically instead of via the LLM
+# (Samuel 2026-11-18 schema-cache). Guarded + gated by the count self-check, so
+# a mis-detected table is caught, never silently trusted.
+# ───────────────────────────────────────────────────────────────────────────
+_DELIMS = ["|", "\t", ";"]
+
+
+def _classify_cell(cell: str, price_fn, pack_hint, size_re, qty_hint) -> str:
+    s = (cell or "").strip()
+    if not s:
+        return "empty"
+    if _PIPE_T_RE.match(s):
+        return "customs"
+    pc = price_fn(s)
+    if pc["currency"] or pc["on_request"]:
+        return "price"
+    if size_re.match(s) and len(s) <= 16:
+        return "size"
+    if pack_hint.search(s):
+        return "pack"
+    if qty_hint.search(s) or _PIPE_FTL_RE.search(s):
+        return "qty"
+    if _LL_INCO_RE.search(s) or _LL_EX_RE.search(s):
+        return "incoterm"
+    letters = sum(c.isalpha() for c in s)
+    digits = sum(c.isdigit() for c in s)
+    if letters >= 2 and letters >= digits:
+        return "name"
+    return "other"
+
+
+def _detect_delimiter(lines: List[str]):
+    """Return (delimiter, [data rows as cell-lists]) for the most consistent
+    delimited table among the lines, or (None, [])."""
+    best = (None, [])
+    for d in _DELIMS:
+        rows = []
+        for ln in lines:
+            if ln.count(d) >= 2:
+                cells = [c.strip() for c in ln.split(d)]
+                rows.append(cells)
+        if len(rows) < 3:
+            continue
+        # keep the dominant column count (most rows agree on it)
+        from collections import Counter
+        counts = Counter(len(r) for r in rows)
+        col_n, n_rows = counts.most_common(1)[0]
+        if col_n < 3 or n_rows < 3:
+            continue
+        kept = [r for r in rows if len(r) == col_n]
+        if len(kept) > len(best[1]):
+            best = (d, kept)
+    return best
+
+
+def parse_delimited_table_offer(text: str) -> Optional[List[Dict[str, Any]]]:
+    """Return raw product dicts when `text` contains a consistent delimited
+    table whose columns we can classify to a name + a price, else None. Columns
+    are classified by the content of their cells (majority vote), so no fixed
+    layout is required."""
+    from core.xlsx_structured import (_parse_price_cell, _parse_pack,
+                                      _parse_quantity_cell, _norm)
+    lines = _clean_lines(text)
+    delim, rows = _detect_delimiter(lines)
+    if not delim or len(rows) < 3:
+        return None
+    col_n = len(rows[0])
+
+    # Drop a header row (cells are mostly labels, not data) from the data set.
+    def _is_header(r):
+        return sum(1 for c in r
+                   if _classify_cell(c, _parse_price_cell, _PIPE_PACK_HINT,
+                                     _PIPE_SIZE_RE, _PIPE_QTY_HINT)
+                   in ("name", "empty")) >= max(1, col_n - 1)
+    data = rows[1:] if rows and _is_header(rows[0]) else rows
+    if len(data) < 3:
+        data = rows
+
+    # Classify each column by majority vote across the data rows.
+    roles: List[str] = []
+    for c in range(col_n):
+        from collections import Counter
+        votes = Counter(
+            _classify_cell(r[c] if c < len(r) else "", _parse_price_cell,
+                           _PIPE_PACK_HINT, _PIPE_SIZE_RE, _PIPE_QTY_HINT)
+            for r in data)
+        votes.pop("empty", None)
+        roles.append(votes.most_common(1)[0][0] if votes else "other")
+
+    # Need a name column and a price column, or this is not an offer table.
+    if "name" not in roles or "price" not in roles:
+        return None
+    name_col = roles.index("name")
+
+    products: List[Dict[str, Any]] = []
+    for r in data:
+        if len(r) != col_n:
+            continue
+        prod: Dict[str, Any] = {"category_slug": "wines_spirits"}
+        name = re.sub(r'["“”]', '', r[name_col]).strip()
+        if not name or len(name) > 70 or not re.search(r"[A-Za-z]", name):
+            continue
+        prod["product_name"] = name
+        for c, role in enumerate(roles):
+            if c == name_col or c >= len(r):
+                continue
+            cell = r[c]
+            if role == "price":
+                pc = _parse_price_cell(cell)
+                if pc["currency"] and not prod.get("currency"):
+                    prod["currency"] = pc["currency"]
+                if pc["on_request"]:
+                    prod.setdefault("error_flags", []).append("Price on request retained")
+                    prod["needs_manual_review"] = True
+                elif pc["price_per_case"] is not None or pc["price_per_unit"] is not None:
+                    if pc["price_per_case"] is not None:
+                        prod["price_per_case"] = pc["price_per_case"]
+                    if pc["price_per_unit"] is not None:
+                        prod["price_per_unit"] = pc["price_per_unit"]
+                elif pc["price_value"] is not None and not pc["basis_ambiguous"]:
+                    prod["price_per_unit"] = pc["price_value"]
+            elif role == "size":
+                sm = _LL_SIZE_RE.search(cell)
+                if sm:
+                    prod["unit_volume_ml"] = _ll_size_ml(sm.group(1), sm.group(2))
+            elif role == "pack":
+                prod["units_per_case"] = _parse_pack(cell)
+            elif role == "qty":
+                if _PIPE_FTL_RE.search(cell):
+                    prod["quantity_ftl"] = 1.0; prod["quantity_unit"] = "ftl"
+                else:
+                    n, u = _parse_quantity_cell(cell)
+                    if n is not None:
+                        un = _norm(u)
+                        if un in ("bottle", "bottles", "btl", "btls", "piece",
+                                  "pieces", "pcs", "pc", "can", "cans"):
+                            prod["quantity_bottles"] = n
+                            prod["quantity_unit"] = "pieces" if un.startswith(("pc", "pie", "can")) else "bottles"
+                        elif un in ("pallet", "pallets"):
+                            prod["quantity_pallets"] = n; prod["quantity_unit"] = "pallets"
+                        else:
+                            prod["quantity_case"] = n; prod["quantity_unit"] = "cases"
+            elif role == "customs":
+                prod["custom_status"] = "T" + re.sub(r"\D", "", cell)
+            elif role == "incoterm":
+                im = _LL_INCO_RE.search(cell)
+                if im:
+                    prod["incoterm"] = im.group(1).upper(); prod["location"] = im.group(2)
+                else:
+                    em = _LL_EX_RE.search(cell)
+                    if em:
+                        prod["incoterm"] = "EXW"; prod["location"] = em.group(1)
+        products.append(prod)
+
+    if len(products) < 3:
+        return None
+    logger.info(f"[email_table] generic delimited table ('{delim}') recognised — "
+                f"{len(products)} product(s), roles={roles}")
+    return products
