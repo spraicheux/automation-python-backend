@@ -84,6 +84,25 @@ BRANDS: list[str] = [
     "Natasha Denona", "Vieve", "Westman Atelier",
     # ── Numeric-leading brand (actually seen in supplier data) ──────
     "4711",
+    # ── Spirits — whisky / whiskey ──────────────────────────────────
+    "Glenfiddich", "The Glenlivet", "Glenlivet", "The Macallan", "Macallan",
+    "Laphroaig", "Chivas Regal", "Chivas", "Johnnie Walker",
+    "Jack Daniel's", "Jameson", "John Jameson", "Ballantine's",
+    "Jim Beam", "Jameson", "Glenmorangie", "Talisker", "Dewar's",
+    # ── Spirits — vodka ─────────────────────────────────────────────
+    "Grey Goose", "Belvedere", "Smirnoff", "Absolut", "Ketel One",
+    "Cody Vody",  # QA fictional brand (Samuel acceptance set)
+    # ── Spirits — gin ───────────────────────────────────────────────
+    "Bombay Sapphire", "Beefeater", "Hendrick's", "Tanqueray", "Gordon's",
+    # ── Spirits — cognac / brandy ───────────────────────────────────
+    "Hennessy", "Rémy Martin", "Martell", "Courvoisier",
+    # ── Spirits — liqueur / other ───────────────────────────────────
+    "Jägermeister", "Aperol", "Campari", "Baileys", "Cointreau",
+    "Disaronno", "Grand Marnier",
+    # ── Champagne / sparkling / wine ────────────────────────────────
+    "Veuve Clicquot", "Dom Pérignon", "Moët & Chandon", "Moët",
+    "Perrier-Jouët", "Bollinger", "Krug", "Laurent-Perrier",
+    "Taittinger", "Ruinart", "Nicolas Feuillatte",
 ]
 
 
@@ -106,6 +125,15 @@ ALIASES: dict[str, str] = {
     "RL": "Ralph Lauren",
     "BB": "Bobbi Brown",
     "MAC": "MAC Cosmetics",
+    # Spirits spellings that differ from the canonical once apostrophes are
+    # dropped (accents and "&" are already folded by _normalize, so those
+    # variants need no alias).
+    "Jack Daniels": "Jack Daniel's",
+    "Ballantine": "Ballantine's",
+    "Ballantines": "Ballantine's",
+    "Hendricks": "Hendrick's",
+    "Gordons": "Gordon's",
+    "Dewars": "Dewar's",
 }
 
 
