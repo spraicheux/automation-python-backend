@@ -3378,6 +3378,23 @@ async def process_offer(payload, job_id: str):
                     logger.error(f"Error creating offer for product {idx}: {e}\n{error_trace}")
                     continue
 
+            # ── FAIL LOUD: extracted rows but persisted NONE ────────────────
+            # If extraction produced products yet not a single one reached the
+            # save step (e.g. every row dropped at the product_key gate), the job
+            # must NOT report "done with 0 products" — that silent drop cost a
+            # full debugging session (Samuel 2026-11-18, deterministic-parser
+            # rows had no product_key). Raise so the job is marked FAILED with a
+            # clear reason. valid_count counts rows that reached save, so a
+            # duplicate-skip inside save_offer_to_db (valid_count>0) never trips
+            # this, and a legitimately empty extraction has all_products==[].
+            if valid_count == 0:
+                _msg = (f"{len(all_products)} product(s) extracted but 0 persisted "
+                        f"for job {job_id} — every row was dropped before save "
+                        f"(check product_key / required fields). Failing loudly "
+                        f"instead of reporting done-with-0.")
+                logger.error(f"[process_offer] {_msg}")
+                raise RuntimeError(_msg)
+
         else:
             logger.info(f"No Excel products found, using single product extraction for job {job_id}")
             try:

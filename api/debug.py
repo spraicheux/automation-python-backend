@@ -1,8 +1,38 @@
 import os
+import subprocess
+from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, Depends, Header, HTTPException
 from core.redis_client import redis_manager
 
 router = APIRouter()
+
+# When this process (gunicorn + Celery container) started. A deploy that really
+# recycled the container changes this — the reliable "is my new code live?"
+# signal, since Azure can report a deploy green while the old worker keeps
+# serving (Samuel 2026-11-18 deploy-lag debugging).
+_BOOT_TIME = datetime.now(timezone.utc).isoformat()
+
+
+def _git_sha() -> str:
+    for env in ("SCM_COMMIT_ID", "GIT_SHA", "GIT_COMMIT", "SOURCE_VERSION"):
+        v = os.getenv(env)
+        if v:
+            return v[:12]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            stderr=subprocess.DEVNULL, timeout=3).decode().strip()
+    except Exception:
+        return "unknown"
+
+
+@router.get("/debug/version")
+def debug_version():
+    """What code this process is actually running. Compare boot_time before/after
+    a deploy to confirm the container (and the Celery worker) recycled."""
+    return {"git_sha": _git_sha(), "boot_time": _BOOT_TIME,
+            "now": datetime.now(timezone.utc).isoformat()}
 
 
 def _require_admin(x_admin_token: str = Header(None)):
