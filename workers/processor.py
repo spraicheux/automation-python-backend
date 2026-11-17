@@ -3419,6 +3419,48 @@ async def process_offer(payload, job_id: str):
                 logger.error(f"[process_offer] {_msg}")
                 raise RuntimeError(_msg)
 
+            # ── Tier-2 self-check: name the exact missed / phantom rows ──────
+            # Price-join the raw source to the stored rows and record which
+            # source lines were dropped and which stored rows are phantoms, so a
+            # human (and the export) sees exactly what went wrong — not just a
+            # count (Samuel 2026-11-18).
+            try:
+                if payload.text_body and not payload.attachments:
+                    from core.reconcile import reconcile_source_vs_rows
+                    from core.database import get_session_factory
+                    from models.offer_item import OfferItemDB
+                    from models.source_file import SourceFileDB
+                    import json as _json
+                    _rdb = get_session_factory()()
+                    try:
+                        _stored = [{
+                            "brand": o.brand, "product_name": o.product_name,
+                            "currency": o.currency,
+                            "price_per_unit": o.price_per_unit,
+                            "price_per_case": o.price_per_case,
+                            "price_per_unit_eur": o.price_per_unit_eur,
+                            "price_per_case_eur": o.price_per_case_eur,
+                            "quantity_case": o.quantity_case,
+                            "quantity_bottles": o.quantity_bottles,
+                        } for o in _rdb.query(OfferItemDB).filter(
+                            OfferItemDB.job_id == job_id).all()]
+                        _rec = reconcile_source_vs_rows(payload.text_body, _stored)
+                        _sf = _rdb.query(SourceFileDB).filter(
+                            SourceFileDB.job_id == job_id).first()
+                        if _sf is not None:
+                            _sf.reconciliation = (_json.dumps(_rec)
+                                                  if (_rec["missed"] or _rec["phantom"])
+                                                  else None)
+                            _rdb.commit()
+                        if _rec["missed"] or _rec["phantom"]:
+                            logger.warning(
+                                f"[process_offer] reconcile job {job_id}: "
+                                f"MISSED={_rec['missed']} PHANTOM={_rec['phantom']}")
+                    finally:
+                        _rdb.close()
+            except Exception as _rce:
+                logger.warning(f"[process_offer] reconcile skipped for job {job_id}: {_rce}")
+
         else:
             logger.info(f"No Excel products found, using single product extraction for job {job_id}")
             try:

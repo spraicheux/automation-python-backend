@@ -151,6 +151,9 @@ def init_db():
                 # client §2 (2026-11-06): durable copy of the raw offer content
                 # so a source survives Redis payload expiry for audit/reprocess.
                 ("source_text",          "TEXT"),
+                # Tier-2 self-check (2026-11-18): JSON {missed:[lines], phantom:[rows]}
+                # naming the exact source lines dropped and the phantom rows added.
+                ("reconciliation",       "TEXT"),
             ]
             for col, coltype in source_file_columns:
                 conn.execute(text(

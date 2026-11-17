@@ -120,6 +120,25 @@ def test_source_selfcheck_estimate():
     assert estimate_text_source_rows("Hi, call +65 6561 8718. Regards.")["confidence"] == "low"
 
 
+def test_reconcile_names_the_missed_and_phantom_rows():
+    # Tier-2: price-join the source to the stored rows and name exactly what is
+    # missing / extra, not just a count.
+    from core.reconcile import reconcile_source_vs_rows
+    rows = parse_line_list_offer(FBC)
+    assert reconcile_source_vs_rows(FBC, rows)["missed"] == []
+    assert reconcile_source_vs_rows(FBC, rows)["phantom"] == []
+    # drop Bombay → it is named as missed
+    dropped = [r for r in rows if "bombay" not in r["product_name"].lower()]
+    rec = reconcile_source_vs_rows(FBC, dropped)
+    assert len(rec["missed"]) == 1 and "Bombay" in rec["missed"][0]
+    assert rec["phantom"] == []
+    # add a phantom priced row → it is named as phantom
+    rec2 = reconcile_source_vs_rows(
+        FBC, rows + [{"product_name": "Ghost", "brand": "Ghost",
+                      "currency": "EUR", "price_per_case": 999}])
+    assert rec2["missed"] == [] and any("Ghost" in p for p in rec2["phantom"])
+
+
 def test_deterministic_rows_get_product_key():
     # The persistence loop drops any row without a product_key — every
     # deterministic row MUST get one from clean_product_data.

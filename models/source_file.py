@@ -29,6 +29,9 @@ class SourceFileDB(Base):
     # payload has expired. This is why older text/WhatsApp offers (Edo) became
     # un-reprocessable: their only copy lived in the expiring payload.
     source_text  = Column(Text, nullable=True)
+    # Tier-2 self-check (2026-11-18): JSON {missed:[source lines], phantom:[rows]}
+    # naming exactly which source lines were dropped / which rows are phantoms.
+    reconciliation = Column(Text, nullable=True)
     created_at   = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     offer_items = relationship("OfferItemDB", back_populates="source_file", lazy="dynamic")
@@ -50,5 +53,6 @@ class SourceFileDB(Base):
             "imported_row_count": self.imported_row_count,
             "import_incomplete": self.import_incomplete,
             "source_text": self.source_text,
+            "reconciliation": self.reconciliation,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
