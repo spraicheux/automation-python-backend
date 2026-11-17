@@ -150,7 +150,7 @@ def reconcile_source_vs_rows(source_text: str,
                      "brand": (r.get("brand") or "").strip().lower(),
                      "qty": r.get("quantity_case") or r.get("quantity_bottles")})
 
-    # ── Match priced lines on price (consume each stored row once) ───────────
+    # ── Pass 1: priced lines match on price (consume each stored row once) ───
     for s in priced:
         for rs in sigs:
             if rs["matched"] or not rs["prices"]:
@@ -159,13 +159,22 @@ def reconcile_source_vs_rows(source_text: str,
                 s["matched"] = rs["matched"] = True
                 break
 
-    # ── Match no-price lines on brand (+ qty when both have it) ──────────────
-    for s in noprice:
-        b = (s["brand"] or "").strip().lower()
+    # ── Pass 2: any still-unmatched source line matches on BRAND against a
+    # remaining stored row. This covers a product that is correctly stored
+    # WITHOUT a price — an ambiguous basis ("USD 75, per bottle or case?") or an
+    # on-request line — whose price can't join, so it must fall back to brand
+    # (Samuel 2026-11-18: Beefeater was wrongly reported missed). A genuinely
+    # dropped product has no stored row of that brand, so it still shows missed.
+    for s in (priced + noprice):
+        if s["matched"]:
+            continue
+        b = (s.get("brand") or _brand_of(s["line"]) or "").strip().lower()
+        if not b:
+            continue
         for rs in sigs:
-            if rs["matched"] or rs["prices"]:   # a priced row isn't an on-request line
+            if rs["matched"]:
                 continue
-            if b and b in rs["brand"]:
+            if rs["brand"] and b in rs["brand"]:
                 s["matched"] = rs["matched"] = True
                 break
 
