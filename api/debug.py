@@ -315,6 +315,17 @@ async def probe_extract_ep(pattern: str, timeout: float = 25.0):
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+@router.get("/debug/probe-pipeline", dependencies=[Depends(_require_admin)])
+async def probe_pipeline_ep(job_id: str, timeout: float = 40.0):
+    """Trace the post-extraction pipeline on the worker for a saved job."""
+    try:
+        from workers.celery_tasks import probe_pipeline
+        res = probe_pipeline.apply_async(args=[job_id], expires=120)
+        return {"ok": True, "result": res.get(timeout=timeout)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are

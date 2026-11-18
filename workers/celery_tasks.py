@@ -218,3 +218,68 @@ def probe_extract(pattern: str):
         out["error"] = f"{type(e).__name__}: {e}"
         out["tb"] = traceback.format_exc()[-800:]
     return out
+
+
+@celery_app.task(name="workers.celery_tasks.probe_pipeline")
+def probe_pipeline(job_id: str):
+    """Trace the post-extraction pipeline for a saved job: show what the
+    document-level detectors return and whether apply_deterministic_defaults
+    changes a no-price row's currency / a row's incoterm+conditions. No persist."""
+    import asyncio, socket
+    out = {"host": socket.gethostname()}
+    try:
+        from core.job_store import load_job_payload
+        from core.deterministic_rules import (
+            apply_deterministic_defaults, detect_document_currency,
+            detect_document_incoterm, detect_document_location,
+            detect_document_commercial_conditions)
+        pl = load_job_payload(job_id)
+        if not pl:
+            return {**out, "error": "no payload"}
+        tb = pl.get("text_body") or ""
+        atts = pl.get("attachments") or []
+        out["text_body_len"] = len(tb)
+        out["attachments"] = [a.get("fileName") for a in atts]
+        # Build products: attachment (structured) or text (LLM-free: use detectors only)
+        products = []
+        src_text = tb
+        if atts:
+            import os, glob
+            from core.file_store import _dir
+            from core.openai_client import extract_from_file
+            fn = atts[0].get("fileName", "")
+            m = sorted(f for f in glob.glob(os.path.join(_dir(), "*")) if fn.lower() in os.path.basename(f).lower())
+            if m:
+                loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+                ef = loop.run_until_complete(extract_from_file(m[0], atts[0].get("contentType", "")))
+                products = ef.get("products") or []
+                if ef.get("source_text"):
+                    src_text = (tb + "\n\n" + ef["source_text"]) if tb else ef["source_text"]
+        header_text = (tb or "")
+        if atts:
+            header_text = f"Subject: {pl.get('subject') or ''}\nFrom: {pl.get('sender_email') or ''}\n\n" + header_text
+        out["doc_currency"] = detect_document_currency(header_text)
+        out["doc_incoterm"] = detect_document_incoterm(header_text)
+        out["doc_location"] = detect_document_location(header_text)
+        out["doc_conditions"] = (detect_document_commercial_conditions(header_text) or "")[:90]
+        # also test the raw text_body directly
+        out["tb_incoterm"] = detect_document_incoterm(tb)
+        out["tb_conditions"] = (detect_document_commercial_conditions(tb) or "")[:90]
+        # trace a no-price row's currency before/after defaults
+        def pick(ps):
+            for p in ps:
+                if 'cody' in ((p.get('brand') or '')+(p.get('product_name') or '')).lower():
+                    return p
+            return ps[0] if ps else {}
+        cody_before = pick(products).get("currency")
+        corrected, _ = apply_deterministic_defaults(products, header_text,
+                        source_filename=pl.get("source_filename"), sender_email=pl.get("sender_email"))
+        cp = pick(corrected)
+        out["cody_currency_before_defaults"] = cody_before
+        out["cody_currency_after_defaults"] = cp.get("currency")
+        out["row0_incoterm_after"] = (corrected[0].get("incoterm") if corrected else None)
+        out["row0_conditions_after"] = (corrected[0].get("commercial_conditions") if corrected else None)
+    except Exception as e:
+        import traceback
+        out["error"] = f"{type(e).__name__}: {e}"; out["tb"] = traceback.format_exc()[-700:]
+    return out
