@@ -3857,6 +3857,10 @@ def clean_product_data(product: dict) -> dict:
         # native unit so "MOQ 1 pallet" / "MOQ 1 FTL" survives to the drawer.
         'moq_pallets': None,
         'moq_ftl': None,
+        # Verbatim MOQ wording ("6 cases", "2 inner boxes", "1 pallet"). Without
+        # this key the field loop dropped a deterministically-parsed moq_text, so
+        # every WhatsApp/pipe MOQ was lost on persistence (Samuel 2026-11-19).
+        'moq_text': None,
         # Phase 3 M1 — Multi-category fields. The LLM emits these on
         # perfume / cosmetics rows (per Rule 0.23) and the DB / SKU key
         # both consume them, but they were absent from this whitelist so

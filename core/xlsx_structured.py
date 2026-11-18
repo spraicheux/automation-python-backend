@@ -554,6 +554,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             qty_raw: str = ""
             moq_val: Optional[float] = None
             moq_unit_inline: Optional[str] = None
+            moq_raw_cell: str = ""
             price_value: Optional[float] = None
             price_basis: str = ""
             price_on_request = False
@@ -610,6 +611,10 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 elif field == "moq_cases":
                     # MOQ may carry its own inline unit ("1 pallet", "1 FTL").
                     moq_val, moq_unit_inline = _split_num_unit(val)
+                    # Keep the verbatim source wording ("2 inner boxes", "24
+                    # bottles") so the export shows the MOQ exactly as stated and
+                    # matches the WhatsApp copy of the same product.
+                    moq_raw_cell = str(val).strip()
                 elif field == "_quantity":
                     qty_raw = str(val)
                     qty_val, _qu = _parse_quantity_cell(val)
@@ -823,15 +828,15 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
             # ── Quantity (unit parsed from the cell) ───────────────────────
             _assign_quantity(prod, qty_val, qty_unit)
-            # Stock stated in bottles/pieces with a known pack → also derive
-            # cases for the comparison views, keeping the stated count visible.
-            _upc = prod.get("units_per_case")
-            if prod.get("quantity_bottles") and _upc:
-                try:
-                    prod["quantity_case"] = round(
-                        float(prod["quantity_bottles"]) / float(_upc), 2)
-                except (TypeError, ValueError, ZeroDivisionError):
-                    pass
+            # One quantity lives in ONE field. Stock stated in bottles with a
+            # known pack ("1,440 bottles available (= 120 cases)", "24 bottles
+            # available") is NOT also written into quantity_case: that derived
+            # case count is the SAME stock, and a consumer that sums cases×pack
+            # + bottles then double-counts it (Samuel 2026-11-19: Dom Pérignon
+            # "4 cases + 24 units", and the self-check caught Chivas 120/1,440
+            # and Jack Daniel's 800/9,600 the same way). The case equivalent is
+            # a presentation concern — the export derives "(= N cases)" from the
+            # pack at display time, so nothing is lost.
 
             # ── Mixed quantity ("10 cases + 2 loose bottles") ──────────────
             # _parse_quantity_cell returns only the primary count, dropping the
@@ -854,6 +859,12 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                             prod["quantity_bottles"] = _sn
 
             # ── MOQ (unit follows the source — client §5) ──────────────────
+            if moq_raw_cell and moq_raw_cell not in ("—", "-", "Not Found",
+                                                     "Not stated", "n/a", "N/A"):
+                # Verbatim MOQ wording for the export (kept even when the inline
+                # unit is non-standard, e.g. "inner boxes").
+                prod["moq_text"] = re.sub(r"(?i)^\s*moq[:\s]*", "",
+                                          moq_raw_cell).strip() or None
             if moq_val is not None:
                 _mu = _norm(moq_unit_inline)
                 if _mu in _QTY_PALLET:

@@ -351,6 +351,47 @@ _PIPE_SIZE_RE = re.compile(r'^\s*\d+(?:[.,]\d+)?\s*(ml|cl|l|g)\b', re.IGNORECASE
 _PIPE_T_RE = re.compile(r'^\s*T\s*/?\s*([12])\s*$', re.IGNORECASE)
 _PIPE_FTL_RE = re.compile(r'\bfull\s*truck|\bftl\b', re.IGNORECASE)
 
+# "MOQ 6 cases", "MOQ 2 inner boxes", "MOQ 1 pallet", "MOQ 1 inner box (12 pieces)"
+_MOQ_NUM_UNIT_RE = re.compile(
+    r'([\d][\d.,]*)\s*(pallets?|full\s*trucks?|trucks?|ftl|inner\s*box(?:es)?|'
+    r'cases?|bottles?|btls?|pieces?|pcs?|units?)', re.IGNORECASE)
+# The whole "MOQ …" clause, so it can be lifted out of a multi-purpose field
+# ("30 cases available; MOQ 2 pallets (48 cases/pallet)").
+_MOQ_CLAUSE_RE = re.compile(
+    r'MOQ[:\s]*[\d][\d.,]*\s*(?:pallets?|full\s*trucks?|trucks?|ftl|'
+    r'inner\s*box(?:es)?|cases?|bottles?|btls?|pieces?|pcs?|units?)'
+    r'(?:\s*\([^)]*\))?', re.IGNORECASE)
+
+
+def _apply_moq(prod: Dict[str, Any], moq_str: str) -> None:
+    """Parse a 'MOQ N <unit>' string into the verbatim moq_text AND the numeric
+    moq_cases/moq_pallets/moq_bottles/moq_ftl field, mirroring the xlsx parser so
+    a WhatsApp MOQ persists and shows exactly like its spreadsheet twin (Samuel
+    2026-11-19: WhatsApp MOQs were captured as moq_text then dropped because only
+    numeric moq_* fields survived clean_product_data)."""
+    s = re.sub(r'(?i)^\s*moq[:\s]*', '', (moq_str or '').strip()).strip()
+    if not s:
+        return
+    prod["moq_text"] = s  # verbatim source wording for the export
+    m = _MOQ_NUM_UNIT_RE.search(s)
+    if not m:
+        return
+    try:
+        val = float(m.group(1).replace(",", ""))
+    except (TypeError, ValueError):
+        return
+    u = m.group(2).lower()
+    if u.startswith("pallet"):
+        prod["moq_pallets"] = val; prod["moq_unit"] = "pallets"
+    elif u in ("ftl",) or "truck" in u:
+        prod["moq_ftl"] = val; prod["moq_unit"] = "ftl"
+    elif u.startswith("piece") or u in ("pcs", "pc"):
+        prod["moq_bottles"] = val; prod["moq_unit"] = "pieces"
+    elif u.startswith("bottle") or u.startswith("btl"):
+        prod["moq_bottles"] = val; prod["moq_unit"] = "bottles"
+    else:  # cases, units, inner box(es) → the trading case count (as the xlsx path does)
+        prod["moq_cases"] = val; prod["moq_unit"] = "cases"
+
 
 def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
     """Return raw product dicts when `text` is a pipe-delimited numbered offer
@@ -384,8 +425,20 @@ def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
                 prod["custom_status"] = "T" + re.sub(r"\D", "", f)
                 continue
             if low.startswith("moq"):
-                prod["moq_text"] = f
+                _apply_moq(prod, f)
                 continue
+            # MOQ embedded in a multi-purpose field ("30 cases available; MOQ 2
+            # pallets (48 cases/pallet)"): lift the MOQ clause out, then let the
+            # remainder parse as the quantity it also carries (Samuel 2026-11-19,
+            # Perrier-Jouët Belle Epoque).
+            if "moq" in low:
+                _mc = _MOQ_CLAUSE_RE.search(f)
+                if _mc:
+                    _apply_moq(prod, _mc.group(0))
+                    f = (f[:_mc.start()] + f[_mc.end():]).strip(" ;,|").strip()
+                    low = f.lower()
+                    if not f:
+                        continue
             # price: ONLY a field with a real currency token or an explicit
             # on-request/TBC clause (a bare number is a size/pack/quantity, not a
             # price — never let it masquerade as one).
