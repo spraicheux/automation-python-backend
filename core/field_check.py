@@ -158,9 +158,16 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
         # (A) Inherited incoterm. In a MIXED-incoterm document each line must
         # state its own term; if the row carries one the source never states
         # near this product, it bled down from a header (Beefeater/Rémy shown
-        # FCA Antwerp when the source gave neither).
+        # FCA Antwerp when the source gave neither). EXW is matched in its
+        # written forms too — "Ex works", "Ex warehouse", "Ex <Place>" (FBC
+        # writes it "Ex Loen"/"Ex Miami", not "EXW"), else every such line is a
+        # false "inherited" flag.
         if mixed and inco in _INCOTERMS and wins:
-            if not any(re.search(rf"\b{inco}\b", w, re.IGNORECASE) for w in wins):
+            if inco == "EXW":
+                pat = r"\bEXW\b|\bex[\s\-]+(?:works?|warehouse|[A-Z])"
+            else:
+                pat = rf"\b{inco}\b"
+            if not any(re.search(pat, w, re.IGNORECASE) for w in wins):
                 issues.append(
                     f"{name}: incoterm {inco} is not stated in the source for "
                     f"this line (likely inherited from the document header)")
