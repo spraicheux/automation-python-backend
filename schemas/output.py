@@ -24,7 +24,12 @@ class OfferItem(BaseModel):
     quantity_case: Optional[float] = None
     gift_box: Optional[str] = None
     refillable_status: str = Field(default="NRF")
-    currency: str = Field(default="EUR")
+    # Nullable: a price-less row (call for quotation / price on request) has no
+    # currency, and forcing a string here raised a ValidationError that silently
+    # dropped the row (Samuel 2026-11-18: Cody Vody / Jack Daniel's & Cola). A
+    # priced row still carries its currency; only a genuinely currency-less row
+    # is None.
+    currency: Optional[str] = Field(default=None)
     price_per_unit: Optional[float] = None
     price_per_unit_eur: Optional[float] = None
     price_per_case: Optional[float] = None

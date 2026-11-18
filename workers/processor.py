@@ -3466,15 +3466,6 @@ async def process_offer(payload, job_id: str):
                 except Exception as e:
                     error_trace = traceback.format_exc()
                     logger.error(f"Error creating offer for product {idx}: {e}\n{error_trace}")
-                    try:
-                        _nm = ((product_data.get('brand') or '') + ' '
-                               + (product_data.get('product_name') or '')).lower()
-                        if ('cody' in _nm or 'cola' in _nm) and redis_manager.use_redis and redis_manager.client:
-                            redis_manager.client.setex(
-                                f"diag:drop:{idx}", 900,
-                                f"{type(e).__name__}: {e} || {error_trace[-500:]}")
-                    except Exception:
-                        pass
                     continue
 
             # ── FAIL LOUD: extracted rows but persisted NONE ────────────────
