@@ -420,8 +420,15 @@ def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
                     prod["unit_volume_ml"] = _ll_size_ml(sm.group(1), sm.group(2))
                 continue
             if _PIPE_PACK_HINT.search(f):
-                prod["units_per_case"] = _parse_pack(f)
-                continue
+                _pk = _parse_pack(f)
+                if _pk:
+                    prod["units_per_case"] = _pk
+                    continue
+                # Not a real case pack (an individual-piece line like "4 inner
+                # boxes x 12 pieces = 48 pieces") — fall through so the quantity
+                # branch can capture the "= 48 pieces" TOTAL that would otherwise
+                # be swallowed here (Samuel 2026-11-18: Montblanc's 48 pieces were
+                # missing from the quantity field on the WhatsApp offer).
             if _PIPE_FTL_RE.search(f) and not _PIPE_QTY_HINT.search(re.sub(_PIPE_FTL_RE.pattern, "", f, flags=re.IGNORECASE)):
                 prod["quantity_ftl"] = 1.0; prod["quantity_unit"] = "ftl"
                 continue
