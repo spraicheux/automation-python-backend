@@ -159,3 +159,41 @@ def worker_code_probe():
         "currency_invented": probe.get("currency") is not None,
         "probe_currency": probe.get("currency"),
     }
+
+
+@celery_app.task(name="workers.celery_tasks.probe_extract")
+def probe_extract(pattern: str):
+    """Run the deterministic extractor + cleaner ON THE WORKER for a saved
+    file and report the fields, so we can see exactly what the worker produces
+    (no LLM, no persistence). Settles whether a wrong stored value comes from
+    extraction or from a later pipeline step (Samuel 2026-11-18)."""
+    import os, glob, socket, traceback
+    out = {"host": socket.gethostname()}
+    try:
+        from core.file_store import _dir
+        d = _dir()
+        matches = sorted(f for f in glob.glob(os.path.join(d, "*"))
+                         if pattern.lower() in os.path.basename(f).lower())
+        out["dir"] = d
+        out["matches"] = [os.path.basename(m) for m in matches]
+        if not matches:
+            out["error"] = "no file"
+            return out
+        from core.xlsx_structured import extract_structured_products
+        from core.openai_client import clean_product_data
+        prods = extract_structured_products(matches[0])
+        out["structured_count"] = None if prods is None else len(prods)
+        rows = []
+        for p in (prods or []):
+            nm = (p.get("product_name") or "")
+            if any(w in nm.lower() for w in ("oréal", "oreal", "cody", "beefeater", "nishane")):
+                c = clean_product_data(dict(p))
+                rows.append({"name": nm[:26], "cur": c.get("currency"),
+                             "ppu": c.get("price_per_unit"), "g": c.get("size_weight_g"),
+                             "ml": c.get("unit_volume_ml"),
+                             "cc": (c.get("commercial_conditions") or "")[:24]})
+        out["rows"] = rows
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["tb"] = traceback.format_exc()[-800:]
+    return out

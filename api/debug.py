@@ -303,6 +303,18 @@ async def worker_probe(timeout: float = 20.0):
                 "hint": "timeout/unregistered ⇒ worker has not picked up this build yet"}
 
 
+@router.get("/debug/probe-extract", dependencies=[Depends(_require_admin)])
+async def probe_extract_ep(pattern: str, timeout: float = 25.0):
+    """Ask the Celery worker to run the deterministic extractor+cleaner on a
+    saved file and report the fields (no LLM, no persistence)."""
+    try:
+        from workers.celery_tasks import probe_extract
+        res = probe_extract.apply_async(args=[pattern], expires=90)
+        return {"ok": True, "result": res.get(timeout=timeout)}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are
