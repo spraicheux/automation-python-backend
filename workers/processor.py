@@ -3491,41 +3491,54 @@ async def process_offer(payload, job_id: str):
             # human (and the export) sees exactly what went wrong — not just a
             # count (Samuel 2026-11-18).
             try:
-                if payload.text_body and not payload.attachments:
-                    from core.reconcile import reconcile_source_vs_rows
-                    from core.database import get_session_factory
-                    from models.offer_item import OfferItemDB
-                    from models.source_file import SourceFileDB
-                    import json as _json
-                    _rdb = get_session_factory()()
-                    try:
-                        _stored = [{
-                            "brand": o.brand, "product_name": o.product_name,
-                            "currency": o.currency,
-                            "price_per_unit": o.price_per_unit,
-                            "price_per_case": o.price_per_case,
-                            "price_per_unit_eur": o.price_per_unit_eur,
-                            "price_per_case_eur": o.price_per_case_eur,
-                            "quantity_case": o.quantity_case,
-                            "quantity_bottles": o.quantity_bottles,
-                        } for o in _rdb.query(OfferItemDB).filter(
-                            OfferItemDB.job_id == job_id).all()]
+                from core.reconcile import reconcile_source_vs_rows
+                from core.field_check import check_field_accuracy
+                from core.database import get_session_factory
+                from models.offer_item import OfferItemDB
+                from models.source_file import SourceFileDB
+                import json as _json
+                _rdb = get_session_factory()()
+                try:
+                    _stored = [{
+                        "brand": o.brand, "product_name": o.product_name,
+                        "currency": o.currency,
+                        "price_per_unit": o.price_per_unit,
+                        "price_per_case": o.price_per_case,
+                        "price_per_unit_eur": o.price_per_unit_eur,
+                        "price_per_case_eur": o.price_per_case_eur,
+                        "quantity_case": o.quantity_case,
+                        "quantity_bottles": o.quantity_bottles,
+                        "units_per_case": o.units_per_case,
+                        "unit_volume_ml": o.unit_volume_ml,
+                        "size_weight_g": o.size_weight_g,
+                        "commercial_conditions": o.commercial_conditions,
+                    } for o in _rdb.query(OfferItemDB).filter(
+                        OfferItemDB.job_id == job_id).all()]
+                    # Tier-2 source↔row reconcile only for a pure text offer (needs
+                    # the source lines); the field-accuracy check runs on EVERY
+                    # ingest path — it inspects the stored rows alone.
+                    _missed, _phantom = [], []
+                    if payload.text_body and not payload.attachments:
                         _rec = reconcile_source_vs_rows(payload.text_body, _stored)
-                        _sf = _rdb.query(SourceFileDB).filter(
-                            SourceFileDB.job_id == job_id).first()
-                        if _sf is not None:
-                            _sf.reconciliation = (_json.dumps(_rec)
-                                                  if (_rec["missed"] or _rec["phantom"])
-                                                  else None)
-                            _rdb.commit()
-                        if _rec["missed"] or _rec["phantom"]:
-                            logger.warning(
-                                f"[process_offer] reconcile job {job_id}: "
-                                f"MISSED={_rec['missed']} PHANTOM={_rec['phantom']}")
-                    finally:
-                        _rdb.close()
+                        _missed, _phantom = _rec.get("missed", []), _rec.get("phantom", [])
+                    _field_issues = check_field_accuracy(_stored)
+                    _result = {"missed": _missed, "phantom": _phantom,
+                               "field_issues": _field_issues}
+                    _sf = _rdb.query(SourceFileDB).filter(
+                        SourceFileDB.job_id == job_id).first()
+                    if _sf is not None:
+                        _sf.reconciliation = (_json.dumps(_result)
+                                              if (_missed or _phantom or _field_issues)
+                                              else None)
+                        _rdb.commit()
+                    if _missed or _phantom or _field_issues:
+                        logger.warning(
+                            f"[process_offer] self-check job {job_id}: "
+                            f"MISSED={_missed} PHANTOM={_phantom} FIELD_ISSUES={_field_issues}")
+                finally:
+                    _rdb.close()
             except Exception as _rce:
-                logger.warning(f"[process_offer] reconcile skipped for job {job_id}: {_rce}")
+                logger.warning(f"[process_offer] self-check skipped for job {job_id}: {_rce}")
 
         else:
             logger.info(f"No Excel products found, using single product extraction for job {job_id}")
