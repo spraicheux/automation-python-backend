@@ -1537,17 +1537,19 @@
     const missed = (rec && rec.missed) || [];
     const phantom = (rec && rec.phantom) || [];
     const fieldIssues = (rec && rec.field_issues) || [];
-    const clean = !s.import_incomplete && missed.length === 0 && phantom.length === 0 && fieldIssues.length === 0;
+    const srcFidelity = (rec && rec.source_fidelity) || [];
+    const clean = !s.import_incomplete && missed.length === 0 && phantom.length === 0 && fieldIssues.length === 0 && srcFidelity.length === 0;
     el.style.display = 'block';
     if (clean) {
       el.className = 'selfcheck ok';
-      el.innerHTML = `<span class="sc-ico">✓</span><b>Source self-check passed</b> — all ${imp} source line${imp === 1 ? '' : 's'} imported (${imp}/${exp}), no missed or phantom rows, and every field consistent (currency, price basis, size).`;
+      el.innerHTML = `<span class="sc-ico">✓</span><b>Source self-check passed</b> — all ${imp} source line${imp === 1 ? '' : 's'} imported (${imp}/${exp}), no missed or phantom rows, every field internally consistent (currency, price basis, size), and every field confirmed against the source (incoterm, units, basis).`;
     } else {
       el.className = 'selfcheck warn';
       let detail = '';
       if (missed.length) detail += `<div class="sc-detail"><b>Source lines not imported (${missed.length}):</b><ul>${missed.map(m => `<li>${escapeHtml(String(m))}</li>`).join('')}</ul></div>`;
       if (phantom.length) detail += `<div class="sc-detail"><b>Stored rows with no source line — possible over-split (${phantom.length}):</b><ul>${phantom.map(p => `<li>${escapeHtml(String(p))}</li>`).join('')}</ul></div>`;
       if (fieldIssues.length) detail += `<div class="sc-detail"><b>Field accuracy — rows to review (${fieldIssues.length}):</b><ul>${fieldIssues.map(f => `<li>${escapeHtml(String(f))}</li>`).join('')}</ul></div>`;
+      if (srcFidelity.length) detail += `<div class="sc-detail"><b>Source fidelity — fields the source does not confirm (${srcFidelity.length}):</b><ul>${srcFidelity.map(f => `<li>${escapeHtml(String(f))}</li>`).join('')}</ul></div>`;
       const _cntTxt = s.import_incomplete ? `imported ${imp} of ${exp} source lines. ` : `${imp} row${imp === 1 ? '' : 's'}. `;
       el.innerHTML = `<span class="sc-ico">⚠</span><b>Source self-check — needs review</b> — ${_cntTxt}${detail}`;
     }

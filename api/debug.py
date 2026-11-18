@@ -131,6 +131,40 @@ async def purge_queue():
     return out
 
 
+@router.post("/debug/recycle-worker", dependencies=[Depends(_require_admin)])
+async def recycle_worker():
+    """Warm-shutdown the Celery worker so start-prod.sh's supervisor loop
+    respawns it with the code now on disk — WITHOUT an App Service restart or
+    gunicorn downtime.
+
+    Root cause (Samuel 2026-11-18/19): Azure can report a deploy green and serve
+    the new code from gunicorn while the long-running Celery worker keeps the
+    OLD code it imported at boot, so a re-ingest silently runs on stale logic.
+    This broadcasts the built-in 'shutdown' control command (understood by every
+    Celery version, so the stale worker obeys it); the worker exits, the
+    `while true` supervisor in start-prod.sh restarts it, and the fresh process
+    imports the deployed build. Confirm with /debug/worker-probe (host changes,
+    build flips to the current marker)."""
+    from core.celery_app import celery_app
+    out = {}
+    try:
+        insp = celery_app.control.inspect(timeout=3)
+        _ping = insp.ping() if insp else None
+        out["workers_before"] = list((_ping or {}).keys())
+    except Exception as e:
+        out["inspect_error"] = str(e)
+    try:
+        # Warm shutdown: finishes any in-flight task, then the process exits and
+        # the supervisor respawns it on the new code.
+        celery_app.control.broadcast("shutdown")
+        out["shutdown_broadcast"] = True
+    except Exception as e:
+        out["shutdown_error"] = str(e)
+    out["note"] = ("worker will exit and be respawned by start-prod.sh within "
+                   "~5-20s; poll /debug/worker-probe until build/host changes")
+    return out
+
+
 @router.get("/debug/job-payload", dependencies=[Depends(_require_admin)])
 async def job_payload(job_id: str):
     """Return a job's saved payload (the exact email/WhatsApp text the extractor

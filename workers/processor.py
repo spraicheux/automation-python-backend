@@ -3492,7 +3492,8 @@ async def process_offer(payload, job_id: str):
             # count (Samuel 2026-11-18).
             try:
                 from core.reconcile import reconcile_source_vs_rows
-                from core.field_check import check_field_accuracy
+                from core.field_check import (check_field_accuracy,
+                                              check_source_fidelity)
                 from core.database import get_session_factory
                 from models.offer_item import OfferItemDB
                 from models.source_file import SourceFileDB
@@ -3511,6 +3512,8 @@ async def process_offer(payload, job_id: str):
                         "units_per_case": o.units_per_case,
                         "unit_volume_ml": o.unit_volume_ml,
                         "size_weight_g": o.size_weight_g,
+                        "incoterm": o.incoterm,
+                        "location": o.location,
                         "commercial_conditions": o.commercial_conditions,
                     } for o in _rdb.query(OfferItemDB).filter(
                         OfferItemDB.job_id == job_id).all()]
@@ -3522,19 +3525,35 @@ async def process_offer(payload, job_id: str):
                         _rec = reconcile_source_vs_rows(payload.text_body, _stored)
                         _missed, _phantom = _rec.get("missed", []), _rec.get("phantom", [])
                     _field_issues = check_field_accuracy(_stored)
+                    # Source-fidelity: re-derive fields from the SOURCE and flag
+                    # what it cannot confirm (inherited incoterm, grams-as-ml,
+                    # assumed basis, dropped option) — the class the internal
+                    # check is blind to, which is why those rows were green
+                    # (Samuel 2026-11-19).
+                    try:
+                        _src_fid = check_source_fidelity(
+                            _stored, _cond_source_text or "")
+                    except Exception as _sfe:
+                        _src_fid = []
+                        logger.warning(
+                            f"[process_offer] source-fidelity skipped "
+                            f"job {job_id}: {_sfe}")
                     _result = {"missed": _missed, "phantom": _phantom,
-                               "field_issues": _field_issues}
+                               "field_issues": _field_issues,
+                               "source_fidelity": _src_fid}
+                    _any = _missed or _phantom or _field_issues or _src_fid
                     _sf = _rdb.query(SourceFileDB).filter(
                         SourceFileDB.job_id == job_id).first()
                     if _sf is not None:
                         _sf.reconciliation = (_json.dumps(_result)
-                                              if (_missed or _phantom or _field_issues)
-                                              else None)
+                                              if _any else None)
                         _rdb.commit()
-                    if _missed or _phantom or _field_issues:
+                    if _any:
                         logger.warning(
                             f"[process_offer] self-check job {job_id}: "
-                            f"MISSED={_missed} PHANTOM={_phantom} FIELD_ISSUES={_field_issues}")
+                            f"MISSED={_missed} PHANTOM={_phantom} "
+                            f"FIELD_ISSUES={_field_issues} "
+                            f"SOURCE_FIDELITY={_src_fid}")
                 finally:
                     _rdb.close()
             except Exception as _rce:
