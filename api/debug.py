@@ -286,6 +286,23 @@ async def test_structured(pattern: str):
     return out
 
 
+@router.get("/debug/worker-probe", dependencies=[Depends(_require_admin)])
+async def worker_probe(timeout: float = 20.0):
+    """Run a behavioural probe ON the Celery worker to learn which CODE it is
+    actually executing (not just its hostname). `currency_invented: false` means
+    the worker is on the field-accuracy build and a re-ingest will be correct.
+    A timeout means the worker is still on code that predates this probe task
+    (so a deploy hasn't reached it yet)."""
+    try:
+        from workers.celery_tasks import worker_code_probe
+        res = worker_code_probe.apply_async(expires=60)
+        sig = res.get(timeout=timeout)
+        return {"ok": True, "worker": sig}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "hint": "timeout/unregistered ⇒ worker has not picked up this build yet"}
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are

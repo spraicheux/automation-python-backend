@@ -139,3 +139,23 @@ def poll_email_offers():
     the exact same poll without depending on beat being started on prod."""
     from core.email_poll import run_email_poll
     return run_email_poll()
+
+
+@celery_app.task(name="workers.celery_tasks.worker_code_probe")
+def worker_code_probe():
+    """Behavioural fingerprint of the CODE the worker is actually running, so a
+    deploy that recycled the worker to a NEW hostname but STILL old code can be
+    detected without a wasteful re-ingest (Samuel 2026-11-18: web had the new
+    code but the Celery worker lagged a whole commit). `currency_invented` is
+    False only on the field-accuracy build (032bed6+): clean_product_data no
+    longer stamps EUR on a no-price / no-currency row."""
+    import socket
+    from core.openai_client import clean_product_data
+    probe = clean_product_data({"product_name": "Probe RTD",
+                                "price_per_unit": None, "price_per_case": None,
+                                "currency": None})
+    return {
+        "host": socket.gethostname(),
+        "currency_invented": probe.get("currency") is not None,
+        "probe_currency": probe.get("currency"),
+    }
