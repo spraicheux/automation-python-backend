@@ -326,6 +326,24 @@ async def probe_pipeline_ep(job_id: str, timeout: float = 40.0):
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+@router.get("/debug/redis-diag", dependencies=[Depends(_require_admin)])
+async def redis_diag(pattern: str = "diag:drop:*"):
+    """Read diagnostic keys set by the worker (e.g. the exception that dropped a
+    row). Temporary — for root-causing the price-less-row drop (Samuel)."""
+    try:
+        r = redis_manager.client if (redis_manager.use_redis and redis_manager.client) else None
+        if not r:
+            return {"error": "no redis"}
+        out = {}
+        for k in r.scan_iter(match=pattern, count=200):
+            kk = k.decode() if isinstance(k, (bytes, bytearray)) else k
+            v = r.get(k)
+            out[kk] = (v.decode() if isinstance(v, (bytes, bytearray)) else v)
+        return {"count": len(out), "keys": out}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are
