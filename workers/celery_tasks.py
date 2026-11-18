@@ -14,6 +14,7 @@ from core.logging_utils import setup_logging
 setup_logging(level=logging.INFO)
 
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_ready
 
 from core.celery_app import celery_app
 from workers.processor import process_offer
@@ -23,6 +24,47 @@ from core.openai_health import OpenAICreditsExhausted, queue_pending_credit_job
 from core.openai_client import usage_begin, usage_finish
 
 logger = logging.getLogger(__name__)
+
+
+# ── Deploy-overlap gate ──────────────────────────────────────────────────────
+# Azure App Service keeps the OLD container — and its Celery worker — running
+# and consuming the shared Redis queue while a new deploy warms up. So a
+# re-ingest enqueued after a deploy can be picked up by a worker still running
+# OLD code, which made fixes look like they never took (Samuel 2026-11-18).
+# Each worker claims a monotonically-increasing epoch on startup; the newest
+# container holds the highest. A worker that is no longer the newest defers the
+# job back to the queue so the CURRENT worker runs it — with a small bounce
+# limit so a job is never lost if the newest worker has since died.
+_MY_EPOCH = None
+
+
+@worker_ready.connect
+def _register_worker_epoch(**_kw):
+    global _MY_EPOCH
+    try:
+        r = redis_manager.client
+        if not (redis_manager.use_redis and r):
+            return
+        _MY_EPOCH = int(r.incr("deploy:worker_epoch"))
+        r.set("deploy:current_epoch", _MY_EPOCH)
+        logger.info(f"[deploy-gate] worker epoch {_MY_EPOCH} registered as current")
+    except Exception as e:
+        logger.warning(f"[deploy-gate] epoch registration failed: {e}")
+
+
+def _newer_worker_live() -> bool:
+    """True when a strictly-newer worker container is live — this (older) worker
+    should defer the job, not run it on stale code."""
+    try:
+        if _MY_EPOCH is None:
+            return False
+        r = redis_manager.client
+        if not (redis_manager.use_redis and r):
+            return False
+        cur = r.get("deploy:current_epoch")
+        return cur is not None and int(cur) > _MY_EPOCH
+    except Exception:
+        return False
 
 
 def get_or_create_eventloop():
@@ -44,6 +86,30 @@ def get_or_create_eventloop():
 # Zwolle (2054, held) would need ~2.5h — bump before running that file.
 @celery_app.task(bind=True, max_retries=2, soft_time_limit=5400, time_limit=5700)
 def process_document_task(self, job_id: str, payload_dict: dict):
+    # Deploy-overlap gate (see _register_worker_epoch): a worker that is no
+    # longer the newest re-enqueues the job so the CURRENT worker runs it on
+    # current code, up to a small bounce limit (then it runs it anyway so a job
+    # is never lost). Bounce count lives in Redis, keyed by job_id, so the task
+    # payload is never mutated (schema-safe).
+    if _newer_worker_live():
+        _r = redis_manager.client if (redis_manager.use_redis and redis_manager.client) else None
+        _bkey = f"deploy:bounce:{job_id}"
+        _bounce = 0
+        try:
+            _bounce = int(_r.get(_bkey) or 0) if _r else 0
+        except Exception:
+            _bounce = 0
+        if _bounce < 3:
+            try:
+                if _r:
+                    _r.incr(_bkey)
+                    _r.expire(_bkey, 600)
+            except Exception:
+                pass
+            logger.warning(f"[deploy-gate] stale worker (epoch {_MY_EPOCH}) deferring "
+                           f"job {job_id}; bounce {_bounce + 1}")
+            process_document_task.apply_async(args=[job_id, payload_dict], countdown=10)
+            return {"deferred_stale_worker": True, "job_id": job_id, "bounce": _bounce + 1}
     try:
         logger.info(f"Celery processing started for JobID: {job_id}")
         redis_manager.set_job_status(job_id, "processing")
@@ -157,9 +223,18 @@ def worker_code_probe():
     # Bump BUILD on every deploy whose worker behaviour must be confirmed before
     # a re-ingest. "procfix1" = the process_offer corruption fixes (dual-currency
     # over-propagation, EUR-forcing on no-price rows, dropped commercial_conditions).
+    _cur_epoch = None
+    try:
+        _ce = redis_manager.client.get("deploy:current_epoch") if (redis_manager.use_redis and redis_manager.client) else None
+        _cur_epoch = int(_ce) if _ce is not None else None
+    except Exception:
+        pass
     return {
         "host": socket.gethostname(),
-        "build": "clean1",
+        "build": "deploygate1",
+        "my_epoch": _MY_EPOCH,
+        "current_epoch": _cur_epoch,
+        "is_current": (_MY_EPOCH is not None and _MY_EPOCH == _cur_epoch),
         "currency_invented": probe.get("currency") is not None,
         "probe_currency": probe.get("currency"),
     }
