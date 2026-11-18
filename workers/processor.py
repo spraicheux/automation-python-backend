@@ -3053,6 +3053,20 @@ async def process_offer(payload, job_id: str):
                         if merged_data.get(_mf) in (None, '', 'Not Found', 'nan', 'NaN') and extracted_data.get(_mf) not in (None, '', 'Not Found', 'nan', 'NaN'):
                             merged_data[_mf] = extracted_data[_mf]
 
+                    # TEMP DIAG (Samuel 2026-11-18, Cody/JD&Cola EUR): record the
+                    # currency at each stage on the row's flags so we can read it
+                    # back via /api/records. Remove after the root cause is fixed.
+                    _dbgnm = ((merged_data.get('brand') or '') + ' ' + (merged_data.get('product_name') or '')).lower()
+                    if 'cody' in _dbgnm or 'cola' in _dbgnm:
+                        _ef = merged_data.get('error_flags')
+                        if not isinstance(_ef, list):
+                            _ef = []
+                        _ef.append(f"DIAG ed_cur={extracted_data.get('currency')!r} "
+                                   f"pd_cur={product_data.get('currency')!r} "
+                                   f"merged_cur={merged_data.get('currency')!r} "
+                                   f"ppu={product_data.get('price_per_unit')!r} ppc={product_data.get('price_per_case')!r}")
+                        merged_data['error_flags'] = _ef
+
                     if merged_data.get('product_key') in [None, '', 'Not Found']:
                         logger.warning(
                             f"Row {idx} skipped — product_key not found: "
@@ -3210,6 +3224,11 @@ async def process_offer(payload, job_id: str):
                     _backfill_numeric_brand(safe_data)
                     _reconcile_multicurrency_retail(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
+                    _dbgnm2 = ((safe_data.get('brand') or '') + ' ' + (safe_data.get('product_name') or '')).lower()
+                    if 'cody' in _dbgnm2 or 'cola' in _dbgnm2:
+                        _ef2 = safe_data.get('error_flags')
+                        if isinstance(_ef2, list):
+                            _ef2.append(f"DIAG2 after_norm cur={safe_data.get('currency')!r} fx_src={safe_data.get('fx_source')!r}")
                     # NOTE (Samuel 2026-11-18): a no-currency guard here (null the
                     # currency on a price-less row whose extraction had none)
                     # caused Cody Vody / Jack Daniel's & Cola to be dropped
