@@ -180,7 +180,7 @@ def probe_extract(pattern: str):
             out["error"] = "no file"
             return out
         from core.xlsx_structured import extract_structured_products
-        from core.openai_client import clean_product_data
+        from core.openai_client import clean_product_data, extract_from_file
         prods = extract_structured_products(matches[0])
         out["structured_count"] = None if prods is None else len(prods)
         rows = []
@@ -193,6 +193,23 @@ def probe_extract(pattern: str):
                              "ml": c.get("unit_volume_ml"),
                              "cc": (c.get("commercial_conditions") or "")[:24]})
         out["rows"] = rows
+        # Also run the FULL extract_from_file exactly as process_offer calls it
+        # (it may differ from extract_structured_products on the worker).
+        import asyncio
+        try:
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            ef = loop.run_until_complete(extract_from_file(
+                matches[0],
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+            out["eff_source_type"] = ef.get("source_type")
+            out["eff_rows"] = [
+                {"name": ((pp.get("brand") or "") + " " + (pp.get("product_name") or "")).strip()[:26],
+                 "cur": pp.get("currency")}
+                for pp in (ef.get("products") or [])
+                if any(w in ((pp.get("product_name") or "") + (pp.get("brand") or "")).lower()
+                       for w in ("oréal", "oreal", "cody", "beefeater"))]
+        except Exception as _e:
+            out["eff_error"] = f"{type(_e).__name__}: {_e}"
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
         out["tb"] = traceback.format_exc()[-800:]
