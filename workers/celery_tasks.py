@@ -159,7 +159,7 @@ def worker_code_probe():
     # over-propagation, EUR-forcing on no-price rows, dropped commercial_conditions).
     return {
         "host": socket.gethostname(),
-        "build": "procfix2",
+        "build": "procfix3",
         "currency_invented": probe.get("currency") is not None,
         "probe_currency": probe.get("currency"),
     }

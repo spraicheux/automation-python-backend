@@ -3210,21 +3210,14 @@ async def process_offer(payload, job_id: str):
                     _backfill_numeric_brand(safe_data)
                     _reconcile_multicurrency_retail(safe_data)
                     safe_data = _normalize_currency_and_prices(safe_data)
-                    # Authoritative no-currency guard: a price-less row whose
-                    # EXTRACTION produced no currency must NOT carry one — some
-                    # upstream step was still stamping EUR on call-for-quotation /
-                    # price-on-request rows after _normalize (Samuel 2026-11-18:
-                    # Cody Vody, Jack Daniel's & Cola). product_data is the clean
-                    # extraction, so it decides; a retained-amount row (Beefeater
-                    # "USD 75") keeps its source currency because product_data has it.
-                    if (safe_data.get('price_per_unit') in (None, 0)
-                            and safe_data.get('price_per_case') in (None, 0)
-                            and not (str(product_data.get('currency') or '').strip())):
-                        safe_data['currency'] = None
-                        safe_data['fx_rate'] = None
-                        safe_data['fx_source'] = None
-                        safe_data['price_per_unit_eur'] = None
-                        safe_data['price_per_case_eur'] = None
+                    # NOTE (Samuel 2026-11-18): a no-currency guard here (null the
+                    # currency on a price-less row whose extraction had none)
+                    # caused Cody Vody / Jack Daniel's & Cola to be dropped
+                    # entirely (16→14 on the WhatsApp file). Reverted to protect
+                    # data integrity; the "EUR on a price-less row" cosmetic is
+                    # handled in the export/self-check instead until the drop
+                    # path is understood. The self-check (import_incomplete)
+                    # correctly flagged the regression.
                     _normalize_incoterm_location(safe_data)
 
                     # ── MOQ / quantity unit-aware normalization (RULE 0.3) ───
