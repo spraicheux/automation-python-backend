@@ -154,8 +154,12 @@ def worker_code_probe():
     probe = clean_product_data({"product_name": "Probe RTD",
                                 "price_per_unit": None, "price_per_case": None,
                                 "currency": None})
+    # Bump BUILD on every deploy whose worker behaviour must be confirmed before
+    # a re-ingest. "procfix1" = the process_offer corruption fixes (dual-currency
+    # over-propagation, EUR-forcing on no-price rows, dropped commercial_conditions).
     return {
         "host": socket.gethostname(),
+        "build": "procfix1",
         "currency_invented": probe.get("currency") is not None,
         "probe_currency": probe.get("currency"),
     }
