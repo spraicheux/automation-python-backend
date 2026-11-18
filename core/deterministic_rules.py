@@ -74,6 +74,14 @@ def detect_document_incoterm(text: str) -> Optional[str]:
     m = re.search(r"\b(EXW|FOB|CIF|DAP|DDP|CFR|CPT|FCA)\b(?!\w)", header)
     if m:
         return m.group(1).upper()
+    # Ex-works stated in prose as the basis for the whole offer ("based on
+    # Ex – New Corp warehouse", "prices are Ex works"). Requires the words
+    # "works" or "<place> warehouse" so a per-line "Ex Loen" on one FBC row
+    # is NOT read as a document-wide incoterm (Samuel 2026-11-18, EPIC).
+    if re.search(r"\bEx(?:[\s–—-]*works?\b"
+                 r"|[\s–—-]+[A-Z][\w]*(?:\s+[A-Z][\w]*)?\s+warehouse\b)",
+                 text, re.IGNORECASE):
+        return "EXW"
     return None
 
 
@@ -101,6 +109,15 @@ def detect_document_location(text: str) -> Optional[str]:
     """
     if not text:
         return None
+    # A global "Ex – <Place> warehouse" names the dispatch location for every
+    # line ("based on Ex – New Corp warehouse" → New Corp). Requires the word
+    # "warehouse" so a per-line "Ex Loen" / "DAP Newcorp" on one product row
+    # is never promoted to a document-wide location (Samuel 2026-11-18, EPIC).
+    mw = re.search(
+        r"\bEx[\s–—-]+([A-Z][\w]*(?:\s+[A-Z][\w]*)?)\s+warehouse\b",
+        text, re.IGNORECASE)
+    if mw:
+        return mw.group(1).strip()
     header = "\n".join(text.split("\n")[:15])
     m = _LOCATION_PATTERN.search(header)
     if not m:
@@ -111,6 +128,29 @@ def detect_document_location(text: str) -> Optional[str]:
                          "available", "confirmed", "the"}:
         return None
     return place
+
+
+def detect_document_commercial_conditions(text: str) -> Optional[str]:
+    """Capture document-wide commercial terms that are stated once but govern
+    every line — a sales-territory restriction and the payment terms — so they
+    appear on each offer instead of being lost (Samuel 2026-11-18, EPIC: "Stock
+    should NOT be Sold to any EU countries", "Payment terms … escrow"). Returns
+    a single ' | '-joined string, or None. Only fires on explicit phrasings, so
+    ordinary offers pick up nothing."""
+    if not text:
+        return None
+    clean = re.sub(r"(?m)^[>\s]+", "", text)
+    parts: list = []
+    if re.search(r"not\s+be\s+sold\s+to\s+any\s+eu|no\s+eu\s+sales?|not\s+for\s+(?:sale\s+in\s+)?(?:the\s+)?eu\b",
+                 clean, re.IGNORECASE):
+        parts.append("Not for sale to EU countries")
+    pm = re.search(r"(Payment\s+terms[^\n]*)", clean, re.IGNORECASE)
+    if pm:
+        parts.append(re.sub(r"\s+", " ", pm.group(1)).strip().rstrip("."))
+    esc = re.search(r"(Payment\s+to[^\n]*escrow[^\n]*)", clean, re.IGNORECASE)
+    if esc:
+        parts.append(re.sub(r"\s+", " ", esc.group(1)).strip().rstrip("."))
+    return " | ".join(parts) if parts else None
 
 
 def detect_supplier_from_metadata(text: str, source_filename: Optional[str] = None,
@@ -179,6 +219,7 @@ def apply_deterministic_defaults(products: list, source_text: str,
     doc_currency = detect_document_currency(source_text)
     doc_incoterm = detect_document_incoterm(source_text)
     doc_location = detect_document_location(source_text)
+    doc_conditions = detect_document_commercial_conditions(source_text)
     doc_supplier = detect_supplier_from_metadata(source_text, source_filename, sender_email)
     # Category is derived from strong deterministic signals (filename +
     # header keywords). If the LLM emits one anyway, we still normalise
@@ -226,6 +267,17 @@ def apply_deterministic_defaults(products: list, source_text: str,
         if doc_location and not _recon_ambiguous and (not row_loc or row_loc.lower() == "not found"):
             p["location"] = doc_location
             corrections.append(f"Row {i+1}: location=None → {doc_location} (inherited from document header)")
+
+        # ── document-wide commercial conditions ───────────────────────
+        # A once-stated territory restriction / payment terms govern every
+        # line. Append to any row-specific note (e.g. an ambiguous-basis price
+        # retained on Beefeater) rather than overwriting it.
+        if doc_conditions:
+            existing = (p.get("commercial_conditions") or "").strip()
+            if doc_conditions not in existing:
+                p["commercial_conditions"] = (
+                    f"{existing} | {doc_conditions}" if existing else doc_conditions)
+                corrections.append(f"Row {i+1}: commercial_conditions += document terms")
 
         # ── supplier ──────────────────────────────────────────────────
         row_sup = (p.get("supplier_name") or "").strip()
