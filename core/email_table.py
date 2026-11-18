@@ -159,6 +159,14 @@ def parse_flattened_price_table(text: str) -> Optional[List[Dict[str, Any]]]:
             "custom_status": "T" + re.sub(r"\D", "", tier),
             "currency": cur,
             "price_per_case": price_val,       # wholesale quote is per case
+            # The table's column is just "PRICE" with no stated basis; a
+            # wholesale offer priced per case (BTLS PER CASE + quantity in cases)
+            # is the standard reading, but it is NOT explicit in the source — so
+            # flag the basis as assumed (Samuel 2026-11-19, EPIC).
+            "commercial_conditions": "Price basis assumed PER CASE — the source "
+                                     "column is labelled only 'PRICE' (per-case is "
+                                     "the standard wholesale reading given BTLS/CASE "
+                                     "and case quantities, but not explicitly stated).",
             "category_slug": "wines_spirits",
             "bottle_or_can_type": btltype.strip().lower() or None,
             "refillable_status": ("refillable" if ref.strip().upper() == "REF"
@@ -173,7 +181,9 @@ def parse_flattened_price_table(text: str) -> Optional[List[Dict[str, Any]]]:
                 prod["quantity_case"] = qty_num
                 prod["quantity_unit"] = "cases"
         if status and status.strip():
-            prod["commercial_conditions"] = status.strip()
+            _existing_cc = prod.get("commercial_conditions")
+            prod["commercial_conditions"] = (
+                f"{status.strip()} | {_existing_cc}" if _existing_cc else status.strip())
         products.append(prod)
         i += _FIELDS_PER_RECORD
 
@@ -413,11 +423,54 @@ def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
                         if em:
                             prod["incoterm"] = "EXW"
                             prod["location"] = em.group(1)
+                # A SECOND delivery option quoted TBC / on-request in the same
+                # field ("DAP Riga: EUR 144/case; EXW Breda: price TBC") — keep it
+                # visible as a TBC alternative instead of dropping it (Samuel
+                # 2026-11-19, Veuve Clicquot).
+                _alt = re.search(
+                    r'[;/]\s*((?:EXW|DAP|DDP|FCA|CIF|CFR|FOB|CPT|Ex)\b[^;/]*?'
+                    r'(?:price\s*tbc|\btbc\b|on\s*request|to be confirmed)[^;/]*)',
+                    f, re.IGNORECASE)
+                if _alt:
+                    _an = "Also available " + _alt.group(1).strip()
+                    prod["commercial_conditions"] = (
+                        (prod.get("commercial_conditions") + " | " + _an)
+                        if prod.get("commercial_conditions") else _an)
+                    prod["needs_manual_review"] = True
+                continue
+            # A standalone delivery-term field ("DAP Riga? only if full truck",
+            # "location Loendersloot; Incoterm not stated") — extract incoterm +
+            # location and keep any conditional / not-stated qualifier, so a
+            # per-line term is not lost and then back-filled with a document
+            # default (Samuel 2026-11-19: Rémy Martin conditional DAP Riga and
+            # Beefeater's Loendersloot-with-no-incoterm were shown FCA Antwerp).
+            _im0 = _LL_INCO_RE.search(f)
+            _em0 = _LL_EX_RE.search(f) if not _im0 else None
+            _locm0 = re.search(r'location[:\s]+([A-Z][A-Za-z]+)', f, re.IGNORECASE)
+            if (_im0 or _em0 or _locm0) and not _LL_PRICE_RE.search(f):
+                if _im0 and not prod.get("incoterm"):
+                    prod["incoterm"] = _im0.group(1).upper(); prod["location"] = _im0.group(2)
+                elif _em0 and not prod.get("incoterm"):
+                    prod["incoterm"] = "EXW"; prod["location"] = _em0.group(1)
+                if _locm0 and not prod.get("location"):
+                    prod["location"] = _locm0.group(1)
+                if re.search(r'only if|conditional|\?|\btbc\b|to be confirmed|not stated', f, re.IGNORECASE):
+                    _dn = "Delivery note: " + f.strip().strip('"').strip("'").strip('“”')
+                    prod["commercial_conditions"] = (
+                        (prod.get("commercial_conditions") + " | " + _dn)
+                        if prod.get("commercial_conditions") else _dn)
+                    prod["needs_manual_review"] = True
                 continue
             if _PIPE_SIZE_RE.match(f) and len(f) <= 16:
                 sm = _LL_SIZE_RE.search(f)
                 if sm:
                     prod["unit_volume_ml"] = _ll_size_ml(sm.group(1), sm.group(2))
+                else:
+                    # A weight ("210g") is a solid's size — store grams, never ml
+                    # (Samuel 2026-11-19: Nishane candle size was blank on WhatsApp).
+                    _gm = re.search(r'(\d+(?:[.,]\d+)?)\s*g\b', f, re.IGNORECASE)
+                    if _gm:
+                        prod["size_weight_g"] = float(_gm.group(1).replace(",", "."))
                 continue
             if _PIPE_PACK_HINT.search(f):
                 _pk = _parse_pack(f)

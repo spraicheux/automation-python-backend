@@ -65,10 +65,33 @@ def detect_document_currency(text: str) -> Optional[str]:
     return None
 
 
+def _has_mixed_incoterms(text: str) -> bool:
+    """True when the document quotes two or more DISTINCT incoterms (a per-line
+    offer), so there is no single document-level incoterm/location to inherit.
+    A once-stated 'Ex works / <place> warehouse' basis is NOT counted — it is a
+    document-level EXW, not a per-line term."""
+    if not text:
+        return False
+    distinct = {m.group(1).upper() for m in re.finditer(
+        r"\b(EXW|FOB|CIF|DAP|DDP|CFR|CPT|CIP|DPU|FCA)\b", text)}
+    for m in re.finditer(r"\bEx\s+([A-Z][A-Za-z]+)", text):
+        if m.group(1).lower() not in ("works", "warehouse", "work"):
+            distinct.add("EXW")
+    return len(distinct) >= 2
+
+
 def detect_document_incoterm(text: str) -> Optional[str]:
     """Similar deterministic detection for document-wide incoterm.
     Only fires if the header explicitly names one (e.g. 'EXW Rotterdam')."""
     if not text:
+        return None
+    # A per-line / mixed-incoterm offer has NO single document incoterm, so
+    # never back-fill one onto a row that states none (Samuel 2026-11-19: FCA
+    # Antwerp from the first WhatsApp line bled onto Beefeater, which has no
+    # incoterm, and Rémy Martin, which is conditional DAP Riga). An "Ex works /
+    # <place> warehouse" basis stated once is a genuine document EXW (handled
+    # below) and is not counted here.
+    if _has_mixed_incoterms(text):
         return None
     header = "\n".join(text.split("\n")[:15])
     m = re.search(r"\b(EXW|FOB|CIF|DAP|DDP|CFR|CPT|FCA)\b(?!\w)", header)
@@ -108,6 +131,12 @@ def detect_document_location(text: str) -> Optional[str]:
     proper-noun place that follows it in the header.
     """
     if not text:
+        return None
+    # A per-line / mixed-incoterm offer has no document-wide location either —
+    # don't inherit one (Samuel 2026-11-19: Antwerp bled onto Beefeater on the
+    # WhatsApp offer). The global "Ex – <Place> warehouse" case below is exempt.
+    if _has_mixed_incoterms(text) and not re.search(
+            r"\bEx[\s–—-]+[A-Z][\w]*(?:\s+[A-Z][\w]*)?\s+warehouse\b", text, re.IGNORECASE):
         return None
     # A global "Ex – <Place> warehouse" names the dispatch location for every
     # line ("based on Ex – New Corp warehouse" → New Corp). Requires the word

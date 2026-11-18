@@ -804,6 +804,23 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     flags.append("Price on request retained")
                 prod["needs_manual_review"] = True
 
+            # ── Multi-option delivery where the PRICE applies to ONE option ──
+            # "EUR 171/case applies to DAP Antwerp only; EXW Breda price TBC" →
+            # resolve the stored incoterm/location to the PRICED option (DAP
+            # Antwerp) and keep the whole clause as a note, so the price is not
+            # shown as applying to both DAP and EXW (Samuel 2026-11-19, Moët).
+            if price_cell_raw:
+                _mo = re.search(r'applies to\s+([A-Z]{2,4})\s+([A-Z][A-Za-z]+)\s+only',
+                                price_cell_raw, re.IGNORECASE)
+                if _mo:
+                    prod["incoterm"] = _mo.group(1).upper()
+                    prod["location"] = _mo.group(2)
+                    _mnote = re.sub(r'\s+', ' ', price_cell_raw).strip()
+                    prod["commercial_conditions"] = (
+                        (prod.get("commercial_conditions") + " | " + _mnote)
+                        if prod.get("commercial_conditions") else _mnote)
+                    prod["needs_manual_review"] = True
+
             # ── Quantity (unit parsed from the cell) ───────────────────────
             _assign_quantity(prod, qty_val, qty_unit)
             # Stock stated in bottles/pieces with a known pack → also derive
