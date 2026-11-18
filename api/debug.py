@@ -245,6 +245,47 @@ async def inspect_saved_xlsx(pattern: str, rows: int = 45):
     return out
 
 
+@router.get("/debug/test-structured", dependencies=[Depends(_require_admin)])
+async def test_structured(pattern: str):
+    """Run the deterministic structured xlsx extractor on a saved file, in THIS
+    (prod) environment, and report exactly what it returns — so we can tell
+    whether the Excel is taking the structured path or silently falling to the
+    LLM (Samuel 2026-11-18: L'Oréal stored USD though the source says EUR).
+    Read-only; never calls the LLM."""
+    import os, glob, traceback
+    from core.file_store import _dir
+    if not pattern or len(pattern) < 3:
+        return {"error": "pattern too short (min 3 chars)"}
+    d = _dir()
+    matches = sorted(f for f in glob.glob(os.path.join(d, "*"))
+                     if pattern.lower() in os.path.basename(f).lower())
+    if not matches:
+        return {"error": "no saved file matches", "pattern": pattern}
+    path = matches[0]
+    out = {"file": os.path.basename(path), "dir": d}
+    try:
+        from core.xlsx_structured import extract_structured_products
+        prods = extract_structured_products(path)
+        out["structured_returned"] = None if prods is None else len(prods)
+        out["took_structured_path"] = bool(prods)
+        if prods:
+            out["sample"] = [
+                {"name": (p.get("brand") or "") + " " + (p.get("product_name") or ""),
+                 "currency": p.get("currency"),
+                 "price_per_unit": p.get("price_per_unit"),
+                 "price_per_case": p.get("price_per_case"),
+                 "unit_volume_ml": p.get("unit_volume_ml"),
+                 "size_weight_g": p.get("size_weight_g")}
+                for p in prods
+                if any(w in ((p.get("product_name") or "").lower())
+                       for w in ("oréal", "oreal", "beefeater", "cody", "cola",
+                                 "nishane", "perrier", "montblanc"))]
+    except Exception as e:
+        out["structured_error"] = f"{type(e).__name__}: {e}"
+        out["traceback"] = traceback.format_exc()[-1500:]
+    return out
+
+
 @router.get("/debug/worker")
 async def worker_status():
     """Is the Celery worker alive, how backed-up is it, and how many jobs are

@@ -3878,6 +3878,11 @@ def clean_product_data(product: dict) -> dict:
         'product_type': None,    # cosmetics: lipstick | foundation | …
         'shade': None,           # cosmetics: colour / variant string
         'size_weight_g': None,   # cosmetics (solids)
+        # A quoted amount whose basis was withheld ("USD 75 — basis not
+        # stated") is retained here by the extractor and must survive cleaning
+        # (Samuel 2026-11-18, Beefeater) — it was being dropped because the
+        # scaffold didn't carry it.
+        'commercial_conditions': None,
     }
 
     cleaned_product = {}
@@ -3992,7 +3997,26 @@ def clean_product_data(product: dict) -> dict:
     # in the past (see MIX SPIRITS HNS fix). Also skip the calc when
     # units_per_case = 1 — no real case pack in the source, so a "per case"
     # price would just duplicate the per-bottle price and pollute the DB.
-    if units and isinstance(units, (int, float)) and units > 1:
+    #
+    # Individual-piece items (testers, samples, miniatures, "individual
+    # pieces") are sold PER PIECE, not per case, so a fabricated case price
+    # (unit × pack) misrepresents the quote — Samuel 2026-11-18: Montblanc's
+    # 48 testers at USD 23.08/piece were shown as a USD 1107.84 "case" price.
+    # Only derive a case price for genuine case-packed goods.
+    _nm_l = (cleaned_product.get('product_name') or '').lower()
+    _pk_l = (str(cleaned_product.get('packaging') or '') + ' '
+             + str(cleaned_product.get('packaging_raw') or '')).lower()
+    _per_piece_item = (
+        (cleaned_product.get('retail_state') or '') in ('tester', 'sample', 'miniature')
+        or 'tester' in _nm_l
+        or any(k in _pk_l for k in ('individual', 'single piece', 'single candle',
+                                    'not case', 'per piece', 'pieces ='))
+    )
+    if _per_piece_item and units and isinstance(units, (int, float)) and units > 1:
+        logger.info(f"[clean_product_data] per-piece item — not fabricating a case "
+                    f"price from {ppu}×{units} (name={_nm_l!r})")
+    if (units and isinstance(units, (int, float)) and units > 1
+            and not _per_piece_item):
 
         if ppu and isinstance(ppu, (int, float)) and ppu > 0:
             if not ppc or not isinstance(ppc, (int, float)) or ppc <= 0:
@@ -4318,6 +4342,28 @@ def clean_product_data(product: dict) -> dict:
 
     logger.info(f"[clean_product_data] ===== END =====")
     logger.info(f"[clean_product_data] Final: product_name={cleaned_product.get('product_name')!r}, packaging={cleaned_product.get('packaging')!r}, units_per_case={cleaned_product.get('units_per_case')}, unit_volume_ml={cleaned_product.get('unit_volume_ml')}, price_per_case={cleaned_product.get('price_per_case')}, price_per_unit={cleaned_product.get('price_per_unit')}, quantity_case={cleaned_product.get('quantity_case')}, incoterm={cleaned_product.get('incoterm')!r}, custom_status={cleaned_product.get('custom_status')!r}, supplier_name={cleaned_product.get('supplier_name')!r}, supplier_email={cleaned_product.get('supplier_email')!r}, gift_box={cleaned_product.get('gift_box')!r}, moq_cases={cleaned_product.get('moq_cases')}, ean_code={cleaned_product.get('ean_code')!r}")
+
+    # ── Never invent a currency ────────────────────────────────────────
+    # A currency is only meaningful next to a monetary amount. The cleaned
+    # scaffold defaults currency to "EUR", which stamped call-for-quotation /
+    # price-on-request rows (no amount AND no currency in the source) as EUR
+    # (Samuel 2026-11-18: Cody Vody, Jack Daniel's & Cola). When the SOURCE
+    # gave no currency and the row has no numeric price, null it rather than
+    # defaulting. A row that kept an amount elsewhere (e.g. an ambiguous-basis
+    # price retained in commercial_conditions, like Beefeater "USD 75") still
+    # carries its source currency, so this leaves that untouched.
+    _src_cur = str(product.get('currency') or '').strip()
+    _cp_ppu = cleaned_product.get('price_per_unit')
+    _cp_ppc = cleaned_product.get('price_per_case')
+    _cp_has_price = ((isinstance(_cp_ppu, (int, float)) and _cp_ppu > 0)
+                     or (isinstance(_cp_ppc, (int, float)) and _cp_ppc > 0))
+    if not _src_cur and not _cp_has_price:
+        if cleaned_product.get('currency'):
+            logger.info(f"[clean_product_data] no source currency + no price — "
+                        f"clearing invented currency for {cleaned_product.get('product_name')!r}")
+        cleaned_product['currency'] = None
+        cleaned_product['price_per_unit_eur'] = None
+        cleaned_product['price_per_case_eur'] = None
 
     return cleaned_product
 

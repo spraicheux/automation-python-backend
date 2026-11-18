@@ -210,7 +210,18 @@ def _parse_size_ml(raw: Any) -> Optional[float]:
 _HEADER_UNIT_RE = re.compile(r"\b(ml|cl|l|litre|liter)\b", re.IGNORECASE)
 
 
+_WEIGHT_RE = re.compile(r"\d\s*(?:g|gr|gram|grams|kg)\b", re.IGNORECASE)
+_VOLUME_UNIT_RE = re.compile(r"\d\s*(?:ml|cl|l|litre|liter)\b", re.IGNORECASE)
+
+
 def _parse_size_with_header_unit(raw: Any, header: Any) -> Optional[float]:
+    # A weight ("210 g", "210gr", "1 kg") is NOT a volume. The old code
+    # defaulted a bare number to ml even when the cell said grams, so a 210 g
+    # candle was stored as 210 ml (Samuel 2026-11-18, Nishane). Grams are
+    # captured as size_weight_g by the caller; return no ml here.
+    _s = str(raw if raw is not None else "")
+    if _WEIGHT_RE.search(_s) and not _VOLUME_UNIT_RE.search(_s):
+        return None
     v = _to_float(raw)
     if v is None:
         return None
@@ -432,14 +443,22 @@ def _parse_pack(val: Any) -> Optional[float]:
         return float(val)
     s = str(val).strip()
     low = s.lower()
+    if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
+        return None
+    # A pack expressed purely in PIECES with no case/carton ("4 inner boxes ×
+    # 12 pieces = 48 pieces") is an individual-piece item sold per piece, not a
+    # 48-unit case — returning 48 here let a fabricated case price form
+    # downstream (Samuel 2026-11-18: Montblanc testers). A real case names a
+    # case / carton.
+    if ("piece" in low or "pcs" in low) and not any(
+            w in low for w in ("case", "carton", "/cs", "per cs", "ctn")):
+        return None
     m = re.search(r'=\s*(\d[\d,]*)', s)
     if m:
         return _num_thousands(m.group(1))
     m = re.search(r'(\d[\d,]*)\s*[A-Za-z ]*?(?:/|per)\s*case', s, re.IGNORECASE)
     if m:
         return _num_thousands(m.group(1))
-    if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
-        return None
     m = re.search(r'(\d[\d,]*)', s)
     return _num_thousands(m.group(1)) if m else None
 
@@ -532,6 +551,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             prod: Dict[str, Any] = {}
             qty_val: Optional[float] = None
             qty_unit: Optional[str] = None
+            qty_raw: str = ""
             moq_val: Optional[float] = None
             moq_unit_inline: Optional[str] = None
             price_value: Optional[float] = None
@@ -591,6 +611,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # MOQ may carry its own inline unit ("1 pallet", "1 FTL").
                     moq_val, moq_unit_inline = _split_num_unit(val)
                 elif field == "_quantity":
+                    qty_raw = str(val)
                     qty_val, _qu = _parse_quantity_cell(val)
                     if _qu:
                         qty_unit = _qu
@@ -609,6 +630,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                             val, ws.cell(row=header_row, column=col).value)
                     if ml is not None:
                         prod["unit_volume_ml"] = ml
+                    else:
+                        # A weight ("210 g") is a solid's size — store grams,
+                        # never coerce to ml (Samuel 2026-11-18, Nishane candle).
+                        _gm = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:g|gr|gram|grams)\b",
+                                        str(val), re.IGNORECASE)
+                        if _gm:
+                            prod["size_weight_g"] = float(_gm.group(1).replace(",", "."))
                 elif field == "_category":
                     slug = _category_slug(val)
                     if slug:
@@ -787,6 +815,26 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         float(prod["quantity_bottles"]) / float(_upc), 2)
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
+
+            # ── Mixed quantity ("10 cases + 2 loose bottles") ──────────────
+            # _parse_quantity_cell returns only the primary count, dropping the
+            # loose remainder (Samuel 2026-11-18: Perrier-Jouët's 2 loose
+            # bottles were lost). Capture a "+ N <unit>" secondary and keep
+            # BOTH the cases and the loose units. Done after the bottles→cases
+            # derivation above so it does not get overwritten.
+            if qty_raw and "+" in qty_raw:
+                _sec = re.search(
+                    r"\+\s*(\d[\d,]*)\s*(?:loose\s+)?"
+                    r"(bottle|bottles|btl|piece|pieces|pcs|can|cans|unit|units|case|cases)",
+                    qty_raw, re.IGNORECASE)
+                if _sec:
+                    _sn = _num_thousands(_sec.group(1))
+                    _su = _sec.group(2).lower()
+                    if _sn:
+                        if _su.startswith("case"):
+                            prod["quantity_case"] = (prod.get("quantity_case") or 0) + _sn
+                        elif not prod.get("quantity_bottles"):
+                            prod["quantity_bottles"] = _sn
 
             # ── MOQ (unit follows the source — client §5) ──────────────────
             if moq_val is not None:
