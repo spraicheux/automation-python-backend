@@ -139,6 +139,13 @@ ALIASES: dict[str, str] = {
 
 _WS_RE = re.compile(r"\s+")
 _PUNCT_STRIP_RE = re.compile(r"[.,/\\]")
+# Every apostrophe variant a supplier might type, folded to a space so
+# "Jack Daniel's", "Jack Daniel’s" (curly, U+2019 — the common one from
+# Office autocorrect / Apple Mail) and "Jack Daniel s" all normalize alike.
+# The old code only stripped the straight U+0027, so any curly apostrophe
+# left the brand unmatched (Samuel 2026-11-18: Jack Daniel's, L'Oréal,
+# Hendrick's stored as brand="Not Found").
+_APOS_RE = re.compile("['‘’‛ʼʹ′`´＇]")
 
 
 def _normalize(s: str) -> str:
@@ -153,7 +160,7 @@ def _normalize(s: str) -> str:
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower().strip()
     s = s.replace("&", " and ")
-    s = s.replace("'", " ").replace("'", " ").replace("'", " ")
+    s = _APOS_RE.sub(" ", s)
     s = _PUNCT_STRIP_RE.sub(" ", s)
     s = _WS_RE.sub(" ", s).strip()
     return s
