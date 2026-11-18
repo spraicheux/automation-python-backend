@@ -841,6 +841,24 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
        - If currency == EUR: EUR fields = native price fields.
        - Otherwise: EUR = native * fx_rate (using AI-provided fx_rate or fallback)
     """
+    # A row with no numeric price carries no tradeable amount: keep whatever
+    # currency the deterministic extraction set — USD for an ambiguous-basis
+    # "USD 75" retained in commercial_conditions, None for a call-for-quotation
+    # / price-on-request line — and NEVER stamp EUR on it (Samuel 2026-11-18:
+    # Cody Vody / Jack Daniel's & Cola had no price and no currency in the
+    # source but were forced to EUR here). No price ⇒ no FX.
+    _has_price = ((_safe_float(safe_data.get('price_per_unit')) or 0) > 0
+                  or (_safe_float(safe_data.get('price_per_case')) or 0) > 0)
+    if not _has_price:
+        safe_data['price_per_unit_eur'] = None
+        safe_data['price_per_case_eur'] = None
+        safe_data['fx_rate'] = None
+        _c = (safe_data.get('currency') or '').strip()
+        _c = _CURRENCY_SYMBOLS.get(_c, _c).upper() if _c else None
+        safe_data['currency'] = _c or None
+        if safe_data.get('currency') is None:
+            safe_data['fx_source'] = None
+        return safe_data
     # Per-row currency override: when the row's OWN source line quotes a single
     # currency different from the (possibly chunk-broadcast) value the LLM set,
     # trust the source line and force an FX recompute. Guarded to one unambiguous
@@ -1199,8 +1217,15 @@ def _propagate_dual_currency(offers: list, job_id: str) -> int:
         cat = str(o.get('category_slug') or o.get('category') or '').lower()
         if 'perfume' not in cat and 'cosmetic' not in cat:
             return False
-        return ('HKD' in str(o.get('commercial_conditions') or '')
-                or 'ECB' in str(o.get('fx_source') or ''))
+        # The ONLY reliable evidence of a dual-currency HK sheet is the
+        # "List price HKD …/USD …" note that _reconcile_multicurrency_retail
+        # writes when a row actually carried both. A plain USD-priced perfume
+        # (e.g. a tester at USD 195/piece) converts via ECB like any non-EUR
+        # row, so 'ECB in fx_source' is NOT dual-currency evidence — it made
+        # this propagate every USD perfume row, flipping genuinely-EUR cosmetics
+        # to USD on an ordinary structured spreadsheet (Samuel 2026-11-18:
+        # L'Oréal "EUR 7.80/piece" stored as USD on the AQT file).
+        return 'HKD' in str(o.get('commercial_conditions') or '')
 
     if len([o for o in offers if _is_conf(o)]) < 2:
         return 0
@@ -2537,7 +2562,14 @@ def _apply_offer_level(safe_data: dict, conditions, cond_valid_until,
     one. All condition / source notes are merged into error_flags so nothing
     is silently dropped."""
     if conditions:
-        safe_data['commercial_conditions'] = conditions
+        # Merge, never overwrite — a row may already carry its OWN note (an
+        # ambiguous-basis price retained as-quoted, e.g. Beefeater "USD 75"),
+        # which must survive alongside the offer-level terms (Samuel 2026-11-18).
+        _existing = (safe_data.get('commercial_conditions') or '').strip()
+        if not _existing:
+            safe_data['commercial_conditions'] = conditions
+        elif conditions not in _existing:
+            safe_data['commercial_conditions'] = f"{_existing} | {conditions}"
     if source_type:
         # VARCHAR(255) column — truncate, never let a long value fail the save.
         safe_data['source_type'] = str(source_type)[:255]
@@ -3081,7 +3113,11 @@ async def process_offer(payload, job_id: str):
                         'quantity_ftl': merged_data.get('quantity_ftl'),
                         'gift_box': merged_data.get('gift_box'),
                         'refillable_status': merged_data.get('refillable_status') or "",
-                        'currency': merged_data.get('currency') or "EUR",
+                        # Preserve the extraction's currency (incl. None for a
+                        # no-price row); _normalize_currency_and_prices applies
+                        # the EUR default only to a PRICED row (Samuel 2026-11-18).
+                        'currency': merged_data.get('currency'),
+                        'commercial_conditions': merged_data.get('commercial_conditions'),
                         'price_per_unit': _safe_float(merged_data.get('price_per_unit')),
                         'price_per_unit_eur': _safe_float(merged_data.get('price_per_unit_eur')),
                         'price_per_case': _safe_float(merged_data.get('price_per_case')),
@@ -3504,7 +3540,11 @@ async def process_offer(payload, job_id: str):
                     'quantity_ftl': extracted_data.get('quantity_ftl'),
                     'gift_box': extracted_data.get('gift_box'),
                     'refillable_status': extracted_data.get('refillable_status') or "",
-                    'currency': extracted_data.get('currency') or "EUR",
+                    # Preserve the extraction's currency (incl. None for a
+                    # no-price row); _normalize applies the EUR default only to
+                    # a priced row (Samuel 2026-11-18).
+                    'currency': extracted_data.get('currency'),
+                    'commercial_conditions': extracted_data.get('commercial_conditions'),
                     'price_per_unit': _safe_float(extracted_data.get('price_per_unit')),
                     'price_per_unit_eur': _safe_float(extracted_data.get('price_per_unit_eur')),
                     'price_per_case': _safe_float(extracted_data.get('price_per_case')),
