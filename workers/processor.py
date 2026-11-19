@@ -2707,33 +2707,34 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     dropped |= _rec.drop_summary_rows(offers)
     if not dropped and changed == 0:
         return
+    # Rewrite this job's rows cleanly: delete all rows for the job, reset the
+    # source counters, then re-save the reconciled `offers` through the proven
+    # save path (save_offer_to_db) so every row gets the correct source_file_id,
+    # product_count and canonicalisation. A cross-session bulk UPDATE left the
+    # updated rows unqueryable; a delete-and-reinsert is the safe path.
     try:
         db = get_session_factory()()
         try:
-            if dropped:
-                db.query(OfferItemDB).filter(
-                    OfferItemDB.job_id == job_id,
-                    OfferItemDB.uid.in_(dropped)).delete(synchronize_session=False)
-            for o in offers:
-                if not o.get("_dirty"):
-                    continue
-                vals = {f: o.get(f) for f in _RECONCILE_FIELDS}
-                db.query(OfferItemDB).filter(
-                    OfferItemDB.job_id == job_id,
-                    OfferItemDB.uid == o.get("uid")).update(
-                        vals, synchronize_session=False)
+            db.query(OfferItemDB).filter(
+                OfferItemDB.job_id == job_id).delete(synchronize_session=False)
             sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
-            if sf and dropped and sf.product_count:
-                sf.product_count = max(0, sf.product_count - len(dropped))
-                if getattr(sf, "imported_row_count", None):
-                    sf.imported_row_count = max(0, sf.imported_row_count - len(dropped))
+            if sf:
+                sf.product_count = 0
+                sf.imported_row_count = 0
             db.commit()
-            logger.info(f"reconcile: {changed} field-fix(es), {len(dropped)} row(s) "
-                        f"removed for job {job_id}")
         finally:
             db.close()
     except Exception as e:
-        logger.warning(f"reconcile DB sync failed for {job_id}: {e}")
+        logger.warning(f"reconcile pre-clear failed for {job_id}: {e}")
+        return
+    for o in offers:
+        o.pop("_dirty", None)
+        try:
+            save_offer_to_db(o, job_id)
+        except Exception as e:
+            logger.warning(f"reconcile re-save failed for a row in {job_id}: {e}")
+    logger.info(f"reconcile: {changed} field-fix(es), {len(dropped)} row(s) removed; "
+                f"re-saved {len(offers)} row(s) for job {job_id}")
 
 
 async def process_offer(payload, job_id: str):
