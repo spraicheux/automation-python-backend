@@ -167,7 +167,15 @@ def process_document_task(self, job_id: str, payload_dict: dict):
             logger.info(f"Job {job_id} finished processing with status: {status} ({total} products written to Excel)")
             # clear_error: a job that was parked 'OpenAI out of credits' and then
             # resumed must not keep showing the stale outage error once it's done.
-            update_intake(job_id, status="done", products=total, clear_error=True)
+            if total > 0:
+                update_intake(job_id, status="done", products=total, clear_error=True)
+            else:
+                # 0 offers: process_offer's own finalize already set the correct
+                # terminal status — a buy-side 'request', or 'no_offer_content'
+                # with its reason. Do NOT clobber it back to a green 'done'/0:
+                # that both hid RFQs and was the "DONE – 0 products" bug (Samuel).
+                logger.info(f"Job {job_id}: 0 offers — keeping the intake status "
+                            f"process_offer set (request / no_offer_content)")
         else:
             logger.error(f"Job {job_id} finished but no result was found in RedisManager.")
             update_intake(job_id, status="done", products=0, clear_error=True)
@@ -231,7 +239,7 @@ def worker_code_probe():
         pass
     return {
         "host": socket.gethostname(),
-        "build": "rfqfix2",
+        "build": "rfqfix3",
         "my_epoch": _MY_EPOCH,
         "current_epoch": _cur_epoch,
         "is_current": (_MY_EPOCH is not None and _MY_EPOCH == _cur_epoch),
