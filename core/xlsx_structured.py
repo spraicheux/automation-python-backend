@@ -445,11 +445,21 @@ def _parse_pack(val: Any) -> Optional[float]:
     low = s.lower()
     if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
         return None
-    # A pack expressed purely in PIECES with no case/carton ("4 inner boxes ×
-    # 12 pieces = 48 pieces") is an individual-piece item sold per piece, not a
-    # 48-unit case — returning 48 here let a fabricated case price form
-    # downstream (Samuel 2026-11-18: Montblanc testers). A real case names a
-    # case / carton.
+    # Inner-box pack ("4 inner boxes × 12 pieces = 48 pieces"): the pack size is
+    # the pieces-per-inner-box (12), NOT the 48-piece grand total. The item is
+    # still priced per piece — the per-piece guard in clean_product_data keeps
+    # price_per_case empty — and the export labels the pack an "inner box" via
+    # moq_unit (Samuel 2026-11-19: Montblanc was shown "per piece", MOQ "cases").
+    m_ib = (re.search(r'inner\s*box(?:es)?\s*[x×]\s*(\d[\d,]*)\s*(?:pieces?|pcs?)',
+                      s, re.IGNORECASE)
+            or re.search(r'(\d[\d,]*)\s*(?:pieces?|pcs?)\s*(?:/|per)\s*inner\s*box',
+                         s, re.IGNORECASE))
+    if m_ib:
+        return _num_thousands(m_ib.group(1))
+    # A pack expressed purely in PIECES with no case/carton (an individual-piece
+    # item sold per piece, e.g. a single candle) is not a case — returning the
+    # piece total here let a fabricated case price form downstream (Samuel
+    # 2026-11-18). A real case names a case / carton.
     if ("piece" in low or "pcs" in low) and not any(
             w in low for w in ("case", "carton", "/cs", "per cs", "ctn")):
         return None
@@ -881,6 +891,12 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 elif _mu in ("bottle", "bottles", "btl", "unit", "units"):
                     prod["moq_bottles"] = moq_val
                     prod["moq_unit"] = "bottles"
+                elif "inner" in _mu:
+                    # Inner box(es) — a pack unit the source states explicitly;
+                    # keep the native unit so the export reads "2 inner boxes",
+                    # not "2 cases" (Samuel 2026-11-19, Montblanc).
+                    prod["moq_cases"] = moq_val
+                    prod["moq_unit"] = "inner boxes"
                 else:
                     prod["moq_cases"] = moq_val
                     prod["moq_unit"] = "cases"

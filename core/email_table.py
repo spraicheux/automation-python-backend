@@ -230,6 +230,11 @@ _LL_INCO_RE = re.compile(
     r'\b(DAP|DDP|EXW|FCA|CIF|CFR|CNF|FOB|CPT|CIP|DPU)\b\s*([A-Z][A-Za-z]+)',
     re.IGNORECASE)
 _LL_EX_RE = re.compile(r'\bEx\s+([A-Z][A-Za-z]+)')   # "Ex Loen" / "Ex Miami" -> EXW
+# Availability / lead time a broker states inline ("on floor" = in stock now,
+# "3 weeks", "4-5 weeks") — a delivery field that was being dropped (Samuel
+# 2026-11-19: FBC "on floor" and week ranges missing from the export).
+_LL_AVAIL_RE = re.compile(r'\bon\s+floor\b', re.IGNORECASE)
+_LL_LEAD_RE = re.compile(r'\b(\d+(?:\s*[-–]\s*\d+)?)\s*weeks?\b', re.IGNORECASE)
 
 
 def _ll_size_ml(raw: str, unit: str) -> Optional[float]:
@@ -288,6 +293,19 @@ def _ll_parse_line(line: str) -> Optional[Dict[str, Any]]:
         if em:
             prod["incoterm"] = "EXW"
             prod["location"] = em.group(1)
+
+    # Availability / lead time ("on floor", "3 weeks", "4-5 weeks") — kept in
+    # lead_time so the export shows it next to the delivery term (Samuel
+    # 2026-11-19). These sit after the "@" price clause, so they never bleed
+    # into the product name (the name is cut at/before the price clause below).
+    _avail = []
+    if _LL_AVAIL_RE.search(line):
+        _avail.append("on floor")
+    _lm = _LL_LEAD_RE.search(line)
+    if _lm:
+        _avail.append(re.sub(r"\s+", "", _lm.group(1)) + " weeks")
+    if _avail:
+        prod["lead_time"] = ", ".join(_avail)
 
     # Name = the text before the first of: pack (NxNcl), a bare size, " FTL ",
     # a quantity, or the "@". A real product name never carries price syntax.
@@ -350,6 +368,13 @@ _PIPE_QTY_HINT = re.compile(
 _PIPE_SIZE_RE = re.compile(r'^\s*\d+(?:[.,]\d+)?\s*(ml|cl|l|g)\b', re.IGNORECASE)
 _PIPE_T_RE = re.compile(r'^\s*T\s*/?\s*([12])\s*$', re.IGNORECASE)
 _PIPE_FTL_RE = re.compile(r'\bfull\s*truck|\bftl\b', re.IGNORECASE)
+# An explicit NON-quantity ("case quantity not stated", "qty not given"). The
+# word "case"/"quantity" inside it must not be read as a real count — stripped
+# before the qty-hint test (Samuel 2026-11-19: Rémy "1 full truck; case quantity
+# not stated" was stored as "1 cases").
+_QTY_NEG_RE = re.compile(
+    r'\b(?:\w+\s+){0,3}not\s+(?:stated|given|specified|provided|known|available)\b',
+    re.IGNORECASE)
 
 # "MOQ 6 cases", "MOQ 2 inner boxes", "MOQ 1 pallet", "MOQ 1 inner box (12 pieces)"
 _MOQ_NUM_UNIT_RE = re.compile(
@@ -389,7 +414,9 @@ def _apply_moq(prod: Dict[str, Any], moq_str: str) -> None:
         prod["moq_bottles"] = val; prod["moq_unit"] = "pieces"
     elif u.startswith("bottle") or u.startswith("btl"):
         prod["moq_bottles"] = val; prod["moq_unit"] = "bottles"
-    else:  # cases, units, inner box(es) → the trading case count (as the xlsx path does)
+    elif "inner" in u:  # inner box(es) — a pack unit the source states explicitly
+        prod["moq_cases"] = val; prod["moq_unit"] = "inner boxes"
+    else:  # cases, units → the trading case count
         prod["moq_cases"] = val; prod["moq_unit"] = "cases"
 
 
@@ -529,15 +556,42 @@ def parse_pipe_list_offer(text: str) -> Optional[List[Dict[str, Any]]]:
                 _pk = _parse_pack(f)
                 if _pk:
                     prod["units_per_case"] = _pk
+                    # An inner-box pack ("4 inner boxes x 12 pieces = 48 pieces")
+                    # carries the per-inner-box count (12, via _parse_pack) AND
+                    # the piece total (48) in ONE field, and is priced per piece.
+                    # Capture that total as the quantity here (the fall-through
+                    # that used to do it no longer runs now that _parse_pack
+                    # returns a value), and tag the MOQ/export in inner boxes
+                    # (Samuel 2026-11-19: Montblanc shown "per piece").
+                    if re.search(r'inner\s*box', f, re.IGNORECASE):
+                        _tot = re.search(r'=\s*(\d[\d,]*)\s*(?:pieces?|pcs?)',
+                                         f, re.IGNORECASE)
+                        if _tot and not any(prod.get(k) for k in (
+                                "quantity_bottles", "quantity_case",
+                                "quantity_pallets", "quantity_ftl")):
+                            prod["quantity_bottles"] = _num(_tot.group(1).replace(",", ""))
+                            prod["quantity_unit"] = "pieces"
                     continue
-                # Not a real case pack (an individual-piece line like "4 inner
-                # boxes x 12 pieces = 48 pieces") — fall through so the quantity
-                # branch can capture the "= 48 pieces" TOTAL that would otherwise
-                # be swallowed here (Samuel 2026-11-18: Montblanc's 48 pieces were
-                # missing from the quantity field on the WhatsApp offer).
-            if _PIPE_FTL_RE.search(f) and not _PIPE_QTY_HINT.search(re.sub(_PIPE_FTL_RE.pattern, "", f, flags=re.IGNORECASE)):
-                prod["quantity_ftl"] = 1.0; prod["quantity_unit"] = "ftl"
-                continue
+                # Not a real case pack (an individual-piece line like "single
+                # candle") — fall through so the quantity branch can capture a
+                # "= N pieces" TOTAL that would otherwise be swallowed here.
+            if _PIPE_FTL_RE.search(f):
+                # Strip the FTL token AND any explicit "quantity not stated"
+                # negation, then test what remains: only a REAL count (e.g.
+                # "800 cases FTL") should fall through to the quantity branch.
+                # "1 full truck; case quantity not stated" leaves no count, so it
+                # is a full-truck quantity with the case count unknown.
+                _resid = _QTY_NEG_RE.sub(" ",
+                    re.sub(_PIPE_FTL_RE.pattern, " ", f, flags=re.IGNORECASE))
+                if not _PIPE_QTY_HINT.search(_resid):
+                    prod["quantity_ftl"] = 1.0; prod["quantity_unit"] = "ftl"
+                    if _QTY_NEG_RE.search(f):
+                        _qn = "Case quantity not stated by supplier"
+                        prod["commercial_conditions"] = (
+                            (prod.get("commercial_conditions") + " | " + _qn)
+                            if prod.get("commercial_conditions") else _qn)
+                        prod["needs_manual_review"] = True
+                    continue
             if _PIPE_QTY_HINT.search(f):
                 n, u = _parse_quantity_cell(f)
                 if n is not None:
