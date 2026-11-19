@@ -2679,11 +2679,50 @@ def _apply_offer_defaults(data: dict) -> dict:
     return data
 
 
-_RECONCILE_FIELDS = (
-    "price_per_unit", "price_per_unit_eur", "price_per_case", "price_per_case_eur",
-    "units_per_case", "quantity_case", "quantity_bottles", "quantity_unit",
-    "moq_cases", "moq_unit", "commercial_conditions", "needs_manual_review",
-    "error_flags")
+def _refresh_selfcheck(job_id: str, source_text: str) -> None:
+    """Re-run the tier-2 self-check on the CURRENT stored rows and overwrite the
+    source's reconciliation, so the dashboard/export banner reflects the
+    reconciled rows (otherwise it keeps the pre-reconcile flags — e.g. the
+    stale 'case price does not match' after the price-shift repair)."""
+    try:
+        from core.reconcile import reconcile_source_vs_rows
+        from core.field_check import check_field_accuracy, check_source_fidelity
+        import json as _json
+        db = get_session_factory()()
+        try:
+            stored = [{
+                "brand": o.brand, "product_name": o.product_name,
+                "currency": o.currency,
+                "price_per_unit": o.price_per_unit, "price_per_case": o.price_per_case,
+                "price_per_unit_eur": o.price_per_unit_eur,
+                "price_per_case_eur": o.price_per_case_eur,
+                "quantity_case": o.quantity_case, "quantity_bottles": o.quantity_bottles,
+                "units_per_case": o.units_per_case, "unit_volume_ml": o.unit_volume_ml,
+                "size_weight_g": o.size_weight_g, "incoterm": o.incoterm,
+                "location": o.location, "commercial_conditions": o.commercial_conditions,
+            } for o in db.query(OfferItemDB).filter(OfferItemDB.job_id == job_id).all()]
+            missed, phantom = [], []
+            if source_text:
+                _rc = reconcile_source_vs_rows(source_text, stored)
+                missed, phantom = _rc.get("missed", []), _rc.get("phantom", [])
+            field_issues = check_field_accuracy(stored)
+            try:
+                src_fid = check_source_fidelity(stored, source_text or "")
+            except Exception:
+                src_fid = []
+            result = {"missed": missed, "phantom": phantom,
+                      "field_issues": field_issues, "source_fidelity": src_fid}
+            any_issue = missed or phantom or field_issues or src_fid
+            sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
+            if sf is not None:
+                sf.reconciliation = _json.dumps(result) if any_issue else None
+                db.commit()
+            logger.info(f"reconcile: self-check refreshed for {job_id} — "
+                        f"{len(field_issues)} field, {len(src_fid)} fidelity")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"self-check refresh failed for {job_id}: {e}")
 
 
 def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
@@ -2735,6 +2774,8 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
             logger.warning(f"reconcile re-save failed for a row in {job_id}: {e}")
     logger.info(f"reconcile: {changed} field-fix(es), {len(dropped)} row(s) removed; "
                 f"re-saved {len(offers)} row(s) for job {job_id}")
+    # Recompute the self-check on the reconciled rows so the banner is not stale.
+    _refresh_selfcheck(job_id, source_text or "")
 
 
 async def process_offer(payload, job_id: str):
