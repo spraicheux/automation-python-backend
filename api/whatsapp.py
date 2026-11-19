@@ -32,6 +32,7 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 
 from core.redis_client import redis_manager
 from core.intake_log import record_intake, update_intake
+from core.inquiry import classify_inquiry
 from core.ingest_service import (enqueue_offer, media_attachment,
                                  detect_supplier_from_text, DuplicateIngest)
 
@@ -189,6 +190,15 @@ def _plan_message(msg: Dict[str, Any], contacts: Dict[str, str]) -> Dict[str, An
         body = (msg.get("text") or {}).get("body") or ""
         if len(body.strip()) < _MIN_TEXT_OFFER_CHARS:
             return {"status": "skip", "wamid": wamid, "reason": "short text"}
+        # A buy-side inquiry / RFQ carries no sell-side offer — mark it as a
+        # "request" (visible in the dashboard) instead of running offer
+        # extraction, which would drop the phantom row and trip the fail-loud
+        # guard (Samuel 2026-11-19: Havana Club "do you have any offer?").
+        _inq = classify_inquiry(body)
+        if _inq:
+            return {"status": "request", "wamid": wamid, "sender": sender,
+                    "source_filename": f"wa-{short}-text.txt",
+                    "sender_name": sender_name, "summary": _inq["reason"]}
         return {
             "status": "ingest", "wamid": wamid, "sender": sender,
             "kwargs": dict(
@@ -240,7 +250,7 @@ async def whatsapp_inbound(
         return JSONResponse({"status": "ignored", "reason": "bad json"}, status_code=200)
 
     messages, contacts = _collect_messages(payload)
-    enqueued = skipped = failed = 0
+    enqueued = skipped = failed = requests = 0
 
     for msg in messages:
         try:
@@ -272,6 +282,23 @@ async def whatsapp_inbound(
             if plan["status"] == "error":
                 failed += 1
                 logger.error(f"wa {plan['wamid'] or '?'}: {plan['reason']}")
+                continue
+            if plan["status"] == "request":
+                # Buy-side inquiry / RFQ — record it as a visible "request", never
+                # an offer. seen-set claim keeps a webhook retry from re-adding it.
+                if _already_seen(plan["wamid"]):
+                    skipped += 1
+                    logger.info(f"wa {plan['wamid']}: request already seen — skipped (retry)")
+                    continue
+                jid = str(uuid.uuid4())
+                record_intake(jid, channel="whatsapp",
+                              source_filename=plan.get("source_filename") or f"wa-{plan['wamid']}",
+                              sender_name=plan.get("sender_name"),
+                              has_text=True, status="request")
+                update_intake(jid, products=0, error=plan.get("summary"))
+                requests += 1
+                logger.info(f"wa {plan['wamid']} from {plan['sender']}: buy inquiry/RFQ "
+                            f"— recorded as request (not an offer)")
                 continue
             # ingest (media or substantive text)
             if _already_seen(plan["wamid"]):
@@ -328,6 +355,7 @@ async def whatsapp_inbound(
             logger.error(f"wa {msg.get('id','?')}: enqueue failed: {e}")
 
     logger.info(f"wa webhook: {len(messages)} msg(s), {enqueued} enqueued, "
-                f"{skipped} skipped, {failed} failed")
+                f"{requests} request(s), {skipped} skipped, {failed} failed")
     # Always 200 so 360dialog stops retrying the batch.
-    return {"status": "ok", "enqueued": enqueued, "skipped": skipped, "failed": failed}
+    return {"status": "ok", "enqueued": enqueued, "requests": requests,
+            "skipped": skipped, "failed": failed}

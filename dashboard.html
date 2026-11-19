@@ -1091,14 +1091,18 @@
                      // A readable offer that yielded 0 rows is NOT a success —
                      // amber "NEEDS REVIEW", never a green DONE (Samuel 2026-11-11,
                      // CHELSEA images shown as "DONE – 0 products").
-                     no_offer_content: '#d97706', needs_review: '#d97706' };
+                     no_offer_content: '#d97706', needs_review: '#d97706',
+                     // A buy-side inquiry / RFQ is not an offer and not a failure
+                     // — its own sky-blue "REQUEST" pill (Samuel 2026-11-19).
+                     request: '#0ea5e9' };
     const labels = { no_credits: 'NO CREDITS', no_offer_content: 'NEEDS REVIEW',
-                     needs_review: 'NEEDS REVIEW' };
+                     needs_review: 'NEEDS REVIEW', request: 'REQUEST' };
     const st = (i.status || 'queued');
     const c = colors[st] || '#64748b';
     const chan = (i.channel || '—').toUpperCase();
     const when = String(i.received_at || '').replace('T', ' ').replace('Z', '');
-    const prod = (i.products != null) ? ` · ${i.products} products` : '';
+    const prod = (st === 'request') ? ' · buy inquiry (RFQ)'
+               : ((i.products != null) ? ` · ${i.products} products` : '');
     const sup = i.supplier_name ? `supplier: ${escapeHtml(i.supplier_name)}`
               : (i.sender_name ? `from: ${escapeHtml(i.sender_name)}` : '');
     const errColor = (st === 'failed') ? '#ef4444' : 'var(--text-dim)';

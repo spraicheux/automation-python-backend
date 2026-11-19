@@ -2685,6 +2685,8 @@ async def process_offer(payload, job_id: str):
         extracted_data = {}
         all_products = []
         valid_count = 0
+        _is_request = False   # buy-side inquiry / RFQ, not an offer
+        _inq = None
 
         redis_manager.set_job_status(job_id, "processing")
 
@@ -3478,12 +3480,26 @@ async def process_offer(payload, job_id: str):
             # duplicate-skip inside save_offer_to_db (valid_count>0) never trips
             # this, and a legitimately empty extraction has all_products==[].
             if valid_count == 0:
-                _msg = (f"{len(all_products)} product(s) extracted but 0 persisted "
-                        f"for job {job_id} — every row was dropped before save "
-                        f"(check product_key / required fields). Failing loudly "
-                        f"instead of reporting done-with-0.")
-                logger.error(f"[process_offer] {_msg}")
-                raise RuntimeError(_msg)
+                # Backstop for a buy-side inquiry / RFQ that slipped past intake
+                # detection: offer extraction pulls a phantom product that drops
+                # at save. That is NOT a failed offer — classify it, mark it a
+                # "request", and fall through to the 0-offer completion instead of
+                # failing loudly (Samuel 2026-11-19, Havana Club "do you have any
+                # offer?").
+                from core.inquiry import classify_inquiry as _classify_inq
+                _inq = (_classify_inq(payload.text_body)
+                        if (payload.text_body and not payload.attachments) else None)
+                if _inq:
+                    _is_request = True
+                    logger.info(f"[process_offer] job {job_id}: buy inquiry/RFQ, no "
+                                f"sell-side offer — recording as request, not failing")
+                else:
+                    _msg = (f"{len(all_products)} product(s) extracted but 0 persisted "
+                            f"for job {job_id} — every row was dropped before save "
+                            f"(check product_key / required fields). Failing loudly "
+                            f"instead of reporting done-with-0.")
+                    logger.error(f"[process_offer] {_msg}")
+                    raise RuntimeError(_msg)
 
             # ── Tier-2 self-check: name the exact missed / phantom rows ──────
             # Price-join the raw source to the stored rows and record which
@@ -3521,7 +3537,7 @@ async def process_offer(payload, job_id: str):
                     # the source lines); the field-accuracy check runs on EVERY
                     # ingest path — it inspects the stored rows alone.
                     _missed, _phantom = [], []
-                    if payload.text_body and not payload.attachments:
+                    if payload.text_body and not payload.attachments and not _is_request:
                         _rec = reconcile_source_vs_rows(payload.text_body, _stored)
                         _missed, _phantom = _rec.get("missed", []), _rec.get("phantom", [])
                     _field_issues = check_field_accuracy(_stored)
@@ -3892,7 +3908,13 @@ async def process_offer(payload, job_id: str):
         # attachments unreadable) on the intake feed.
         try:
             from core.intake_log import update_intake
-            if len(offers) == 0:
+            if len(offers) == 0 and _is_request:
+                # A buy-side inquiry / RFQ — not an offer, not a failure.
+                update_intake(job_id, status="request", products=0,
+                              error=(_inq or {}).get("reason")
+                              or "Buy inquiry (RFQ) — no sell-side offer")
+                logger.info(f"Job {job_id} is a buy inquiry/RFQ — recorded as request")
+            elif len(offers) == 0:
                 _why = []
                 if _skipped_signatures:
                     _why.append("only signature/decorative image(s): "

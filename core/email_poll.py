@@ -29,6 +29,7 @@ from core.intake_log import record_intake, update_intake
 from core.file_store import save_file
 from core.ingest_service import (enqueue_offer, buffer_attachment, file_attachment,
                                  detect_supplier_from_text, DuplicateIngest)
+from core.inquiry import classify_inquiry
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def run_email_poll() -> Dict[str, Any]:
         logger.error(f"email poll fetch failed: {e}\n{traceback.format_exc()}")
         return {"error": str(e)}
 
-    enqueued = skipped = failed = 0
+    enqueued = skipped = failed = requests = 0
     for m in messages:
         atts = m.get("attachments") or []
         body = (m.get("text_body") or "")
@@ -93,6 +94,10 @@ def run_email_poll() -> Dict[str, Any]:
             # still consults the subject as a LAST-resort fallback when the body
             # and the LLM both find nothing, so a subject-only supplier survives.
             supplier = detect_supplier_from_text(body)  # body only, never sender/subject
+            # A buy-side inquiry / RFQ (no attachment, buy intent, no prices) is
+            # NOT an offer — record it as a visible "request" and do NOT run it
+            # through offer extraction (no phantom rows, no wasted LLM call).
+            inq = classify_inquiry(body) if not atts else None
             if atts:
                 # Persist each attachment to durable storage and reference it,
                 # so nothing is lost and the job can be retried. Fall back to an
@@ -117,6 +122,17 @@ def run_email_poll() -> Dict[str, Any]:
                 enqueued += 1
                 logger.info(f"email uid {m.get('uid')} enqueued job {res['job_id']} "
                             f"({len(built)} file(s): {[a['fileName'] for a in atts]})")
+            elif inq:
+                jid = str(uuid.uuid4())
+                record_intake(jid, channel="email",
+                              source_filename=_text_source_filename(m),
+                              sender_name=m.get("from_name"),
+                              sender_email=m.get("from_email"),
+                              has_text=True, status="request")
+                update_intake(jid, products=0, error=inq["reason"])
+                requests += 1
+                logger.info(f"email uid {m.get('uid')} from {m.get('from_email')} "
+                            f"is a buy inquiry/RFQ — recorded as request, not enqueued")
             elif len(body.strip()) >= _MIN_TEXT_OFFER_CHARS:
                 res = enqueue_offer(
                     source_channel="email", source_message_id=msg_id,
@@ -151,6 +167,6 @@ def run_email_poll() -> Dict[str, Any]:
             logger.error(f"email uid {m.get('uid')} enqueue failed: {e}")
 
     logger.info(f"email poll done: {len(messages)} new, {enqueued} enqueued, "
-                f"{skipped} skipped, {failed} failed")
-    return {"new": len(messages), "enqueued": enqueued,
+                f"{requests} request(s), {skipped} skipped, {failed} failed")
+    return {"new": len(messages), "enqueued": enqueued, "requests": requests,
             "skipped": skipped, "failed": failed}
