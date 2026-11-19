@@ -2679,6 +2679,63 @@ def _apply_offer_defaults(data: dict) -> dict:
     return data
 
 
+_RECONCILE_FIELDS = (
+    "price_per_unit", "price_per_unit_eur", "price_per_case", "price_per_case_eur",
+    "units_per_case", "quantity_case", "quantity_bottles", "quantity_unit",
+    "moq_cases", "moq_unit", "commercial_conditions", "needs_manual_review",
+    "error_flags")
+
+
+def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
+    """Deterministic source-reconciliation passes for a TEXT offer (Samuel
+    2026-11-19): repair shifted per-case prices, inner-box packs, loose-piece
+    quantities, unstated price basis, and collapse one lot quoted under two
+    delivery terms / drop series-summary rows. Each pass is conservative (acts
+    only on an unambiguous signal), then we sync the DB: delete removed rows,
+    update the fields of changed ones, and fix the source count."""
+    if not offers:
+        return
+    from core import offer_reconcile as _rec
+    src = source_text or ""
+    changed = 0
+    changed += _rec.repair_case_prices_from_source(offers, src)
+    changed += _rec.fix_inner_box_from_text(offers, src)
+    changed += _rec.recover_loose_pieces_qty(offers, src)
+    changed += _rec.flag_unstated_price_basis(offers, src)
+    dropped = set()
+    dropped |= _rec.merge_alt_delivery_lots(offers)
+    dropped |= _rec.drop_summary_rows(offers)
+    if not dropped and changed == 0:
+        return
+    try:
+        db = get_session_factory()()
+        try:
+            if dropped:
+                db.query(OfferItemDB).filter(
+                    OfferItemDB.job_id == job_id,
+                    OfferItemDB.uid.in_(dropped)).delete(synchronize_session=False)
+            for o in offers:
+                if not o.get("_dirty"):
+                    continue
+                vals = {f: o.get(f) for f in _RECONCILE_FIELDS}
+                db.query(OfferItemDB).filter(
+                    OfferItemDB.job_id == job_id,
+                    OfferItemDB.uid == o.get("uid")).update(
+                        vals, synchronize_session=False)
+            sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
+            if sf and dropped and sf.product_count:
+                sf.product_count = max(0, sf.product_count - len(dropped))
+                if getattr(sf, "imported_row_count", None):
+                    sf.imported_row_count = max(0, sf.imported_row_count - len(dropped))
+            db.commit()
+            logger.info(f"reconcile: {changed} field-fix(es), {len(dropped)} row(s) "
+                        f"removed for job {job_id}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"reconcile DB sync failed for {job_id}: {e}")
+
+
 async def process_offer(payload, job_id: str):
     try:
         uid = str(uuid.uuid4())
@@ -3882,6 +3939,12 @@ async def process_offer(payload, job_id: str):
             #     dense image that transcribed without HKD/USD labels still shows
             #     the supplier's currency, not a stray EUR with no conversion.
             _propagate_dual_currency(offers, job_id)
+            # Source-reconciliation for TEXT offers only (email / WhatsApp body):
+            # price-shift, inner-box, loose pieces, unstated basis, same-lot
+            # merge, summary-row drop (Samuel 2026-11-19). Gated to text-only so
+            # spreadsheet / attachment offers (own structured parsers) are untouched.
+            if getattr(payload, 'text_body', None) and not getattr(payload, 'attachments', None):
+                _reconcile_text_offer(offers, _recov_src, job_id)
         except Exception as _cp_exc:
             logger.warning(f"completeness pass failed for {job_id}: {_cp_exc}")
 
