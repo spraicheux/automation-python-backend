@@ -2687,6 +2687,19 @@ async def process_offer(payload, job_id: str):
         valid_count = 0
         _is_request = False   # buy-side inquiry / RFQ, not an offer
         _inq = None
+        # Classify a text-only inbound as a buy-side inquiry / RFQ up front, so a
+        # message with no sell-side offer is recorded as a "request" even when
+        # extraction yields NOTHING (e.g. on reprocess) — not only when it pulls a
+        # phantom row that drops at save. New inbound is already caught at intake;
+        # this covers the worker path (Samuel 2026-11-19, Havana Club RFQ).
+        try:
+            if payload.text_body and not payload.attachments:
+                from core.inquiry import classify_inquiry as _classify_inq
+                _inq = _classify_inq(payload.text_body)
+                _is_request = bool(_inq)
+        except Exception as _iqe:
+            logger.warning(f"inquiry pre-classify skipped for {job_id}: {_iqe}")
+            _inq = None; _is_request = False
 
         redis_manager.set_job_status(job_id, "processing")
 
@@ -3486,11 +3499,7 @@ async def process_offer(payload, job_id: str):
                 # "request", and fall through to the 0-offer completion instead of
                 # failing loudly (Samuel 2026-11-19, Havana Club "do you have any
                 # offer?").
-                from core.inquiry import classify_inquiry as _classify_inq
-                _inq = (_classify_inq(payload.text_body)
-                        if (payload.text_body and not payload.attachments) else None)
-                if _inq:
-                    _is_request = True
+                if _is_request:
                     logger.info(f"[process_offer] job {job_id}: buy inquiry/RFQ, no "
                                 f"sell-side offer — recording as request, not failing")
                 else:
