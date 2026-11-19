@@ -2780,6 +2780,70 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     _refresh_selfcheck(job_id, source_text or "")
 
 
+def _sync_basis_from_twin(offers: list, job_id: str) -> None:
+    """Clear a spreadsheet row's DERIVED price when the same supplier quoted that
+    item with an unstated basis in another source (Northbridge Excel Beefeater ←
+    its WhatsApp twin). Runs for EVERY offer, so it covers the xlsx path too."""
+    if not offers:
+        return
+    from core import offer_reconcile as _rec
+    import re as _re
+    twin_map: dict = {}
+    try:
+        db = get_session_factory()()
+        try:
+            twins = db.query(OfferItemDB).filter(
+                OfferItemDB.needs_manual_review.is_(True),
+                OfferItemDB.price_per_case.is_(None),
+                OfferItemDB.price_per_unit.is_(None),
+                OfferItemDB.job_id != job_id).all()
+            for t in twins:
+                cc = t.commercial_conditions or ""
+                m = _re.search(r"as quoted:\s*\S*\s*([\d][\d.,]*)", cc, _re.I)
+                if not m:
+                    continue
+                try:
+                    amt = round(float(m.group(1).replace(",", "")), 2)
+                except ValueError:
+                    continue
+                k = _rec._twin_key_fields(t.supplier_name, t.brand, t.unit_volume_ml)
+                twin_map.setdefault(k, set()).add(amt)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"basis-twin lookup failed for {job_id}: {e}")
+        return
+    if not twin_map:
+        return
+    changed = _rec.apply_basis_from_twin(offers, twin_map)
+    if not changed:
+        return
+    try:
+        db = get_session_factory()()
+        try:
+            db.query(OfferItemDB).filter(
+                OfferItemDB.job_id == job_id).delete(synchronize_session=False)
+            sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
+            if sf:
+                sf.product_count = 0
+                sf.imported_row_count = 0
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"basis-twin pre-clear failed for {job_id}: {e}")
+        return
+    for o in offers:
+        o.pop("_dirty", None)
+        try:
+            save_offer_to_db(o, job_id)
+        except Exception as e:
+            logger.warning(f"basis-twin re-save failed for {job_id}: {e}")
+    logger.info(f"basis-twin: cleared {changed} derived price(s) mirroring an "
+                f"unstated-basis twin for job {job_id}")
+    _refresh_selfcheck(job_id, "")
+
+
 async def process_offer(payload, job_id: str):
     try:
         uid = str(uuid.uuid4())
@@ -3989,6 +4053,9 @@ async def process_offer(payload, job_id: str):
             # spreadsheet / attachment offers (own structured parsers) are untouched.
             if getattr(payload, 'text_body', None) and not getattr(payload, 'attachments', None):
                 _reconcile_text_offer(offers, _recov_src, job_id)
+            # Cross-source basis sync runs for EVERY offer (incl. spreadsheets), so
+            # a row mirroring a WhatsApp basis-unstated twin is cleared too.
+            _sync_basis_from_twin(offers, job_id)
         except Exception as _cp_exc:
             logger.warning(f"completeness pass failed for {job_id}: {_cp_exc}")
 

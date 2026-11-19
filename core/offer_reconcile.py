@@ -371,6 +371,48 @@ def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) 
     return changed
 
 
+def _twin_key_fields(supplier, brand, vol) -> tuple:
+    v = _f(vol)
+    return (_norm(supplier), _norm(brand), round(v) if v else 0)
+
+
+def apply_basis_from_twin(offers: List[Dict[str, Any]], twin_map: Dict[tuple, set]) -> int:
+    """Cross-source basis sync (Samuel 2026-11-20): when the SAME supplier quotes
+    a product with an unstated price basis in a text/WhatsApp twin (prices
+    cleared), a spreadsheet row for the same item that merely DERIVED a case
+    price (price_per_case == unit × pack) is the same ambiguous quote — clear it
+    too and keep the quoted amount. Keyed on (supplier, brand, volume) AND the
+    quoted amount, so a different SKU of the same brand (Rémy XO vs VSOP) with its
+    own price is never touched, and an INDEPENDENT case price is left alone."""
+    changed = 0
+    for o in offers:
+        pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
+        upc = _f(o.get("units_per_case"))
+        if not (pc or pu):
+            continue
+        amounts = twin_map.get(_twin_key_fields(o.get("supplier_name"),
+                                                o.get("brand"), o.get("unit_volume_ml")))
+        if not amounts:
+            continue
+        if not any(abs(a - x) < 0.5 for a in amounts for x in (pu or 0.0, pc or 0.0)):
+            continue  # not the same quoted amount → different line
+        if pc and pu and upc and abs(pc - pu * upc) > 0.5:
+            continue  # an independent case price (not derived) → leave it
+        cur = _clean(o.get("currency")); amt = pu or pc
+        for f in ("price_per_unit", "price_per_case",
+                  "price_per_unit_eur", "price_per_case_eur"):
+            o[f] = None
+        o["needs_manual_review"] = True
+        note = (f"as quoted: {cur + ' ' if cur else ''}{amt:g} (price basis not "
+                f"stated — matches the supplier's other quote for this item)")
+        cc = _clean(o.get("commercial_conditions"))
+        if "as quoted" not in cc.lower():
+            o["commercial_conditions"] = (cc + " | " if cc else "") + note
+        _mark(o)
+        changed += 1
+    return changed
+
+
 _NO_CURRENCY_RE = re.compile(
     r"call\s+for\s+quotation|price\s+on\s+request|on\s+request|"
     r"no\s+(?:amount|price)?\s*/?\s*(?:and\s*)?currency|no\s+amount",
