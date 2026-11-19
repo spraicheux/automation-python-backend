@@ -109,6 +109,8 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
                 dropped.add(o.get("uid"))
                 term = " ".join(x for x in (_clean(o.get("incoterm")), _clean(o.get("location"))) if x)
                 if term:
+                    if not _f(o.get("price_per_case")) and not _f(o.get("price_per_unit")):
+                        term += " (price TBC)"
                     alts.append(term)
             if alts:
                 note = "Also available: " + " ; ".join(dict.fromkeys(alts))
@@ -302,19 +304,98 @@ def flag_unstated_price_basis(offers: List[Dict[str, Any]], source_text: str) ->
         ln = _source_line_for(o, lines)
         if not ln or not _BASIS_UNSTATED_RE.search(ln):
             continue
-        if o.get("needs_manual_review") and "basis not stated" in (str(o.get("commercial_conditions") or "")).lower():
+        already = ("as quoted" in (str(o.get("commercial_conditions") or "")).lower()
+                   and not _f(o.get("price_per_case"))
+                   and not _f(o.get("price_per_unit")))
+        if already:
             continue
+        # Keep the quoted amount + currency, but CLEAR both price fields so the
+        # amount is excluded from Best Prices / alerts until the supplier
+        # confirms the basis (Samuel 2026-11-20: Beefeater USD 75, Rémy XO
+        # EUR 138 — source leaves bottle-or-case unspecified).
+        cur = _clean(o.get("currency"))
+        amt = _f(o.get("price_per_case")) or _f(o.get("price_per_unit"))
+        for f in ("price_per_unit", "price_per_case",
+                  "price_per_unit_eur", "price_per_case_eur"):
+            o[f] = None
         o["needs_manual_review"] = True
+        quoted = f"{cur} {amt:g}".strip() if amt else "amount"
         flags = list(o.get("error_flags") or [])
-        note = "price basis not stated in source (per bottle or case) — confirm basis"
-        if note not in flags:
-            flags.append(note)
+        fnote = (f"{quoted} quoted — price basis not stated (per bottle or case); "
+                 f"excluded from price comparison until confirmed")
+        if fnote not in flags:
+            flags.append(fnote)
         o["error_flags"] = flags
         cc = _clean(o.get("commercial_conditions"))
-        if "basis not stated" not in cc.lower():
-            o["commercial_conditions"] = (cc + " | " if cc else "") + "Price basis not stated by supplier"
+        if "as quoted" not in cc.lower():
+            o["commercial_conditions"] = ((cc + " | " if cc else "")
+                                          + f"as quoted: {quoted} (price basis not stated)")
         _mark(o)
         changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+_LOOSE_ADDON_RE = re.compile(
+    r"(\d[\d,]*)\s*cases?\s*(?:\+|plus|and)\s*(\d[\d,]*)\s*(?:loose\s*)?(?:bottles?|btls?|pieces?|pcs?)\b",
+    re.IGNORECASE)
+
+
+def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Capture a 'N cases + M loose bottles' addon the extractor dropped
+    (Perrier-Jouët: 10 cases + 2 loose bottles). Keeps the case count and records
+    the loose bottles so the quantity reads '10 cases + 2 units', not just 10."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        qc = _f(o.get("quantity_case"))
+        if not qc or _f(o.get("quantity_bottles")):
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln:
+            continue
+        m = _LOOSE_ADDON_RE.search(ln)
+        if not m:
+            continue
+        cases = _int(m.group(1)); loose = _int(m.group(2))
+        if cases and loose and float(cases) == qc:
+            o["quantity_bottles"] = float(loose)
+            cc = _clean(o.get("commercial_conditions"))
+            if "loose" not in cc.lower():
+                o["commercial_conditions"] = ((cc + " | " if cc else "")
+                    + f"+ {loose} loose bottle" + ("s" if loose != 1 else ""))
+            _mark(o)
+            changed += 1
+    return changed
+
+
+_NO_CURRENCY_RE = re.compile(
+    r"call\s+for\s+quotation|price\s+on\s+request|on\s+request|"
+    r"no\s+(?:amount|price)?\s*/?\s*(?:and\s*)?currency|no\s+amount",
+    re.IGNORECASE)
+
+
+def clear_currency_on_request(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """A 'call for quotation' / 'price on request' line with no amount should not
+    carry an (inherited/default) currency (Samuel 2026-11-20: Cody, JD & Cola —
+    no currency was quoted). Only clears when the row has NO price at all."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        if _f(o.get("price_per_case")) or _f(o.get("price_per_unit")):
+            continue
+        if not _clean(o.get("currency")):
+            continue
+        ln = _source_line_for(o, lines)
+        if ln and _NO_CURRENCY_RE.search(ln):
+            o["currency"] = None
+            o["needs_manual_review"] = True
+            _mark(o)
+            changed += 1
     return changed
 
 
