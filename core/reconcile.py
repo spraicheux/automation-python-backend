@@ -29,11 +29,16 @@ _CUR = {
     "hkd": "HKD", "chf": "CHF", "sgd": "SGD", "jpy": "JPY", "aed": "AED",
     "cny": "CNY", "cad": "CAD", "aud": "AUD",
 }
-_CUR_ALT = r"€|£|\$|¥|\b(?:eur|euro|usd|gbp|hkd|chf|sgd|jpy|aed|cny|cad|aud)\b"
-# A price token, currency either before or after the number.
+# A word-currency may sit directly against a digit ("11,25Euro") but not inside
+# another word ("neuro"), so bound it by non-letters rather than \b.
+_CUR_ALT = (r"€|£|\$|¥|(?<![a-z])(?:eur|euro|usd|gbp|hkd|chf|sgd|jpy|aed|cny|cad|aud)(?![a-z])")
+# A price token, currency either before or after the number. The gap is SPACES
+# only (not tab/newline) so a tab-separated quantity never glues to the next
+# cell's currency symbol — "1215<TAB>$89.25" is 89.25, not 1215 (Samuel
+# 2026-11-20: URD tab-table read every Qnty/cs column as the price).
 _PRICE_RE = re.compile(
-    rf"(?P<c1>{_CUR_ALT})\s*(?P<a1>\d[\d.,]*)"
-    rf"|(?P<a2>\d[\d.,]*)\s*(?P<c2>{_CUR_ALT})",
+    rf"(?P<c1>{_CUR_ALT})[  ]*(?P<a1>\d[\d.,]*)"
+    rf"|(?P<a2>\d[\d.,]*)[  ]*(?P<c2>{_CUR_ALT})",
     re.IGNORECASE)
 # A quantity token ("300 cases", "1,560 cases", "9,600 bottles", "48 pieces").
 _QTY_RE = re.compile(
@@ -45,12 +50,31 @@ _NOPRICE_RE = re.compile(
     re.IGNORECASE)
 
 
-def _amt(raw: str) -> Optional[float]:
-    """English number format: comma = thousands, dot = decimal."""
-    try:
-        return round(float(str(raw).replace(",", "").strip()), 2)
+def _amt_variants(raw: str) -> List[float]:
+    """Plausible numeric values for a raw amount token under BOTH conventions —
+    English '1,234.50' (comma = thousands) and European '7,05' / '341,25' (comma =
+    decimal). The self-check joins a source price to a stored row if EITHER reading
+    agrees, so a European 'Euro 7,05' still matches its 7.05 row instead of being
+    read as 705 and falsely reported missed (Samuel 2026-11-20: ERKAN beer offer,
+    every line priced '7,05 Euro per case')."""
+    s = str(raw).strip()
+    out: set = set()
+    try:                                   # English: strip thousands commas
+        v = round(float(s.replace(",", "")), 2)
+        if v > 0:
+            out.add(v)
     except (TypeError, ValueError):
-        return None
+        pass
+    # European decimal ONLY when a comma is followed by exactly two digits and no
+    # dot-decimal is present ("7,05", "10,20", "341,25") — never for "1,800".
+    if re.search(r",\d{2}\b", s) and not re.search(r"\.\d", s):
+        try:
+            v = round(float(s.replace(".", "").replace(",", ".")), 2)
+            if v > 0:
+                out.add(v)
+        except (TypeError, ValueError):
+            pass
+    return list(out)
 
 
 def _cur(raw: Any) -> Optional[str]:
@@ -62,9 +86,8 @@ def _cur(raw: Any) -> Optional[str]:
 def _line_prices(line: str) -> List[Tuple[float, Optional[str]]]:
     out = []
     for m in _PRICE_RE.finditer(line):
-        a = _amt(m.group("a1") or m.group("a2"))
         c = _cur(m.group("c1") or m.group("c2"))
-        if a is not None and a > 0:
+        for a in _amt_variants(m.group("a1") or m.group("a2")):
             out.append((a, c))
     return out
 
@@ -146,6 +169,18 @@ def reconcile_source_vs_rows(source_text: str,
                     ps.append((round(float(v), 2), c))
             except (TypeError, ValueError):
                 pass
+        if not ps:
+            # A basis-unconfirmed row carries its quoted amount in the conditions,
+            # NOT in a price field (kept out of Best Prices). Join it on that
+            # amount so its priced source line is not falsely reported missed
+            # (Samuel 2026-11-20: Woodford "USD 96, basis unconfirmed" showed as
+            # "not imported although it is visible").
+            cc = str(r.get("commercial_conditions") or "")
+            mq = re.search(r"as quoted:\s*([^\d]*?)([\d][\d.,]*)", cc, re.IGNORECASE)
+            if mq:
+                qc = c or _cur((mq.group(1) or "").strip())
+                for a in _amt_variants(mq.group(2)):
+                    ps.append((a, qc))
         sigs.append({"row": r, "prices": ps, "matched": False,
                      "brand": (r.get("brand") or "").strip().lower(),
                      "qty": r.get("quantity_case") or r.get("quantity_bottles")})

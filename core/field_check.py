@@ -206,6 +206,8 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
              "price basis unconfirmed — quoted amount kept, bottle/case price left blank"),
             ("basis not stated",
              "price basis unconfirmed — quoted amount kept, bottle/case price left blank"),
+            ("per load",
+             "quantity is a truckload capacity, not available stock — stock not stated"),
         ):
             if marker in cc_low:
                 _marker_rows.setdefault(why, []).append(name)

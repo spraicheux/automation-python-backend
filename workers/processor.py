@@ -2738,9 +2738,13 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     src = source_text or ""
     changed = 0
     changed += _rec.repair_case_prices_from_source(offers, src)
+    changed += _rec.recover_tab_table_fields(offers, src)
     changed += _rec.fix_inner_box_from_text(offers, src)
+    changed += _rec.fix_inner_box_of_n(offers, src)
     changed += _rec.recover_loose_pieces_qty(offers, src)
     changed += _rec.recover_loose_bottles_addon(offers, src)
+    changed += _rec.fix_multipack_units(offers, src)
+    changed += _rec.separate_load_capacity(offers, src)
     changed += _rec.clear_currency_on_request(offers, src)
     changed += _rec.capture_conditional_incoterm(offers, src)
     changed += _rec.flag_unstated_price_basis(offers, src)

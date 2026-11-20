@@ -96,8 +96,15 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
             if _primary_qty(lot[0]) is None:
                 continue
             pcs = {round(_f(o.get("price_per_case")), 2) for o in lot if _f(o.get("price_per_case"))}
-            if len(pcs) > 1:
-                continue  # different case prices → different lots, leave them
+            locs = {(_norm(o.get("incoterm")), _norm(o.get("location"))) for o in lot}
+            # Same product, same quantity, same pack. When the case prices differ
+            # it is STILL one lot if the delivery terms differ — a single stock
+            # quoted under two incoterms at two prices (Samuel 2026-11-20:
+            # Drambuie, 364 cases, "both options are for the same stock": EUR
+            # 79.20/case EXW Breda OR EUR 83.40/case DAP Lille). Only two rows with
+            # the SAME delivery and different prices are genuinely separate.
+            if len(pcs) > 1 and len(locs) < 2:
+                continue
             keep = sorted(lot, key=lambda o: (
                 bool(_f(o.get("price_per_case"))),
                 bool(_clean(o.get("lead_time"))),
@@ -109,17 +116,21 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
                 dropped.add(o.get("uid"))
                 term = " ".join(x for x in (_clean(o.get("incoterm")), _clean(o.get("location"))) if x)
                 if term:
-                    if not _f(o.get("price_per_case")) and not _f(o.get("price_per_unit")):
+                    apc = _f(o.get("price_per_case")); acur = _clean(o.get("currency"))
+                    if apc and len(pcs) > 1:
+                        # delivery-specific alternate price → state it explicitly
+                        term += f" ({(acur + ' ') if acur else ''}{apc:g}/case)"
+                    elif not apc and not _f(o.get("price_per_unit")):
                         term += " (price TBC)"
                     alts.append(term)
             if alts:
                 note = "Also available: " + " ; ".join(dict.fromkeys(alts))
-                # The merge requires a single shared case price, so when the kept
-                # row carries one, state it on the alternative term too — it is
-                # the SAME lot at the SAME price, not a second quote (Samuel
-                # 2026-11-20: Jägermeister EXW confirmed same EUR 78/case).
+                # When the lot shares ONE case price, state it on the alternative
+                # term too — same lot, same price, not a second quote (Jägermeister
+                # EXW confirmed same EUR 78/case). When the alternates carry their
+                # own prices (above) the note already shows them, so skip this.
                 kpc = _f(keep.get("price_per_case")); kcur = _clean(keep.get("currency"))
-                if kpc and kcur and not any("price TBC" in a for a in alts):
+                if kpc and kcur and len(pcs) <= 1 and not any("price TBC" in a for a in alts):
                     note += f" (same {kcur} {kpc:g}/case)"
                 cc = _clean(keep.get("commercial_conditions"))
                 keep["commercial_conditions"] = (cc + " | " if cc else "") + note
@@ -628,6 +639,308 @@ def repair_case_prices_from_source(offers: List[Dict[str, Any]], source_text: st
             o["price_per_unit"] = cand["per_bottle"]
             o["price_per_unit_eur"] = None
             dirty = True
+        if dirty:
+            _mark(o); changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A case written "A x B x <size>" holds A*B saleable units (4 x 6 x 33cl = 24
+# cans), not B. The extractor read units_per_case = B and set the per-"unit"
+# price to case/A — i.e. the inner (six-pack) price, not the per-can price
+# (Samuel 2026-11-20: ERKAN beer offer).
+_MULTIPACK_RE = re.compile(
+    r"\b(\d{1,2})\s*[x×*]\s*(\d{1,2})\s*[x×*]\s*\d[\d.,]*\s*(?:cl|ml|l)\b", re.IGNORECASE)
+
+
+def fix_multipack_units(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Correct the pack of a multi-pack case "A x B x size": units_per_case = A*B
+    and per-unit price = case price / (A*B), so the unit price is per can, not per
+    inner six-pack. Matched by the inner count B the extractor mis-stored, so a
+    normal "24 x 33cl" case (single multiplier) is never touched."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for ln in lines:
+        m = _MULTIPACK_RE.search(ln)
+        if not m:
+            continue
+        a = _int(m.group(1)); b = _int(m.group(2))
+        if not a or not b or a < 2:
+            continue
+        units = a * b
+        ltoks = set(re.findall(r"[a-z0-9]+", ln.lower()))
+        best = None; score = 0
+        for o in offers:
+            if _f(o.get("units_per_case")) != float(b):   # the mis-stored inner count
+                continue
+            ot = set(re.findall(r"[a-z0-9]+", _ident(o).lower()))
+            s = sum(1 for t in ot if len(t) > 2 and t in ltoks)
+            if s > score:
+                best, score = o, s
+        if not best or score < 1:
+            continue
+        best["units_per_case"] = float(units)
+        pc = _f(best.get("price_per_case"))
+        if pc:
+            best["price_per_unit"] = round(pc / units, 4)
+            pce = _f(best.get("price_per_case_eur"))
+            best["price_per_unit_eur"] = round(pce / units, 4) if pce else None
+        _mark(best); changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+_PER_LOAD_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*per\s*load", re.IGNORECASE)
+_AVAIL_QTY_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*(?:available|in\s*stock|offered)", re.IGNORECASE)
+
+
+def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """"N cases per load" is a truckload CAPACITY, not available stock — keep them
+    apart (Samuel 2026-11-20: ERKAN Carlsberg lines stored "2882 cases per load" as
+    the quantity). When a product block states a per-load figure and NO "cases
+    available", clear the quantity the extractor took from it and note the load
+    capacity, flagged for review. A block that states real "cases available" is
+    left untouched."""
+    if not source_text:
+        return 0
+    blocks = [b for b in re.split(r"\n\s*\n", str(source_text)) if b.strip()]
+    changed = 0
+    for b in blocks:
+        ml = _PER_LOAD_RE.search(b)
+        if not ml or _AVAIL_QTY_RE.search(b):
+            continue
+        load_n = _int(ml.group(1))
+        if not load_n:
+            continue
+        btoks = set(re.findall(r"[a-z0-9]+", b.lower()))
+        for o in offers:
+            if _f(o.get("quantity_case")) != float(load_n):
+                continue
+            ot = set(t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2)
+            if not (ot & btoks):
+                continue
+            o["quantity_case"] = None
+            o["needs_manual_review"] = True
+            cc = _clean(o.get("commercial_conditions"))
+            if "per load" not in cc.lower():
+                o["commercial_conditions"] = (cc + " | " if cc else "") + (
+                    f"{load_n} cases per load (truckload capacity; "
+                    f"available stock not stated)")
+            _mark(o); changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+_WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+_INNERBOX_OF_RE = re.compile(r"(\w+)\s+inner\s*box(?:es)?\s+of\s+(\w+)", re.IGNORECASE)
+_LOOSE_PLUS_RE = re.compile(r"plus\s+(\w+)\s+loose", re.IGNORECASE)
+_MIN_INNER_RE = re.compile(r"minimum\s+(\w+)\s+inner", re.IGNORECASE)
+
+
+def _wordnum(tok) -> Optional[int]:
+    t = str(tok).strip().lower()
+    if t.isdigit():
+        return int(t)
+    return _WORDNUM.get(t)
+
+
+def fix_inner_box_of_n(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Handle the "N inner boxes of M candles, plus K loose candles" phrasing with
+    spelled-out numbers (Samuel 2026-11-20: Lalique — "Six inner boxes of four
+    candles, plus two loose candles" = 26 pieces). Sets quantity in pieces, pack =
+    pieces per inner box, MOQ in inner boxes, and drops a fabricated case price for
+    per-piece pricing — like fix_inner_box_from_text but for the 'of' wording."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _source_line_for(o, lines)
+        if not ln:
+            continue
+        m = _INNERBOX_OF_RE.search(ln)
+        if not m:
+            continue
+        boxes = _wordnum(m.group(1)); per = _wordnum(m.group(2))
+        if not boxes or not per:
+            continue
+        total = boxes * per
+        lm = _LOOSE_PLUS_RE.search(ln)
+        loose = _wordnum(lm.group(1)) if lm else 0
+        if loose:
+            total += loose
+        o["units_per_case"] = float(per)
+        o["quantity_unit"] = "pieces"
+        o["quantity_bottles"] = float(total)
+        o["quantity_case"] = None
+        if re.search(r"per\s+(?:candle|piece|pc)\b", ln, re.IGNORECASE):
+            o["price_per_case"] = None
+            o["price_per_case_eur"] = None
+        mm = _MIN_INNER_RE.search(ln)
+        if mm and _wordnum(mm.group(1)):
+            o["moq_cases"] = float(_wordnum(mm.group(1)))
+            o["moq_unit"] = "inner boxes"
+        cc = _clean(o.get("commercial_conditions"))
+        note = f"{boxes} inner boxes of {per}" + (f" + {loose} loose" if loose else "")
+        if "inner box" not in cc.lower():
+            o["commercial_conditions"] = (cc + " | " if cc else "") + note
+        _mark(o)
+        changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recover the structured fields of a TAB-separated price table the free-text
+# extractor flattened (Samuel 2026-11-20: URD Exports — every row lost Qnty/cs,
+# location and category; 6 brands came through "Not Found").
+_CATEGORY_WORDS = {
+    "rum": ("Spirits", "Rum"), "tequila": ("Spirits", "Tequila"),
+    "whisky": ("Spirits", "Whisky"), "whiskey": ("Spirits", "Whisky"),
+    "liqueur": ("Spirits", "Liqueur"), "liquer": ("Spirits", "Liqueur"),
+    "gin": ("Spirits", "Gin"), "vodka": ("Spirits", "Vodka"),
+    "cognac": ("Spirits", "Cognac"), "brandy": ("Spirits", "Brandy"),
+    "champagne": ("Wine", "Champagne"), "wine": ("Wine", None),
+    "beer": ("Beer", None), "minis": (None, None), "miniatures": (None, None),
+}
+_SUBCAT_IN_NAME = (
+    ("vermouth", ("Wine", "Vermouth")), ("tequila", ("Spirits", "Tequila")),
+    ("cognac", ("Spirits", "Cognac")), ("whisky", ("Spirits", "Whisky")),
+    ("rum", ("Spirits", "Rum")), ("gin", ("Spirits", "Gin")),
+    ("vodka", ("Spirits", "Vodka")),
+)
+_EX_LOC_RE = re.compile(r"^(EXW?|FCA|FOB|CIF|CFR|CPT|DAP|DDP|DAT|DPU)\s+([A-Za-z][A-Za-z .'\-]+?)$",
+                        re.IGNORECASE)
+_MULTIWORD_BRAND_LEAD = {"don", "grey", "jack", "johnnie", "jim", "maker", "wild",
+                         "four", "glen", "royal", "famous", "old"}
+
+
+def _split_lead_brand(name: str):
+    """(brand, remaining_name) by taking the leading alphabetic token(s) — two for
+    a known compound lead ("Don Julio"), else one — provided it carries no digit.
+    Cinzano Vermouth Rosso 12/100/15 → ("Cinzano", "Vermouth Rosso 12/100/15")."""
+    parts = str(name).split()
+    if not parts:
+        return None, None
+    n = 1
+    if (len(parts) >= 2 and parts[0].lower() in _MULTIWORD_BRAND_LEAD
+            and not re.search(r"\d", parts[1])):
+        n = 2
+    brand = " ".join(parts[:n])
+    if re.search(r"\d", brand) or len(brand) < 2:
+        return None, None
+    return brand, " ".join(parts[n:]).strip(" ,-")
+
+
+def _tab_price(s: str):
+    m = re.search(r"(USD|EUR|GBP|CHF|US\$|\$|€|£)\s*([\d][\d.,]*)"
+                  r"|([\d][\d.,]*)\s*(USD|EUR|GBP|CHF|€|£|\$)", str(s), re.IGNORECASE)
+    if not m:
+        return None, None
+    curtok = (m.group(1) or m.group(4) or "").strip()
+    amt = _num(m.group(2) or m.group(3))
+    cur = {"$": "USD", "US$": "USD", "€": "EUR", "£": "GBP"}.get(curtok, curtok.upper()) if curtok else None
+    return cur, amt
+
+
+def recover_tab_table_fields(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Parse a [name, Qnty/cs, Price] tab-table and backfill the matching rows:
+    quantity (cases), location/incoterm, brand (gazetteer-missed names) and
+    category. The column header is a bare 'Price' with no per-bottle/per-case
+    label, so the amount is basis-UNCONFIRMED — keep it as a quoted note and leave
+    both price fields blank (the universal rule Samuel set)."""
+    if not source_text:
+        return 0
+    raw = [re.sub(r"^[>\s]+", "", l) for l in str(source_text).splitlines()]
+    has_header = any("\t" in l and re.search(r"qnty|qty", l, re.I) and re.search(r"price", l, re.I)
+                     for l in raw)
+    if not has_header:
+        return 0
+    location = None; incoterm = None
+    rows_tab = []                  # (name, qty, price_raw, (cat, subcat))
+    cat = (None, None)
+    for l in raw:
+        if not l.strip():
+            continue
+        first = l.split("\t")[0].strip()
+        em = _EX_LOC_RE.match(first)
+        if em and location is None and len(first.split()) <= 4:
+            incoterm = "EXW" if em.group(1).upper() == "EX" else em.group(1).upper()
+            location = em.group(2).strip()
+            continue
+        if re.match(r"^(product|qnty|qty)\b", first, re.IGNORECASE):
+            continue
+        parts = [p.strip() for p in l.split("\t")]
+        nonempty = [p for p in parts if p]
+        if len(nonempty) == 1 and nonempty[0].lower() in _CATEGORY_WORDS:
+            cat = _CATEGORY_WORDS[nonempty[0].lower()]
+            continue
+        if len(parts) >= 2 and len(parts[0]) > 3 and re.search(r"[A-Za-z]{3}", parts[0]):
+            qty = None; price_raw = None
+            for p in parts[1:]:
+                if re.search(r"[$€£]", p):
+                    price_raw = p
+                elif qty is None and re.fullmatch(r"[\d.,]+", p):
+                    qty = _int(p)
+            rows_tab.append((parts[0], qty, price_raw, cat))
+    if not rows_tab:
+        return 0
+    changed = 0
+    for o in offers:
+        toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+        if not toks:
+            continue
+        best = None; score = 0
+        for row in rows_tab:
+            low = row[0].lower()
+            sc = sum(1 for t in toks if t in low)
+            if sc > score:
+                best, score = row, sc
+        if not best or score < 1:
+            continue
+        name, qty, price_raw, c = best
+        dirty = False
+        if qty and _primary_qty(o) is None:
+            o["quantity_case"] = float(qty); o["quantity_unit"] = "cases"; dirty = True
+        if location and not _clean(o.get("location")):
+            o["location"] = location; dirty = True
+        if incoterm and not _clean(o.get("incoterm")):
+            o["incoterm"] = incoterm; dirty = True
+        subcat = None
+        for kw, cc2 in _SUBCAT_IN_NAME:
+            if kw in name.lower():
+                subcat = cc2; break
+        c = subcat or c
+        if c[0] and not _clean(o.get("category")):
+            o["category"] = c[0]; dirty = True
+        if c[1] and not _clean(o.get("subcategory")):
+            o["subcategory"] = c[1]; dirty = True
+        if not _clean(o.get("brand")):
+            br, rest = _split_lead_brand(name)
+            if br:
+                o["brand"] = br
+                if rest:
+                    o["product_name"] = rest
+                o["needs_manual_review"] = True
+                dirty = True
+        if price_raw:
+            cur, amt = _tab_price(price_raw)
+            if amt is not None:
+                for f in ("price_per_unit", "price_per_case",
+                          "price_per_unit_eur", "price_per_case_eur"):
+                    o[f] = None
+                if cur and not _clean(o.get("currency")):
+                    o["currency"] = cur
+                o["needs_manual_review"] = True
+                cc = _clean(o.get("commercial_conditions"))
+                quoted = f"{(cur + ' ') if cur else ''}{amt:g}"
+                if "as quoted" not in cc.lower():
+                    o["commercial_conditions"] = (cc + " | " if cc else "") + (
+                        f"as quoted: {quoted} (price basis not stated — "
+                        f"column 'Price', per bottle or case?)")
+                dirty = True
         if dirty:
             _mark(o); changed += 1
     return changed
