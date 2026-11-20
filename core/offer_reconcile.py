@@ -794,11 +794,12 @@ def _floor_parse(block: str) -> Optional[Dict[str, Any]]:
     a = _int(pm.group(2)); c = _int(pm.group(3)); d = _int(pm.group(4))
     if d:                                  # A × C × D  → A*C units, D cl
         units = a * c; vol_cl = d; inner = c
-        pack_disp = f"{a} × {c} × {d}cl"
+        pack_core = f"{a} × {c} × {d}cl"
     else:                                  # A × C      → A units, C cl
         units = a; vol_cl = c; inner = None
-        pack_disp = f"{a} × {c}cl"
+        pack_core = f"{a} × {c}cl"
     container = pm.group(5).lower().rstrip("s")       # can / bottle
+    pack_disp = f"{pack_core} {container}"
     pm2 = _FLOOR_PRICE_RE.search(block)
     pc = inco = loc = None
     if pm2:
@@ -809,7 +810,7 @@ def _floor_parse(block: str) -> Optional[Dict[str, Any]]:
     pl = _PER_LOAD_RE.search(block); av = _AVAIL_QTY_RE.search(block)
     return {
         "name": name, "units": units, "vol_ml": vol_cl * 10, "inner": inner,
-        "container": container, "pack_disp": f"{pack_disp} {container}",
+        "container": container, "pack_disp": pack_disp, "pack_core": pack_core,
         "pc": pc, "inco": inco, "loc": loc,
         "per_load": _int(pl.group(1)) if pl else None,
         "avail": _int(av.group(1)) if av else None,
@@ -821,7 +822,21 @@ def _floor_toks(name: str):
     return set(t for t in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(t) > 2)
 
 
+_PACK_IN_NAME_RE = re.compile(
+    r"\s*\d+\s*[x×*]\s*\d+(?:\s*[x×*]\s*\d+)?\s*cl(?:\s*(?:cans?|bottles?))?\s*$",
+    re.IGNORECASE)
+
+
+def _floor_setname(o: Dict[str, Any], sp: Dict[str, Any]) -> None:
+    """Fold the pack format into the product name so two formats of one product
+    (Carlsberg Lager 24×33 vs 4×6×33) are DISTINCT SKUs, not one key that
+    supersedes the other, and a buyer can find the six-pack line by name."""
+    base = _PACK_IN_NAME_RE.sub("", _clean(o.get("product_name"))).strip() or _clean(o.get("product_name"))
+    o["product_name"] = (f"{base} {sp['pack_core']}").strip()
+
+
 def _floor_enrich(o: Dict[str, Any], sp: Dict[str, Any]) -> None:
+    _floor_setname(o, sp)
     if sp["container"] and not _clean(o.get("bottle_or_can_type")):
         o["bottle_or_can_type"] = sp["container"]
     if sp["vol_ml"] and not _f(o.get("unit_volume_ml")):
