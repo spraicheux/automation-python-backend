@@ -916,7 +916,9 @@ def recover_tab_table_fields(offers: List[Dict[str, Any]], source_text: str) -> 
         if c[0] and not _clean(o.get("category")):
             o["category"] = c[0]; dirty = True
         if c[1] and not _clean(o.get("subcategory")):
-            o["subcategory"] = c[1]; dirty = True
+            o["subcategory"] = c[1]
+            o["sub_category"] = c[1]   # schema key used by clean_product_data
+            dirty = True
         if not _clean(o.get("brand")):
             br, rest = _split_lead_brand(name)
             if br:

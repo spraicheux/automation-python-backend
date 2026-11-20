@@ -4063,7 +4063,8 @@ def clean_product_data(product: dict) -> dict:
         (cleaned_product.get('retail_state') or '') in ('tester', 'sample', 'miniature')
         or 'tester' in _nm_l
         or any(k in _pk_l for k in ('individual', 'single piece', 'single candle',
-                                    'not case', 'per piece', 'pieces ='))
+                                    'not case', 'per piece', 'pieces =',
+                                    'inner box', 'per inner box'))
     )
     if _per_piece_item and units and isinstance(units, (int, float)) and units > 1:
         logger.info(f"[clean_product_data] per-piece item — not fabricating a case "
@@ -4185,6 +4186,28 @@ def clean_product_data(product: dict) -> dict:
                         f"'{_row_name}' → brand='{_resolved_brand}' "
                         f"product_name='{_stripped_name}'"
                     )
+                else:
+                    # The gazetteer doesn't know every house (Plymouth,
+                    # Bunnahabhain, Cinzano, Bacardi…). Fall back to the leading
+                    # capitalised token(s) of the name — two for a known compound
+                    # lead ("Don Julio"), else one — so the brand is populated
+                    # instead of "Not Found" (Samuel 2026-11-20).
+                    _parts = str(_row_name).split()
+                    _lead_set = {"don", "grey", "jack", "johnnie", "jim", "maker",
+                                 "wild", "four", "glen", "royal", "famous", "old"}
+                    _n = 1
+                    if (len(_parts) >= 2 and _parts[0].lower() in _lead_set
+                            and not re.search(r"\d", _parts[1])):
+                        _n = 2
+                    _lead = " ".join(_parts[:_n])
+                    if _lead and len(_lead) >= 2 and not re.search(r"\d", _lead):
+                        cleaned_product['brand'] = _lead
+                        _rest = " ".join(_parts[_n:]).strip(" ,-")
+                        if _rest:
+                            cleaned_product['product_name'] = _rest
+                        logger.info(
+                            f"[clean_product_data] brand-from-lead-token: "
+                            f"'{_row_name}' → brand='{_lead}'")
             except Exception as _be:
                 logger.warning(f"[clean_product_data] brand-from-name fallback failed: {_be}")
     # ──────────────────────────────────────────────────────────────────

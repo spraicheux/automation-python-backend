@@ -488,6 +488,14 @@ def _parse_quantity_cell(val: Any) -> Tuple[Optional[float], Optional[str]]:
     if isinstance(val, (int, float)):
         return (float(val), None)
     outside = _PAREN_RE.sub(" ", str(val).strip())  # drop parenthetical equivalents
+    # "N pallets of M cases" is a real case count (N×M), not N pallets — the
+    # pallet figure alone loses the per-pallet case size (Samuel 2026-11-20:
+    # Bunnahabhain "7 pallets of 32 cases" = 224 cases).
+    m = re.search(r'(\d[\d,]*)\s*pallets?\s*of\s*(\d[\d,]*)\s*cases?', outside, re.IGNORECASE)
+    if m:
+        _n = _num_thousands(m.group(1)); _m = _num_thousands(m.group(2))
+        if _n and _m:
+            return (_n * _m, "cases")
     m = re.search(r'=\s*(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+)', outside)
     if m:
         return (_num_thousands(m.group(1)), (m.group(2) or "").strip().lower() or None)
@@ -557,6 +565,24 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
         logger.info(f"[xlsx_structured] sheet {ws.title!r}: header at row {header_row}, "
                     f"{len(colmap)} mapped columns: {sorted(set(colmap.values()))}")
 
+        # Supplier from a title row ABOVE the header ("Larch Pier Trading BV |
+        # Stock circular LP-207") — the structured sheet has no supplier column
+        # and the sender is not trusted as the supplier (Samuel 2026-11-20).
+        sheet_supplier = None
+        for _pr in range(1, header_row):
+            for _pc in range(1, (ws.max_column or 1) + 1):
+                _v = ws.cell(row=_pr, column=_pc).value
+                if isinstance(_v, str) and _v.strip():
+                    _cand = _v.split("|")[0].strip()
+                    if (re.search(r"[A-Za-z]", _cand) and len(_cand) >= 3
+                            and not re.match(r"^\d", _cand)
+                            and not re.match(r"^(stock|price|availability|offer|date|contact)\b",
+                                              _cand, re.IGNORECASE)):
+                        sheet_supplier = _cand
+                        break
+            if sheet_supplier:
+                break
+
         for r in range(header_row + 1, ws.max_row + 1):
             prod: Dict[str, Any] = {}
             qty_val: Optional[float] = None
@@ -573,6 +599,8 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             size_raw: Any = None
             any_value = False
             nobox = False
+            innerbox_pieces: Optional[float] = None   # pieces per inner box (Pack cell)
+            qty_innerbox_count: Optional[float] = None  # "N inner boxes" (Available cell)
             # The full text of the row across ALL columns — including ones we do
             # not map to a field (e.g. a free "Delivery / notes" cell). Used to
             # catch a price-basis ambiguity note that lives outside the price cell
@@ -626,6 +654,17 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         prod[field] = _to_float(val)
                 elif field == "units_per_case":
                     prod[field] = _parse_pack(val)
+                    # An inner-box pack ("8 pieces per inner box") means the item
+                    # is sold PER PIECE, not per case: keep the pieces-per-box as
+                    # the pack, remember it so the quantity ("7 inner boxes") can
+                    # be expanded to pieces, and surface "inner box" in
+                    # packaging_raw so the per-piece guard downstream fires and no
+                    # case price is fabricated (Samuel 2026-11-20: Acqua di Parma).
+                    if re.search(r"per\s*inner\s*box|inner\s*box(?:es)?\s*[x×]",
+                                 str(val), re.IGNORECASE):
+                        innerbox_pieces = prod[field]
+                        if not prod.get("packaging_raw"):
+                            prod["packaging_raw"] = str(val).strip()
                 elif field == "moq_cases":
                     # MOQ may carry its own inline unit ("1 pallet", "1 FTL").
                     moq_val, moq_unit_inline = _split_num_unit(val)
@@ -635,6 +674,9 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     moq_raw_cell = str(val).strip()
                 elif field == "_quantity":
                     qty_raw = str(val)
+                    _ibq = re.search(r"(\d[\d,]*)\s*inner\s*box", qty_raw, re.IGNORECASE)
+                    if _ibq:
+                        qty_innerbox_count = _num_thousands(_ibq.group(1))
                     qty_val, _qu = _parse_quantity_cell(val)
                     if _qu:
                         qty_unit = _qu
@@ -852,6 +894,31 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         (prod.get("commercial_conditions") + " | " + _mnote)
                         if prod.get("commercial_conditions") else _mnote)
                     prod["needs_manual_review"] = True
+
+            # ── Supplier from the sheet title row (no supplier column) ─────
+            if sheet_supplier and not prod.get("supplier_name"):
+                prod["supplier_name"] = sheet_supplier
+
+            # ── Location / incoterm from a free "Delivery / notes" cell ─────
+            # That column is often unmapped, so parse the first incoterm +
+            # location out of the whole-row text (Samuel 2026-11-20: Larch Pier
+            # "EXW Breda…", "FOB Hong Kong; minimum…", "EXW Rotterdam. Awaiting…").
+            if not prod.get("location") or not prod.get("incoterm"):
+                _il = re.search(
+                    r"\b(EXW|FCA|FOB|CIF|CFR|CPT|DAP|DDP|DAT|DPU)\b[ ]+"
+                    r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)", row_text)
+                if _il:
+                    prod.setdefault("incoterm", _il.group(1).upper())
+                    prod.setdefault("location", _il.group(2).strip())
+
+            # ── Inner-box, per-piece item: "7 inner boxes" of "8 pieces per
+            # inner box" = 56 pieces. Store the piece total, NOT 7 cases, and let
+            # the per-piece guard keep the case price empty (Samuel 2026-11-20).
+            if qty_innerbox_count and innerbox_pieces:
+                prod["quantity_bottles"] = qty_innerbox_count * innerbox_pieces
+                prod["quantity_unit"] = "pieces"
+                prod.pop("quantity_case", None)
+                qty_val = None
 
             # ── Quantity (unit parsed from the cell) ───────────────────────
             _assign_quantity(prod, qty_val, qty_unit)
