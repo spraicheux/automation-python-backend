@@ -2672,10 +2672,16 @@ def _apply_offer_defaults(data: dict) -> dict:
         'fx_date': None,
         'fx_source': None,
         'fx_rate': 1.0,
-        'price_per_unit': 0,
-        'price_per_unit_eur': 0,
-        'price_per_case': 0,
-        'price_per_case_eur': 0,
+        # A missing price must stay BLANK, never 0 — a 0 reads as "€0.00/case" in
+        # the drawer/export and would rank at zero. A genuinely stated zero keeps
+        # its explicit 0 (it is not None here) and the "Zero price retained" flag.
+        # None prices already flow through the whole pipeline (every basis-
+        # unconfirmed row carries them), so None is the safe default (Samuel
+        # 2026-11-20: Acqua di Parma per-piece row leaked a 0 case price).
+        'price_per_unit': None,
+        'price_per_unit_eur': None,
+        'price_per_case': None,
+        'price_per_case_eur': None,
         # A missing volume must stay BLANK, never 0 — a 0 reads as "0 ml" in the
         # export/drawer, which Samuel flagged on W46 (all 367 rows showed 0 while
         # the size lived in the product name). sku_identity / peer_group_id
