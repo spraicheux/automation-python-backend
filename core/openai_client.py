@@ -1488,6 +1488,42 @@ def _split_numbered_items(text: str) -> list:
     return [text[bounds[i]:bounds[i + 1]].strip() for i in range(len(hits))]
 
 
+# A prose offer with one PRODUCT PER PARAGRAPH (blank-line-separated), e.g. a
+# WhatsApp/email note where each product is its own paragraph rather than a
+# numbered list. Each paragraph carries its own quantity/price, so giving each
+# its own chunk stops a neighbour's quantity (a pallet×cases total) from fanning
+# out across the others (Samuel Amber Dock, 2026-11-20: Drambuie's "13 pallets,
+# 28 cases each" = 364 overwrote Woodford's explicit 54 because the whole prose
+# message was extracted in one pass).
+_PRODUCT_SIGNAL_RE = _re_items.compile(
+    r'\b\d[\d,]*\s*(?:cl|ml|l|cs|cases?|bottles?|btls?|pallets?|pcs?|pieces?|candles?)\b'
+    r'|(?:EUR|USD|GBP|CHF|US\$|\$|€|£)\s*\d'
+    r'|/\s*(?:case|bottle|piece|candle)\b|per\s+(?:case|bottle|piece|candle)\b',
+    _re_items.IGNORECASE)
+
+
+def _split_product_paragraphs(text: str):
+    """Split a prose offer into (lead, products): `lead` is the leading
+    non-product text (greeting / supplier line) to prepend to each product chunk
+    for context; `products` is the list of product paragraphs. Returns ("", [])
+    unless there are >=2 paragraphs that each look like a product line (carry a
+    volume, a price or a quantity) — so a numbered list, a table, or a single
+    block falls through to the normal chunking and a greeting / footer paragraph
+    is never mistaken for a product."""
+    paras = [p.strip() for p in _re_items.split(r'\n\s*\n', text or '') if p.strip()]
+    if len(paras) < 3:
+        return "", []
+    prods = [p for p in paras if _PRODUCT_SIGNAL_RE.search(p)]
+    if len(prods) < 2:
+        return "", []
+    lead = []
+    for p in paras:
+        if _PRODUCT_SIGNAL_RE.search(p):
+            break
+        lead.append(p)
+    return ("\n".join(lead), prods)
+
+
 async def extract_offer(text: str) -> dict:
     logger.info(f"[extract_offer] ===== START =====")
     logger.info(f"[extract_offer] Input text length: {len(text)} chars")
@@ -1613,6 +1649,10 @@ async def extract_offer(text: str) -> dict:
         # post-hoc matching because it does not depend on the LLM returning
         # exactly one product per item.
         _list_items = _split_numbered_items(body_text)
+        # Prose offers are split on the FULL text (not body_text), because the
+        # fixed 5-line header split would otherwise land mid-way through the first
+        # products of a paragraph offer.
+        _pp_lead, _pp_prods = ("", []) if _list_items else _split_product_paragraphs(text)
         if 2 <= len(_list_items) <= 60:
             text_chunks = [header_block + it for it in _list_items]
             chunk_block_counts = [1] * len(text_chunks)
@@ -1620,6 +1660,15 @@ async def extract_offer(text: str) -> dict:
             logger.info(
                 f"[extract_offer] LIST-ITEM chunking: {len(_list_items)} numbered "
                 f"items → one item per chunk (marker-less list)"
+            )
+        elif 2 <= len(_pp_prods) <= 60:
+            _hdr = (_pp_lead + "\n\n") if _pp_lead else ""
+            text_chunks = [_hdr + p for p in _pp_prods]
+            chunk_block_counts = [1] * len(text_chunks)
+            chunk_is_list_item = [True] * len(text_chunks)
+            logger.info(
+                f"[extract_offer] PARAGRAPH chunking: {len(_pp_prods)} product "
+                f"paragraphs → one product per chunk (prose offer)"
             )
         elif len(body_lines) <= LINES_PER_CHUNK:
             text_chunks = [text]

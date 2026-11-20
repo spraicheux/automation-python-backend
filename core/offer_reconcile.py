@@ -333,6 +333,7 @@ def recover_loose_pieces_qty(offers: List[Dict[str, Any]], source_text: str) -> 
 _BASIS_UNSTATED_RE = re.compile(
     r"basis\s+not\s+(?:stated|given|specified)|"
     r"(?:per\s+bottle\s+or\s+case)|(?:bottle\s+or\s+case)|"
+    r"per\s+\w+\s+or\s+per\s+\w+|"   # "per bottle or per case" (Woodford, Samuel 2026-11-20)
     r"price\s+basis\s+not\s+stated", re.IGNORECASE)
 
 

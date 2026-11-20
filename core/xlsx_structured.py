@@ -573,6 +573,14 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             size_raw: Any = None
             any_value = False
             nobox = False
+            # The full text of the row across ALL columns — including ones we do
+            # not map to a field (e.g. a free "Delivery / notes" cell). Used to
+            # catch a price-basis ambiguity note that lives outside the price cell
+            # (Samuel 2026-11-20: Larch Pier Plymouth).
+            row_text = " ".join(
+                str(ws.cell(row=r, column=c).value).strip()
+                for c in range(1, ws.max_column + 1)
+                if ws.cell(row=r, column=c).value not in (None, ""))
 
             for col, field in colmap.items():
                 cell = ws.cell(row=r, column=col)
@@ -774,6 +782,15 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     prod["unit_volume_ml"] = _vml
 
             # ── Resolve the Price / Price-basis pair ───────────────────────
+            # A bare price with no basis token is NOT assumed per-bottle when the
+            # row says the basis is unconfirmed somewhere (a "Delivery / notes"
+            # cell: "Awaiting confirmation whether the quote is per bottle or per
+            # case"). Treat it exactly like an in-cell ambiguity: keep the amount,
+            # leave bottle AND case prices blank, keep the quantity, flag for
+            # review — the same rule text/WhatsApp offers follow (Samuel
+            # 2026-11-20: Larch Pier Plymouth USD 64.50).
+            if price_value is not None and not basis_ambiguous and _AMBIG_BASIS_RE.search(row_text):
+                basis_ambiguous = True
             if price_value is not None:
                 if basis_ambiguous:
                     # An amount was quoted but the basis was deliberately
