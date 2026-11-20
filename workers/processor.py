@@ -2747,6 +2747,18 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
             sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
             if sf is not None:
                 sf.reconciliation = _json.dumps(result) if any_issue else None
+                # Reconcile the "imported N of M source lines" counter with the
+                # row-level self-check. After the passes recover a dropped format
+                # (ERKAN Carlsberg twin → 9 rows) or collapse a duplicate line
+                # (Fenwick Punt e Mes → 6 rows), the stored rows ARE the imported
+                # set and the source holds (imported + still-missed) lines. The
+                # pre-reconcile estimate left a false "imported 9 of 8" / "5 of 4"
+                # while the rows themselves were right (Samuel 2026-11-21). Only
+                # adjust when the source text was available to self-check against.
+                if source_text:
+                    sf.imported_row_count = len(stored)
+                    sf.expected_row_count = len(stored) + len(missed)
+                    sf.import_incomplete = bool(missed)
                 db.commit()
             logger.info(f"reconcile: self-check refreshed for {job_id} — "
                         f"{len(field_issues)} field, {len(src_fid)} fidelity")
@@ -2769,20 +2781,26 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     src = source_text or ""
     changed = 0
     changed += _rec.repair_case_prices_from_source(offers, src)
+    changed += _rec.fix_currency_from_source_line(offers, src)
     changed += _rec.recover_tab_table_fields(offers, src)
     changed += _rec.fix_inner_box_from_text(offers, src)
     changed += _rec.fix_inner_box_of_n(offers, src)
     changed += _rec.recover_loose_pieces_qty(offers, src)
     changed += _rec.recover_loose_bottles_addon(offers, src)
+    changed += _rec.recover_dual_tray_format(offers, src)
     changed += _rec.fix_multipack_units(offers, src)
     changed += _rec.reconcile_floor_list(offers, src)
     changed += _rec.separate_load_capacity(offers, src)
     changed += _rec.clear_currency_on_request(offers, src)
     changed += _rec.capture_conditional_incoterm(offers, src)
+    changed += _rec.clear_unsourced_incoterm(offers, src)
     changed += _rec.flag_unstated_price_basis(offers, src)
+    changed += _rec.annotate_pack_format(offers, src)
     dropped = set()
     dropped |= _rec.merge_alt_delivery_lots(offers)
+    dropped |= _rec.collapse_identical_commercial_lines(offers)
     dropped |= _rec.drop_summary_rows(offers)
+    changed += _rec.annotate_whole_lot(offers, src)
     if not dropped and changed == 0:
         return
     # Rewrite this job's rows cleanly: delete all rows for the job, reset the
@@ -3071,6 +3089,19 @@ async def process_offer(payload, job_id: str):
                             if file_extracted.get('source_row_estimate') is not None:
                                 extracted_data['_source_row_estimate'] = \
                                     file_extracted['source_row_estimate']
+
+                            # Record whether THIS attachment was read by the
+                            # deterministic structured-column parser or fell to
+                            # the LLM path. A structured sheet (HAZ perfume list)
+                            # has its own column rules and must NOT be run through
+                            # the free-text reconcile passes; an LLM-extracted
+                            # attachment (Fenwick's narrative table) SHOULD be, so
+                            # its dupes / alt-delivery / basis get the same clean-up
+                            # a WhatsApp/email body does (Samuel 2026-11-21).
+                            if file_extracted.get('source_type') == 'excel_structured':
+                                extracted_data['_used_structured'] = True
+                            else:
+                                extracted_data['_attachment_llm'] = True
 
                             # Check if this is multiple products from Excel
                             if 'products' in file_extracted and isinstance(file_extracted['products'], list):
@@ -4084,11 +4115,20 @@ async def process_offer(payload, job_id: str):
             #     dense image that transcribed without HKD/USD labels still shows
             #     the supplier's currency, not a stray EUR with no conversion.
             _propagate_dual_currency(offers, job_id)
-            # Source-reconciliation for TEXT offers only (email / WhatsApp body):
-            # price-shift, inner-box, loose pieces, unstated basis, same-lot
-            # merge, summary-row drop (Samuel 2026-11-19). Gated to text-only so
-            # spreadsheet / attachment offers (own structured parsers) are untouched.
-            if getattr(payload, 'text_body', None) and not getattr(payload, 'attachments', None):
+            # Source-reconciliation: price-shift, inner-box, loose pieces,
+            # unstated basis, currency-from-source, same-lot merge, duplicate-line
+            # collapse, pack-format labels, summary-row drop (Samuel 2026-11-19 /
+            # 2026-11-21). Runs for a pure TEXT offer AND for an attachment that
+            # fell to the LLM path (Fenwick's narrative table) using the flattened
+            # document text as the source — but NEVER for a deterministic
+            # structured sheet (HAZ), which has its own column rules.
+            _text_only = (getattr(payload, 'text_body', None)
+                          and not getattr(payload, 'attachments', None))
+            _attach_llm = (getattr(payload, 'attachments', None)
+                           and extracted_data.get('_attachment_llm')
+                           and not extracted_data.get('_used_structured')
+                           and bool(_recov_src))
+            if _text_only or _attach_llm:
                 _reconcile_text_offer(offers, _recov_src, job_id)
             # Cross-source basis sync runs for EVERY offer (incl. spreadsheets), so
             # a row mirroring a WhatsApp basis-unstated twin is cleared too.

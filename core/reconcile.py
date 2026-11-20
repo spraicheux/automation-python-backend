@@ -48,6 +48,14 @@ _QTY_RE = re.compile(
 _NOPRICE_RE = re.compile(
     r"on\s*request|call\s*for\s*quot|quotation|price\s*tbc|\btbc\b|p\.?o\.?a\.?",
     re.IGNORECASE)
+# A priced line that is a COMMERCIAL-TERMS header, not a product — it carries a
+# price (a minimum order value, an order threshold) but names no goods, so it must
+# not be read as a missed product line (Samuel 2026-11-21: Fenwick "Minimum order
+# value EUR 1,850" reported as a missed source line).
+_TERMS_HEADER_RE = re.compile(
+    r"minimum\s+order|min\.?\s*order\b|\bmov\b|order\s+value|"
+    r"minimum\s+order\s+value|subject\s+to\s+(?:prior\s+sale|unsold|confirmation)|"
+    r"^\s*contact\b|payment\s+terms|terms\s*:", re.IGNORECASE)
 # A pack-format product line: "<name> 24x33 cl cans" / "<name> 4×6×33 cl bottles".
 _FORMAT_RE = re.compile(
     r"^(.*?)(\d+)\s*[x×*]\s*(\d+)(?:\s*[x×*]\s*(\d+))?\s*cl\s*(?:cans?|bottles?)\b",
@@ -150,6 +158,10 @@ def reconcile_source_vs_rows(source_text: str,
         if not line:
             continue
         pr = _line_prices(line)
+        if pr and _TERMS_HEADER_RE.search(line):
+            # a priced commercial-terms header (MOV / "subject to prior sale" /
+            # contact line) names no goods — not a product, not a missed line.
+            continue
         if pr:
             # a real price token (currency next to a number) is a strong
             # product-line signal — never filter it as header/footer.
@@ -215,6 +227,27 @@ def reconcile_source_vs_rows(source_text: str,
                 continue
             if rs["brand"] and b in rs["brand"]:
                 s["matched"] = rs["matched"] = True
+                break
+
+    # ── Twin pack formats at ONE price ───────────────────────────────────────
+    # Two formats of a product quoted at the same price consume one priced line
+    # each in Pass 1, leaving the second row looking like a phantom. It is real
+    # when its price matches a source line AND that same line names its quantity
+    # (Samuel 2026-11-21: Westhaven Brooklyn "63 trays of singles and 47 trays of
+    # the wrapped packs", both €11.52 — the 47 row is not a phantom).
+    for rs in sigs:
+        if rs["matched"] or not rs["prices"]:
+            continue
+        q = rs.get("qty")
+        if not q:
+            continue
+        try:
+            qn = str(int(float(q)))
+        except (TypeError, ValueError):
+            continue
+        for s in priced:
+            if _prices_overlap(rs["prices"], s["prices"]) and re.search(rf"\b{qn}\b", s["line"]):
+                rs["matched"] = True
                 break
 
     missed = [s["line"] for s in (priced + noprice) if not s["matched"]]

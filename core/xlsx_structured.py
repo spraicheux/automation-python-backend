@@ -396,6 +396,24 @@ def _detect_currency(s: str) -> Optional[str]:
     return _CUR_WORDS.get(m.group(1).lower()) if m else None
 
 
+def _fmt_currency(number_format: Optional[str]) -> Optional[str]:
+    """Currency implied by a cell's NUMBER FORMAT (not its text). A price column
+    can be dollar/euro/pound-formatted with the symbol living in the format mask,
+    not the cell text ("$36.50" stores 36.5 with a `"$"* #,##0.00` mask). This is
+    real, if weak, evidence of the currency when nothing is stated in words
+    (Samuel 2026-11-21: HAZ's PRICE column is `$`-formatted — USD, never EUR)."""
+    f = number_format or ""
+    if not f or f.lower() in ("general", "@"):
+        return None
+    m = re.search(r"\[\$([A-Za-z]{3})", f)   # explicit [$USD-409] currency code
+    if m:
+        return m.group(1).upper()
+    for sym, code in (("$", "USD"), ("€", "EUR"), ("£", "GBP"), ("¥", "JPY")):
+        if sym in f:
+            return code
+    return None
+
+
 def _parse_price_cell(val: Any) -> Dict[str, Any]:
     """Parse a free-text price cell -> {currency, price_per_case,
     price_per_unit, price_value, basis_ambiguous, on_request, raw}. price_value
@@ -597,6 +615,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             price_on_request = False
             basis_ambiguous = False
             price_cell_raw = ""
+            price_fmt_currency: Optional[str] = None   # currency from the $/€/£ cell mask
             size_raw: Any = None
             any_value = False
             nobox = False
@@ -626,6 +645,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # "USD 16.25/bottle; USD 195/case"). Parse rather than letting
                     # _to_float concatenate two numbers into None (= a dropped row).
                     price_cell_raw = str(val).strip()
+                    price_fmt_currency = price_fmt_currency or _fmt_currency(cell.number_format)
                     pc = _parse_price_cell(val)
                     if pc["currency"] and not prod.get("currency"):
                         prod["currency"] = pc["currency"]
@@ -834,6 +854,29 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # 2026-11-20: Larch Pier Plymouth USD 64.50).
             if price_value is not None and not basis_ambiguous and _AMBIG_BASIS_RE.search(row_text):
                 basis_ambiguous = True
+            # A bare price with NO currency AND no basis token is doubly
+            # unsupported: a `$`-formatted "PRICE" cell carrying only a number,
+            # no "per case/bottle" and no currency word. Never guess it into EUR
+            # per-bottle (Samuel 2026-11-21: HAZ's 735-row list showed "€6 per
+            # bottle, 360 cases" with no source evidence for EUR, the basis, or
+            # the stock unit). Read the currency from the cell's $/€/£ number
+            # format if present, retain the figure as-quoted, blank the
+            # comparable, and flag for review — the same treatment an explicit
+            # "basis not stated" cell gets.
+            if (price_value is not None and not basis_ambiguous and not price_basis
+                    and prod.get("price_per_unit") is None
+                    and prod.get("price_per_case") is None
+                    and not prod.get("currency")):
+                basis_ambiguous = True
+                if price_fmt_currency:
+                    prod["currency"] = price_fmt_currency
+                    _sym = "$" if price_fmt_currency == "USD" else price_fmt_currency
+                    prod["_basis_cur_note"] = (
+                        f"currency read from the {_sym} cell format (none stated "
+                        f"in the source); stock unit not stated")
+                else:
+                    prod["_basis_cur_note"] = ("currency not stated in the "
+                                               "source; stock unit not stated")
             if price_value is not None:
                 if basis_ambiguous:
                     # An amount was quoted but the basis was deliberately
@@ -842,9 +885,12 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # field; retain it as-quoted and flag for review (Samuel AQT
                     # 2026-11-17 Beefeater, mirroring the NE-410 rule).
                     cur = (prod.get("currency") or "").strip()
+                    _extra = prod.pop("_basis_cur_note", None)
+                    _extra = f" ({_extra})" if _extra else ""
                     prod["commercial_conditions"] = (
                         f"As quoted: {cur} {price_value:g}".strip()
-                        + " — price basis not stated; excluded from price comparison.")
+                        + " — price basis not stated" + _extra
+                        + "; excluded from price comparison.")
                     flags = prod.setdefault("error_flags", [])
                     flags.append("price basis not stated — amount retained "
                                  "as-quoted, excluded from comparison")

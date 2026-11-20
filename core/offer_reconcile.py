@@ -141,6 +141,305 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+_CUR_TOKEN_RE = re.compile(
+    r"\b(USD|EUR|GBP|HKD|CHF|SGD|AED|JPY|CNY|RMB|CAD|AUD|NZD|SEK|DKK|NOK|PLN|ZAR)\b",
+    re.IGNORECASE)
+
+
+def fix_currency_from_source_line(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Correct a priced row whose source line names ONE currency that differs from
+    the stored one, then recompute its EUR comparable via FX. The LLM sometimes
+    labels a clearly-foreign price EUR (Samuel 2026-11-21: Fenwick Courvoisier
+    "USD 138/case DAP Lille" stored as €138/case). Conservative: acts only when
+    the matched line carries exactly one currency token and the row has a price."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        if not (_f(o.get("price_per_unit")) or _f(o.get("price_per_case"))):
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln:
+            continue
+        found = {m.group(1).upper().replace("RMB", "CNY")
+                 for m in _CUR_TOKEN_RE.finditer(ln)}
+        if len(found) != 1:
+            continue
+        src_cur = found.pop()
+        cur_now = _clean(o.get("currency")).upper()
+        if not src_cur or src_cur == cur_now:
+            continue
+        o["currency"] = src_cur
+        fx = None
+        if src_cur == "EUR":
+            fx = 1.0
+        else:
+            try:
+                from core.fx_rates import get_eur_rate
+                fx, _eff, _fsrc, _fb = get_eur_rate(
+                    src_cur, o.get("offer_date") or o.get("date_received"))
+                if fx:
+                    o["fx_source"] = _fsrc
+            except Exception:
+                fx = None
+        if fx:
+            o["fx_rate"] = fx
+            for nat, eur in (("price_per_unit", "price_per_unit_eur"),
+                             ("price_per_case", "price_per_case_eur")):
+                v = _f(o.get(nat))
+                o[eur] = round(v * fx, 4) if v is not None else None
+        else:
+            # No rate available — never leave a stale same-number EUR comparable
+            # under a now-foreign currency; blank it until FX is known.
+            o["price_per_unit_eur"] = None
+            o["price_per_case_eur"] = None
+        _mark(o)
+        changed += 1
+    return changed
+
+
+def _combined_name_tokens(o: Dict[str, Any]) -> tuple:
+    """Sorted word tokens of brand + product_name — so a brand-split duplicate
+    ('Punt' + 'e Mes vermouth') and its clean twin ('Punt e Mes' + 'Vermouth')
+    share one key."""
+    toks = [t for t in re.findall(r"[a-z0-9]+", _norm(_ident(o))) if t]
+    return tuple(sorted(toks))
+
+
+def collapse_identical_commercial_lines(offers: List[Dict[str, Any]]) -> Set[str]:
+    """Collapse rows that are the SAME commercial line split in two by the
+    extractor — identical product (by combined brand+name tokens), quantity,
+    pack, volume, incoterm, location and currency, with compatible prices (equal,
+    or both blank). Keep the row with the better-formed brand (Samuel 2026-11-21:
+    Fenwick Punt e Mes appeared twice for the same 43 cases). Two real lots that
+    differ in quantity, price or delivery are NOT touched (that is merge_alt's
+    job, and Asahi's two pack formats differ in quantity)."""
+    dropped: Set[str] = set()
+    groups: Dict[tuple, list] = defaultdict(list)
+    for o in offers:
+        key = (_combined_name_tokens(o), _primary_qty(o),
+               _f(o.get("units_per_case")), _f(o.get("unit_volume_ml")),
+               _norm(o.get("incoterm")), _norm(o.get("location")),
+               _clean(o.get("currency")).upper())
+        groups[key].append(o)
+    for key, g in groups.items():
+        if len(g) < 2 or key[1] is None:   # need a real shared quantity
+            continue
+        pus = {round(_f(o.get("price_per_unit")), 2) for o in g if _f(o.get("price_per_unit"))}
+        pcs = {round(_f(o.get("price_per_case")), 2) for o in g if _f(o.get("price_per_case"))}
+        if len(pus) > 1 or len(pcs) > 1:    # genuinely different prices → keep both
+            continue
+        # Keep the row whose brand holds the most of the combined tokens (the
+        # clean "Punt e Mes", not the split "Punt"); carry review across.
+        keep = sorted(g, key=lambda o: (
+            len(re.findall(r"[a-z0-9]+", _norm(o.get("brand")))),
+            bool(_f(o.get("price_per_case")) or _f(o.get("price_per_unit")))),
+            reverse=True)[0]
+        for o in g:
+            if o is keep:
+                continue
+            if o.get("needs_manual_review"):
+                keep["needs_manual_review"] = True
+            dropped.add(o.get("uid"))
+        _mark(keep)
+    if dropped:
+        offers[:] = [o for o in offers if o.get("uid") not in dropped]
+    return dropped
+
+
+_INCOTERM_WORD_RE = re.compile(
+    r"\b(EXW|FCA|FOB|CIF|CFR|CPT|CIP|DAP|DDP|DPU|DAT|FAS)\b|"
+    r"\bex[\s-]*(?:works?|warehouse|cellars?|[A-Z][a-z]+)\b|"
+    r"\b(?:collected|collection|delivered|delivery|free\s+carrier|franco|"
+    r"in\s+bond|ex\s+bond)\b", re.IGNORECASE)
+
+
+def clear_unsourced_incoterm(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Clear an incoterm the source never states for a line. The LLM stamps EXW
+    on a line that only names a stock LOCATION (Samuel 2026-11-21: Westhaven
+    Galliano "52 cases in Antwerp" shown as EXW Antwerp — the source gives no
+    delivery term). Conservative: acts only when the matched source line names the
+    row's own location (so we know we found the right line) and carries NO
+    incoterm token or delivery verb at all."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        inco = _clean(o.get("incoterm"))
+        loc = _clean(o.get("location"))
+        if not inco or not loc:
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln or loc.lower() not in ln.lower():
+            continue
+        if _INCOTERM_WORD_RE.search(ln):
+            continue   # the source DOES carry a delivery term/verb — keep it
+        o["incoterm"] = None
+        flags = list(o.get("error_flags") or [])
+        fnote = (f"incoterm not stated in the source for this line "
+                 f"(was {inco}); shown as location only")
+        if fnote not in flags:
+            flags.append(fnote)
+        o["error_flags"] = flags
+        _mark(o)
+        changed += 1
+    return changed
+
+
+_TRAY_FMT_RE = re.compile(
+    r"(\d[\d,]*)\s*trays?\s+of\s+(?:the\s+)?"
+    r"(singles?|wrapped(?:\s+(?:six[\s-]?packs?|packs?))?)", re.IGNORECASE)
+
+
+def recover_dual_tray_format(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Recover a SECOND pack format the extractor collapsed into one row. A
+    supplier offers one product in two tray formats at the same price (Samuel
+    2026-11-21: Westhaven Brooklyn — "63 trays of singles AND 47 trays of the
+    wrapped packs", both €11.52/tray; only the 63 came through). When the matched
+    source line lists ≥2 "N trays of <format>" counts and only one row exists,
+    clone it for each missing count and fold the format into both names."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    # Group rows by product so we can see how many formats already exist.
+    by_prod: Dict[tuple, list] = defaultdict(list)
+    for o in offers:
+        by_prod[(_norm(o.get("brand")), _norm(o.get("product_name")))].append(o)
+    new_rows: list = []
+    for (bn, pn), g in list(by_prod.items()):
+        ln = _source_line_for(g[0], lines)
+        if not ln:
+            continue
+        fmts = [(m.group(1).replace(",", ""), re.sub(r"\s+", " ", m.group(2).strip().lower()))
+                for m in _TRAY_FMT_RE.finditer(ln)]
+        # unique by format label
+        seen = {}
+        for qty, lab in fmts:
+            seen.setdefault(lab, qty)
+        if len(seen) < 2:
+            continue
+        existing_qtys = {int(_primary_qty(o)) for o in g if _primary_qty(o)}
+        base = dict(g[0])   # pristine snapshot BEFORE any _label_fmt relabels g[0]
+        for lab, qty in seen.items():
+            q = int(qty)
+            if q in existing_qtys:
+                # label the existing row's format if not already present
+                for o in g:
+                    if _primary_qty(o) and int(_primary_qty(o)) == q:
+                        _label_fmt(o, lab)
+                continue
+            clone = dict(base)
+            clone.pop("_dirty", None)
+            uid = base.get("uid") or ""
+            clone["uid"] = f"{uid}__fmt_{q}"
+            clone["quantity_case"] = float(q)
+            clone["quantity_bottles"] = None
+            clone["quantity_pallets"] = None
+            _label_fmt(clone, lab)
+            clone["needs_manual_review"] = True
+            _mark(clone)
+            new_rows.append(clone)
+            changed += 1
+    if new_rows:
+        offers.extend(new_rows)
+    return changed
+
+
+def _label_fmt(o: Dict[str, Any], lab: str) -> None:
+    nm = _clean(o.get("product_name"))
+    if lab and lab not in nm.lower():
+        o["product_name"] = f"{nm} ({lab})" if nm else lab
+        _mark(o)
+
+
+_WHOLE_LOT_RE = re.compile(
+    r"whole\s+lot|full\s+(?:lot|load|truck|pallet\s+load)|entire\s+lot|"
+    r"take\s+the\s+whole|complete\s+lot", re.IGNORECASE)
+
+
+def annotate_whole_lot(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Carry a 'whole lot only' condition onto an alternative delivery option the
+    merge folded into a note (Samuel 2026-11-21: Westhaven Cazadores — "EUR 93 per
+    case delivered Lille if you take the whole lot"). The option already survives
+    in the 'Also available' note; this adds the condition the source attached."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        cc = _clean(o.get("commercial_conditions"))
+        if "also available" not in cc.lower() or "whole lot" in cc.lower():
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln or not _WHOLE_LOT_RE.search(ln):
+            continue
+        o["commercial_conditions"] = cc + " — whole lot only"
+        _mark(o)
+        changed += 1
+    return changed
+
+
+_PACKING_RE = re.compile(
+    r"(\d[\d,]*)\s*(loose|wrapped)\s+"
+    r"(cans?|bottles?|six[\s-]?packs?|packs?|trays?)", re.IGNORECASE)
+
+
+def annotate_pack_format(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Label two lots of the SAME product that differ only by pack FORMAT so the
+    buyer can tell them apart (Samuel 2026-11-21: Fenwick Asahi — "24 loose cans"
+    vs "4 wrapped six-packs", both €9.84/case, stored identically). Matches each
+    row to its own source line by product tokens AND its quantity, then folds the
+    packing phrase into product_name + packaging_raw. Only fires when ≥2 rows
+    share brand+product_name and the source gives each a distinct packing."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    by_prod: Dict[tuple, list] = defaultdict(list)
+    for o in offers:
+        by_prod[(_norm(o.get("brand")), _norm(o.get("product_name")))].append(o)
+    changed = 0
+    for g in by_prod.values():
+        if len(g) < 2:
+            continue
+        seen_fmt = set()
+        plan = []
+        for o in g:
+            q = _primary_qty(o)
+            toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+            cand = [ln for ln in lines
+                    if sum(1 for t in toks if t in ln.lower()) >= 1
+                    and (q is None or re.search(rf"\b{int(q)}\b", ln))]
+            if len(cand) != 1:
+                plan = []
+                break
+            pm = _PACKING_RE.search(cand[0])
+            if not pm:
+                plan = []
+                break
+            fmt = re.sub(r"\s+", " ", pm.group(0).strip().lower())
+            if fmt in seen_fmt:
+                plan = []
+                break
+            seen_fmt.add(fmt)
+            plan.append((o, pm.group(0).strip()))
+        if len(plan) < 2:
+            continue
+        for o, fmt in plan:
+            nm = _clean(o.get("product_name"))
+            if fmt.lower() not in nm.lower():
+                o["product_name"] = f"{nm} ({fmt})" if nm else fmt
+            pr = _clean(o.get("packaging_raw"))
+            if fmt.lower() not in pr.lower():
+                o["packaging_raw"] = (pr + " | " if pr else "") + fmt
+            _mark(o)
+            changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def _tok_prefix_header(parent_id: str, child_id: str) -> bool:
     """True when child_id is a MORE-SPECIFIC edition of parent_id: same leading
     tokens, and the child extends the parent's last token with a '.N' version
@@ -208,12 +507,12 @@ _INNERBOX_EQ_RE = re.compile(
     r"=\s*(\d[\d,]*)\s*(?:pieces?|pcs?|pc)\b", re.IGNORECASE)
 _INNERBOX_MOQ_RE = re.compile(
     r"moq\s*(\d[\d,]*)\s*inner\s*box(?:es)?\b", re.IGNORECASE)
-_PER_PIECE_RE = re.compile(r"(?:per|/)\s*(?:piece|pc|pcs)\b", re.IGNORECASE)
+_PER_PIECE_RE = re.compile(r"(?:per|/)\s*(?:piece|pc|pcs|candle)s?\b", re.IGNORECASE)
 # Reversed inner-box phrasing (Nishane 2026-11-20: "6 pieces/inner box … 5 inner
 # boxes available … EUR 38/piece") — the pieces-per-box and the available box
 # count are stated separately, not as "N inner boxes x M pieces".
 _PIECES_PER_BOX_RE = re.compile(
-    r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc)\s*(?:/|per)\s*inner\s*box", re.IGNORECASE)
+    r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc|candles?)\s*(?:/|per)\s*inner\s*box", re.IGNORECASE)
 _BOXES_AVAIL_RE = re.compile(
     r"(\d[\d,]*)\s*inner\s*box(?:es)?\s*(?:available|avail|in\s*stock|offered)", re.IGNORECASE)
 _ANY_BOXES_RE = re.compile(r"(\d[\d,]*)\s*inner\s*box(?:es)?\b", re.IGNORECASE)
@@ -289,6 +588,13 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
         per, total = _innerbox_counts(ln)
         if not per:
             continue
+        # A "+ N loose <piece>" addon on the same line (Voluspa 2026-11-21:
+        # "3 inner boxes plus one loose candle" = 3×8 + 1 = 25, not 24).
+        lm = _LOOSE_PLUS_RE.search(ln)
+        if lm and total is not None:
+            _lp = _wordnum(lm.group(1))
+            if _lp:
+                total += _lp
         o["units_per_case"] = float(per)          # pieces per inner box
         o["quantity_unit"] = "pieces"
         if total:
@@ -343,7 +649,10 @@ def recover_loose_pieces_qty(offers: List[Dict[str, Any]], source_text: str) -> 
 # ─────────────────────────────────────────────────────────────────────────────
 _BASIS_UNSTATED_RE = re.compile(
     r"basis\s+not\s+(?:stated|given|specified)|"
-    r"(?:per\s+bottle\s+or\s+case)|(?:bottle\s+or\s+case)|"
+    # "per bottle or case", "bottle or a case", "whether that's a bottle or a
+    # case" (Samuel 2026-11-21: Westhaven Galliano "hasn't said whether that's a
+    # bottle or a case") — the optional 'a' before each noun was the gap.
+    r"(?:per\s+)?(?:a\s+)?bottles?\s+or\s+(?:a\s+)?cases?|"
     r"per\s+\w+\s+or\s+per\s+\w+|"   # "per bottle or per case" (Woodford, Samuel 2026-11-20)
     r"price\s+basis\s+not\s+stated", re.IGNORECASE)
 

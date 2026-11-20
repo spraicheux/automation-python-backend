@@ -2309,6 +2309,15 @@
     // backend-clean row (Samuel 2026-11-02: Martell VSOP, A11 states no REF/NRF).
     'custom_status not found',
     'refillable_status not found',
+    // Supplier name/email absent from the offer BODY: a WhatsApp "on the floor"
+    // list or a bare email often has no letterhead, so the supplier is taken from
+    // the channel/sender, not an in-body field. Recording that the body stated no
+    // supplier name/email is informational, not a defect — without this the two
+    // notes hit the "default to material" branch and raised a false REVIEW pill on
+    // every otherwise-clean floor-list row (Samuel 2026-11-21: ERKAN — 6 clean
+    // beer rows all badged REVIEW though only the 3 Carlsberg capacity rows should).
+    'supplier_name not found',
+    'supplier_email not found',
     // Authorised compound-location split notes (Samuel 2026-11-04: Jameson
     // showed "Needs review" for notes that only DOCUMENT an approved
     // transformation — the "Exwork Loendersloot or Revera or Mentrex" split).
