@@ -81,6 +81,7 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "minimum order": "moq_cases", "min order quantity": "moq_cases",
     "ean": "ean_code", "ean code": "ean_code", "barcode": "ean_code",
     "gtin": "ean_code", "ean13": "ean_code",
+    "upc": "ean_code", "upc code": "ean_code", "upc number": "ean_code",
     "vintage": "vintage", "year": "vintage",
     "brand": "brand", "maker": "brand", "marque": "brand",
     "product": "product_name", "product name": "product_name",
