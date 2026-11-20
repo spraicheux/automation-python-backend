@@ -91,6 +91,22 @@ def save_offer_to_db(offer_dict: dict, job_id: str) -> None:
     - Same filename in a DIFFERENT job → skipped (already processed).
     """
     try:
+        # Final safety net at the one save choke-point: a stray 0 price (not a
+        # stated "0/case" — those carry the "Zero price retained" flag) is "no
+        # price", never €0. Blank it so a per-piece / inner-box item (Acqua di
+        # Parma, 56 pieces at USD 31.40/piece) is never stored or ranked at zero
+        # (Samuel 2026-11-20).
+        try:
+            _zpf = "zero price retained" in " ".join(
+                str(f) for f in (offer_dict.get("error_flags") or [])).lower()
+            for _pk, _ek in (("price_per_case", "price_per_case_eur"),
+                             ("price_per_unit", "price_per_unit_eur")):
+                _pv = offer_dict.get(_pk)
+                if not _zpf and isinstance(_pv, (int, float)) and _pv == 0:
+                    offer_dict[_pk] = None
+                    offer_dict[_ek] = None
+        except Exception:
+            pass
         db = get_session_factory()()
         try:
             # Collapse the supplier onto one canonical spelling (client §1 —
@@ -847,6 +863,15 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     # / price-on-request line — and NEVER stamp EUR on it (Samuel 2026-11-18:
     # Cody Vody / Jack Daniel's & Cola had no price and no currency in the
     # source but were forced to EUR here). No price ⇒ no FX.
+    # A stray 0 case price (not a stated "EUR 0/case" — those carry the "Zero
+    # price retained" flag) means "no case price", not €0/case. Blank it so a
+    # per-piece / inner-box item is never shown or ranked at zero (Samuel
+    # 2026-11-20: Acqua di Parma, 56 pieces at USD 31.40/piece, pc leaked as 0.0).
+    _zp_flag = "zero price retained" in " ".join(
+        str(f) for f in (safe_data.get('error_flags') or [])).lower()
+    if not _zp_flag and _safe_float(safe_data.get('price_per_case')) == 0:
+        safe_data['price_per_case'] = None
+        safe_data['price_per_case_eur'] = None
     _has_price = ((_safe_float(safe_data.get('price_per_unit')) or 0) > 0
                   or (_safe_float(safe_data.get('price_per_case')) or 0) > 0)
     if not _has_price:
