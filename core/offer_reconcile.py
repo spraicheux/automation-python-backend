@@ -360,6 +360,17 @@ def flag_unstated_price_basis(offers: List[Dict[str, Any]], source_text: str) ->
         # EUR 138 — source leaves bottle-or-case unspecified).
         cur = _clean(o.get("currency"))
         amt = _f(o.get("price_per_case")) or _f(o.get("price_per_unit"))
+        if amt is None:
+            # The LLM sometimes leaves the price blank PRECISELY because the basis
+            # is unstated (Beefeater "Price USD 75.00, basis not stated" extracted
+            # as no price). Recover the quoted amount + currency from the source
+            # line so the "as quoted" note keeps the number, not a bare "amount".
+            mm = re.search(r"(USD|EUR|GBP|CHF|US\$|\$|€|£)\s*([\d][\d.,]*)", ln, re.I)
+            if mm:
+                amt = _f(mm.group(2).replace(",", ""))
+                if not cur:
+                    cur = {"$": "USD", "US$": "USD", "€": "EUR", "£": "GBP"}.get(
+                        mm.group(1), mm.group(1).upper())
         for f in ("price_per_unit", "price_per_case",
                   "price_per_unit_eur", "price_per_case_eur"):
             o[f] = None
