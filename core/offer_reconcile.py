@@ -114,6 +114,13 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
                     alts.append(term)
             if alts:
                 note = "Also available: " + " ; ".join(dict.fromkeys(alts))
+                # The merge requires a single shared case price, so when the kept
+                # row carries one, state it on the alternative term too — it is
+                # the SAME lot at the SAME price, not a second quote (Samuel
+                # 2026-11-20: Jägermeister EXW confirmed same EUR 78/case).
+                kpc = _f(keep.get("price_per_case")); kcur = _clean(keep.get("currency"))
+                if kpc and kcur and not any("price TBC" in a for a in alts):
+                    note += f" (same {kcur} {kpc:g}/case)"
                 cc = _clean(keep.get("commercial_conditions"))
                 keep["commercial_conditions"] = (cc + " | " if cc else "") + note
             _mark(keep)
@@ -191,6 +198,45 @@ _INNERBOX_EQ_RE = re.compile(
 _INNERBOX_MOQ_RE = re.compile(
     r"moq\s*(\d[\d,]*)\s*inner\s*box(?:es)?\b", re.IGNORECASE)
 _PER_PIECE_RE = re.compile(r"(?:per|/)\s*(?:piece|pc|pcs)\b", re.IGNORECASE)
+# Reversed inner-box phrasing (Nishane 2026-11-20: "6 pieces/inner box … 5 inner
+# boxes available … EUR 38/piece") — the pieces-per-box and the available box
+# count are stated separately, not as "N inner boxes x M pieces".
+_PIECES_PER_BOX_RE = re.compile(
+    r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc)\s*(?:/|per)\s*inner\s*box", re.IGNORECASE)
+_BOXES_AVAIL_RE = re.compile(
+    r"(\d[\d,]*)\s*inner\s*box(?:es)?\s*(?:available|avail|in\s*stock|offered)", re.IGNORECASE)
+_ANY_BOXES_RE = re.compile(r"(\d[\d,]*)\s*inner\s*box(?:es)?\b", re.IGNORECASE)
+
+
+def _boxes_available(ln: str) -> Optional[int]:
+    """The available inner-box count on a line, preferring an explicit
+    'N inner boxes available' and never mistaking the 'MOQ 1 inner box' count."""
+    m = _BOXES_AVAIL_RE.search(ln)
+    if m:
+        return _int(m.group(1))
+    for mm in _ANY_BOXES_RE.finditer(ln):
+        if "moq" not in ln[max(0, mm.start() - 6):mm.start()].lower():
+            return _int(mm.group(1))
+    return None
+
+
+def _innerbox_counts(ln: str):
+    """(pieces_per_box, total_pieces) from either inner-box phrasing:
+    'N inner boxes x M pieces [= T pieces]' (Montblanc) or 'M pieces/inner box …
+    N inner boxes available' (Nishane). (None, None) when it isn't one."""
+    m = _INNERBOX_RE.search(ln)
+    if m:
+        boxes = _int(m.group(1)); per = _int(m.group(2))
+    else:
+        pm = _PIECES_PER_BOX_RE.search(ln)
+        if not pm:
+            return None, None
+        per = _int(pm.group(1)); boxes = _boxes_available(ln)
+    if not per:
+        return None, None
+    eq = _INNERBOX_EQ_RE.search(ln)
+    total = _int(eq.group(1)) if eq else (boxes * per if boxes else None)
+    return per, total
 
 
 def _int(s) -> Optional[int]:
@@ -215,11 +261,12 @@ def _source_line_for(o: Dict[str, Any], lines: List[str]) -> Optional[str]:
 
 
 def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> int:
-    """When the source sells a product in INNER BOXES ("4 inner boxes x 12 pieces
-    = 48 pieces", "MOQ 2 inner boxes", priced per piece), carry that through: pack
-    = pieces per inner box, quantity in pieces, MOQ in inner boxes, and NO
-    fabricated per-case price. Fixes the Montblanc tester on the WhatsApp/LLM path
-    the way the xlsx/pipe parsers already do (Samuel 2026-11-19)."""
+    """When the source sells a product in INNER BOXES, carry that through: pack =
+    pieces per inner box, quantity in pieces, MOQ in inner boxes, and NO
+    fabricated per-case price. Handles both the straight phrasing ("4 inner boxes
+    x 12 pieces = 48 pieces", Montblanc) and the reversed one ("6 pieces/inner
+    box … 5 inner boxes available … EUR 38/piece", Nishane — Samuel 2026-11-20),
+    the way the xlsx/pipe parsers already do for the structured path."""
     if not source_text:
         return 0
     lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
@@ -228,14 +275,9 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
         ln = _source_line_for(o, lines)
         if not ln:
             continue
-        m = _INNERBOX_RE.search(ln)
-        if not m:
-            continue
-        boxes = _int(m.group(1)); per = _int(m.group(2))
+        per, total = _innerbox_counts(ln)
         if not per:
             continue
-        eq = _INNERBOX_EQ_RE.search(ln)
-        total = _int(eq.group(1)) if eq else (boxes * per if boxes else None)
         o["units_per_case"] = float(per)          # pieces per inner box
         o["quantity_unit"] = "pieces"
         if total:
@@ -245,10 +287,13 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
         if mm:
             o["moq_cases"] = float(_int(mm.group(1)))
             o["moq_unit"] = "inner boxes"
-        # per-piece pricing: drop any fabricated per-case price
+        # per-piece pricing: drop any fabricated per-case price, and the now-stale
+        # "case price = unit × pack" info flag that would otherwise mislead.
         if _PER_PIECE_RE.search(ln):
             o["price_per_case"] = None
             o["price_per_case_eur"] = None
+            o["error_flags"] = [f for f in (o.get("error_flags") or [])
+                                if "price_per_case calculated" not in str(f).lower()]
         _mark(o)
         changed += 1
     return changed
@@ -438,6 +483,41 @@ def clear_currency_on_request(offers: List[Dict[str, Any]], source_text: str) ->
             o["needs_manual_review"] = True
             _mark(o)
             changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+_COND_DELIVERY_RE = re.compile(
+    r"((?:EXW|FCA|FOB|CIF|CFR|CPT|DAP|DDP|DAT|DPU)\b[^.;\n]*?\bonly\s+if\b[^.;\n]*|"
+    r"\bonly\s+if\s+(?:a\s+)?full\s*(?:truck|load|ftl)[^.;\n]*)", re.IGNORECASE)
+
+
+def capture_conditional_incoterm(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Preserve a CONDITIONAL delivery term the extractor flattened to a plain
+    incoterm — "DAP Riga only if full truck" stored as just incoterm=DAP,
+    location=Riga, losing the condition (Samuel 2026-11-20: Rémy Martin XO). Keep
+    the structured incoterm/location untouched and add the exact conditional as a
+    delivery note on the commercial conditions, so it shows on the live drawer and
+    the export. Only acts when the source line carries the condition and the row
+    does not already record it."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        cc = _clean(o.get("commercial_conditions"))
+        if "only if" in cc.lower():
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln:
+            continue
+        m = _COND_DELIVERY_RE.search(ln)
+        if not m:
+            continue
+        phrase = re.sub(r"\s+", " ", m.group(1).strip().rstrip(".,; "))
+        o["commercial_conditions"] = (cc + " | " if cc else "") + f"Delivery: {phrase}"
+        _mark(o)
+        changed += 1
     return changed
 
 
