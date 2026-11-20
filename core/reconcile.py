@@ -48,6 +48,10 @@ _QTY_RE = re.compile(
 _NOPRICE_RE = re.compile(
     r"on\s*request|call\s*for\s*quot|quotation|price\s*tbc|\btbc\b|p\.?o\.?a\.?",
     re.IGNORECASE)
+# A pack-format product line: "<name> 24x33 cl cans" / "<name> 4×6×33 cl bottles".
+_FORMAT_RE = re.compile(
+    r"^(.*?)(\d+)\s*[x×*]\s*(\d+)(?:\s*[x×*]\s*(\d+))?\s*cl\s*(?:cans?|bottles?)\b",
+    re.IGNORECASE)
 
 
 def _amt_variants(raw: str) -> List[float]:
@@ -217,6 +221,42 @@ def reconcile_source_vs_rows(source_text: str,
     phantom = [_row_label(rs["row"]) for rs in sigs
                if not rs["matched"] and rs["prices"]]
     total_src = len(priced) + len(noprice)
+
+    # ── Format completeness (price-INDEPENDENT) ──────────────────────────────
+    # In an 'ON THE FLOOR'-style list, every "<name> A×B cl cans/bottles" product
+    # line is its own SKU, even when two formats of one product share a price.
+    # Match each pack-format line to a row by name-tokens + unit count; an
+    # unmatched format is MISSED although its price sits on a twin — so an 8-row
+    # import of a 9-format source no longer reports "0 missed" (Samuel 2026-11-20:
+    # Carlsberg Lager 24×33 vs 4×6×33, both €7.05).
+    _fmt = []
+    for raw in source_text.split("\n"):
+        fm = _FORMAT_RE.search(raw.strip())
+        if fm:
+            a = int(fm.group(2)); c = int(fm.group(3)); d = fm.group(4)
+            _fmt.append((raw.strip(), fm.group(1), a * c if d else a))
+    if len(_fmt) >= 3:
+        _rs = []
+        for r in rows:
+            _tk = set(t for t in re.findall(
+                r"[a-z0-9]+", ((r.get("brand") or "") + " " + (r.get("product_name") or "")).lower())
+                if len(t) > 2)
+            try:
+                _u = float(r.get("units_per_case")) if r.get("units_per_case") else None
+            except (TypeError, ValueError):
+                _u = None
+            _rs.append([_tk, _u, False])
+        for line, name, units in _fmt:
+            ntoks = set(t for t in re.findall(r"[a-z0-9]+", name.lower()) if len(t) > 2)
+            hit = False
+            for rsig in _rs:
+                if rsig[2] or not ntoks or not (ntoks <= rsig[0]):
+                    continue
+                if rsig[1] is None or rsig[1] == float(units):
+                    rsig[2] = True; hit = True; break
+            if not hit and line not in missed:
+                missed.append(line)
+
     return {
         "missed": missed,
         "phantom": phantom,

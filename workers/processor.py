@@ -2775,6 +2775,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.recover_loose_pieces_qty(offers, src)
     changed += _rec.recover_loose_bottles_addon(offers, src)
     changed += _rec.fix_multipack_units(offers, src)
+    changed += _rec.reconcile_floor_list(offers, src)
     changed += _rec.separate_load_capacity(offers, src)
     changed += _rec.clear_currency_on_request(offers, src)
     changed += _rec.capture_conditional_incoterm(offers, src)

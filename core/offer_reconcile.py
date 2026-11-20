@@ -733,6 +733,179 @@ def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> in
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ERKAN-style "ON THE FLOOR" beer list: every priced product line must become its
+# OWN row, including two pack formats of the same product at the same price
+# (Samuel 2026-11-20: Carlsberg Lager 24×33 vs 4×6×33, both €7.05 — the model
+# merged them into one). Deterministically recover a missing format and carry each
+# block's BBD breakdown + bottle/can type + load capacity.
+_FLOOR_PRODUCT_RE = re.compile(
+    r"^(.*?)(\d+)\s*[x×*]\s*(\d+)(?:\s*[x×*]\s*(\d+))?\s*cl\s*(cans?|bottles?)\b",
+    re.IGNORECASE)
+_FLOOR_PRICE_RE = re.compile(
+    r"(\d[\d.,]*)\s*euro\s*per\s*case\s*"
+    r"(exworks?|exw|ex|fca|fob|cif|cfr|cpt|dap|ddp|dat|dpu)\b\s*([A-Za-z][A-Za-z .]*)",
+    re.IGNORECASE)
+_FLOOR_DATE_RE = re.compile(
+    r"\d{1,2}[./]\d{1,2}[./]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}")
+
+
+def _eu_num(s) -> Optional[float]:
+    """A number under either convention: '7,05'→7.05, '1.890'→1890, '4.911'→4911."""
+    t = str(s).strip()
+    if re.search(r",\d{1,2}\b", t) and "." not in t:
+        t = t.replace(".", "").replace(",", ".")
+    else:
+        t = t.replace(",", "")
+    try:
+        return round(float(t), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _floor_bbd(block: str) -> str:
+    """The best-before breakdown in a block — the dated lines (and any 'N cases
+    <date>' split), joined. Skips the product, availability, status and price
+    lines so only the BBD detail is captured (Amsterdam Navigator's four dates)."""
+    out = []
+    for ln in block.splitlines():
+        s = ln.strip().strip(" ,.")
+        if not s:
+            continue
+        low = s.lower()
+        if ("euro" in low or low.endswith("status") or "status" in low
+                or "per load" in low or "available" in low or "on the floor" in low):
+            continue
+        if "bbd" in low or _FLOOR_DATE_RE.search(s):
+            s2 = re.sub(r"(?i)\bbbd\b\s*:?", "", s).strip(" ,.-:")
+            if s2:
+                out.append(re.sub(r"\s{2,}", " ", s2))
+    return "; ".join(out)
+
+
+def _floor_parse(block: str) -> Optional[Dict[str, Any]]:
+    pm = None
+    for ln in block.splitlines():
+        pm = _FLOOR_PRODUCT_RE.search(ln.strip())
+        if pm:
+            break
+    if not pm:
+        return None
+    name = pm.group(1).strip(" ,-")
+    a = _int(pm.group(2)); c = _int(pm.group(3)); d = _int(pm.group(4))
+    if d:                                  # A × C × D  → A*C units, D cl
+        units = a * c; vol_cl = d; inner = c
+        pack_disp = f"{a} × {c} × {d}cl"
+    else:                                  # A × C      → A units, C cl
+        units = a; vol_cl = c; inner = None
+        pack_disp = f"{a} × {c}cl"
+    container = pm.group(5).lower().rstrip("s")       # can / bottle
+    pm2 = _FLOOR_PRICE_RE.search(block)
+    pc = inco = loc = None
+    if pm2:
+        pc = _eu_num(pm2.group(1))
+        inco = pm2.group(2).upper()
+        inco = "EXW" if inco in ("EX", "EXWORK", "EXWORKS") else inco
+        loc = pm2.group(3).strip(" .,")
+    pl = _PER_LOAD_RE.search(block); av = _AVAIL_QTY_RE.search(block)
+    return {
+        "name": name, "units": units, "vol_ml": vol_cl * 10, "inner": inner,
+        "container": container, "pack_disp": f"{pack_disp} {container}",
+        "pc": pc, "inco": inco, "loc": loc,
+        "per_load": _int(pl.group(1)) if pl else None,
+        "avail": _int(av.group(1)) if av else None,
+        "bbd": _floor_bbd(block),
+    }
+
+
+def _floor_toks(name: str):
+    return set(t for t in re.findall(r"[a-z0-9]+", (name or "").lower()) if len(t) > 2)
+
+
+def _floor_enrich(o: Dict[str, Any], sp: Dict[str, Any]) -> None:
+    if sp["container"] and not _clean(o.get("bottle_or_can_type")):
+        o["bottle_or_can_type"] = sp["container"]
+    if sp["vol_ml"] and not _f(o.get("unit_volume_ml")):
+        o["unit_volume_ml"] = float(sp["vol_ml"])
+    o["packaging_raw"] = sp["pack_disp"]
+    if sp["inco"] and not _clean(o.get("incoterm")):
+        o["incoterm"] = sp["inco"]
+    if sp["loc"] and not _clean(o.get("location")):
+        o["location"] = sp["loc"]
+    cc = _clean(o.get("commercial_conditions"))
+    notes = []
+    if sp["per_load"] and not sp["avail"]:
+        o["quantity_case"] = None
+        o["needs_manual_review"] = True
+        if "per load" not in cc.lower():
+            notes.append(f"{sp['per_load']} cases per load (truckload capacity; "
+                         f"available stock not stated)")
+    if sp["bbd"] and "bbd" not in cc.lower():
+        notes.append(f"BBD: {sp['bbd']}")
+    if notes:
+        o["commercial_conditions"] = (cc + " | " if cc else "") + " | ".join(notes)
+    _mark(o)
+
+
+def reconcile_floor_list(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Make every priced product line in an 'ON THE FLOOR' list its own row.
+    Recovers a pack format the extractor merged away (same product + price,
+    different pack) and enriches every row with its block's bottle/can type, BBD
+    breakdown and load capacity. Returns the number of rows enriched or added."""
+    changed = 0
+    if not source_text:
+        return changed
+    blocks = [b for b in re.split(r"\n\s*\n", str(source_text)) if b.strip()]
+    priced = [b for b in blocks if re.search(r"euro\s*per\s*case", b, re.IGNORECASE)]
+    if len(priced) < 3:
+        return changed              # not a floor list → leave everything alone
+    parsed = [sp for sp in (_floor_parse(b) for b in priced) if sp]
+    if len(parsed) < 3:
+        return changed
+    used = set()
+    for sp in parsed:
+        stoks = _floor_toks(sp["name"])
+        match = None
+        for i, o in enumerate(offers):
+            if i in used:
+                continue
+            _ovol = _f(o.get("unit_volume_ml"))
+            if (stoks and stoks <= _floor_toks(_ident(o))
+                    and _f(o.get("units_per_case")) == float(sp["units"])
+                    and _ovol in (None, float(sp["vol_ml"]))):
+                match = i; break
+        if match is not None:
+            used.add(match)
+            _floor_enrich(offers[match], sp)
+            changed += 1
+        else:
+            # Recover: clone a sibling row of the same product (for currency /
+            # price), or build a fresh one, then set this format's fields.
+            tmpl = next((o for o in offers if stoks and stoks <= _floor_toks(_ident(o))), None)
+            new = dict(tmpl) if tmpl else {}
+            new.pop("_dirty", None)
+            if not tmpl:
+                parts = sp["name"].split()
+                new["brand"] = parts[0] if parts else sp["name"]
+                new["product_name"] = " ".join(parts[1:]) or sp["name"]
+                new["currency"] = "EUR"
+            new["uid"] = f"floor-{abs(hash((sp['name'], sp['pack_disp']))) % (10 ** 9)}"
+            new["units_per_case"] = float(sp["units"])
+            if sp["pc"]:
+                new["price_per_case"] = sp["pc"]
+                new["price_per_unit"] = round(sp["pc"] / sp["units"], 4) if sp["units"] else None
+                new["price_per_case_eur"] = None
+                new["price_per_unit_eur"] = None
+            for k in ("quantity_bottles", "quantity_pallets", "quantity_ftl"):
+                new.pop(k, None)
+            new["quantity_case"] = float(sp["avail"]) if sp["avail"] else None
+            new["commercial_conditions"] = None
+            _floor_enrich(new, sp)
+            offers.append(new)
+            changed += 1
+    return changed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 _WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
             "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 _INNERBOX_OF_RE = re.compile(r"(\w+)\s+inner\s*box(?:es)?\s+of\s+(\w+)", re.IGNORECASE)
