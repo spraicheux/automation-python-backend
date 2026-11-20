@@ -135,8 +135,11 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
     import re
     issues: List[str] = []
     src = source_text or ""
-    if not src.strip():
-        return issues
+    # The source-vs-stored tests (A, B) need the source text; the marker test (C)
+    # reads the row's OWN recorded conditions, so it must still run for an Excel
+    # offer that has no free-text source — otherwise a basis-unconfirmed Excel row
+    # stays silently green (Samuel 2026-11-20: Larch Pier Plymouth).
+    have_src = bool(src.strip())
 
     try:
         from core.deterministic_rules import _has_mixed_incoterms
@@ -153,7 +156,7 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
         inco = (str(r.get("incoterm") or "")).strip().upper()
         cc = str(r.get("commercial_conditions") or "")
         cc_low = cc.lower()
-        wins = _windows(src, name)
+        wins = _windows(src, name) if have_src else []
 
         # (A) Inherited incoterm. In a MIXED-incoterm document each line must
         # state its own term; if the row carries one the source never states
@@ -199,6 +202,10 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
             ("also available", "the source offers an alternative not priced here"),
             ("conditional", "the source makes this offer conditional"),
             ("subject to confirmation", "the source makes this subject to confirmation"),
+            ("price basis not stated",
+             "price basis unconfirmed — quoted amount kept, bottle/case price left blank"),
+            ("basis not stated",
+             "price basis unconfirmed — quoted amount kept, bottle/case price left blank"),
         ):
             if marker in cc_low:
                 _marker_rows.setdefault(why, []).append(name)
