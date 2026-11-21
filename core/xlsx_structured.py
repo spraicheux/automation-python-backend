@@ -397,20 +397,37 @@ def _detect_currency(s: str) -> Optional[str]:
 
 
 def _fmt_currency(number_format: Optional[str]) -> Optional[str]:
-    """Currency implied by a cell's NUMBER FORMAT (not its text). A price column
-    can be dollar/euro/pound-formatted with the symbol living in the format mask,
-    not the cell text ("$36.50" stores 36.5 with a `"$"* #,##0.00` mask). This is
-    real, if weak, evidence of the currency when nothing is stated in words
-    (Samuel 2026-11-21: HAZ's PRICE column is `$`-formatted — USD, never EUR)."""
+    """ISO currency UNAMBIGUOUSLY identified by a cell's NUMBER FORMAT, else None.
+    Only two signals confirm a currency: an explicit `[$XXX-...]` ISO code in the
+    mask, or the `€` symbol (used by exactly one currency). A bare `$`, `£` or `¥`
+    glyph is shared by many currencies ($ = USD/CAD/AUD/HKD/SGD/…, ¥ = JPY/CNY,
+    £ = GBP/EGP/LBP/…), so it does NOT identify a currency and returns None — the
+    symbol is still available for display via _fmt_symbol, but the currency stays
+    unconfirmed and the row is kept out of price comparisons. (Samuel 2026-11-21:
+    HAZ's PRICE column is a bare `"$"` accounting mask with no locale/ISO code —
+    `$` alone is not evidence of USD.)"""
     f = number_format or ""
     if not f or f.lower() in ("general", "@"):
         return None
     m = re.search(r"\[\$([A-Za-z]{3})", f)   # explicit [$USD-409] currency code
     if m:
         return m.group(1).upper()
-    for sym, code in (("$", "USD"), ("€", "EUR"), ("£", "GBP"), ("¥", "JPY")):
+    if "€" in f:                              # euro sign maps to exactly one currency
+        return "EUR"
+    return None
+
+
+def _fmt_symbol(number_format: Optional[str]) -> Optional[str]:
+    """The bare currency SYMBOL in a number-format mask ($/€/£/¥), for showing an
+    amount as-quoted, independent of whether the currency itself is confirmed. A
+    `$`-formatted cell with no ISO/locale code yields `$` here (so the record can
+    read "$6, as quoted") while _fmt_currency returns None (currency unconfirmed)."""
+    f = number_format or ""
+    if not f or f.lower() in ("general", "@"):
+        return None
+    for sym in ("$", "€", "£", "¥"):
         if sym in f:
-            return code
+            return sym
     return None
 
 
@@ -615,7 +632,8 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             price_on_request = False
             basis_ambiguous = False
             price_cell_raw = ""
-            price_fmt_currency: Optional[str] = None   # currency from the $/€/£ cell mask
+            price_fmt_currency: Optional[str] = None   # CONFIRMED currency from the cell mask (€ / explicit ISO code)
+            price_fmt_symbol: Optional[str] = None      # bare display symbol from the cell mask ($/£/¥) when unconfirmed
             size_raw: Any = None
             any_value = False
             nobox = False
@@ -646,6 +664,7 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # _to_float concatenate two numbers into None (= a dropped row).
                     price_cell_raw = str(val).strip()
                     price_fmt_currency = price_fmt_currency or _fmt_currency(cell.number_format)
+                    price_fmt_symbol = price_fmt_symbol or _fmt_symbol(cell.number_format)
                     pc = _parse_price_cell(val)
                     if pc["currency"] and not prod.get("currency"):
                         prod["currency"] = pc["currency"]
@@ -869,11 +888,22 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     and not prod.get("currency")):
                 basis_ambiguous = True
                 if price_fmt_currency:
+                    # An unambiguous mask (€ or an explicit [$XXX] ISO code).
                     prod["currency"] = price_fmt_currency
-                    _sym = "$" if price_fmt_currency == "USD" else price_fmt_currency
                     prod["_basis_cur_note"] = (
-                        f"currency read from the {_sym} cell format (none stated "
-                        f"in the source); stock unit not stated")
+                        f"currency read from the {price_fmt_currency} cell format "
+                        f"(none stated in words); stock unit not stated")
+                elif price_fmt_symbol:
+                    # A shared symbol ($/£/¥) with no ISO/locale code — NOT a
+                    # currency. Keep the symbol for display, leave the currency
+                    # field empty (unconfirmed), and stay out of comparisons
+                    # (Samuel 2026-11-21: `$` alone is not evidence of USD).
+                    prod["_quote_symbol"] = price_fmt_symbol
+                    prod["_basis_cur_note"] = (
+                        f"the PRICE cell uses a {price_fmt_symbol} accounting "
+                        f"format but the workbook states no currency; "
+                        f"{price_fmt_symbol} alone does not identify a currency "
+                        f"— currency unconfirmed; stock unit not stated")
                 else:
                     prod["_basis_cur_note"] = ("currency not stated in the "
                                                "source; stock unit not stated")
@@ -885,15 +915,24 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # field; retain it as-quoted and flag for review (Samuel AQT
                     # 2026-11-17 Beefeater, mirroring the NE-410 rule).
                     cur = (prod.get("currency") or "").strip()
+                    _sym = prod.pop("_quote_symbol", "")
                     _extra = prod.pop("_basis_cur_note", None)
                     _extra = f" ({_extra})" if _extra else ""
+                    # Render "$6" when only a shared symbol is known, "EUR 6" when
+                    # the currency is confirmed, "6" when nothing is known.
+                    _amt = (f"{_sym}{price_value:g}" if _sym
+                            else f"{cur} {price_value:g}".strip())
                     prod["commercial_conditions"] = (
-                        f"As quoted: {cur} {price_value:g}".strip()
+                        f"As quoted: {_amt}".strip()
                         + " — price basis not stated" + _extra
                         + "; excluded from price comparison.")
                     flags = prod.setdefault("error_flags", [])
                     flags.append("price basis not stated — amount retained "
                                  "as-quoted, excluded from comparison")
+                    if not cur:
+                        flags.append("currency unconfirmed — cell shows a symbol "
+                                     "only, no currency stated; excluded from "
+                                     "comparison")
                     prod["needs_manual_review"] = True
                 elif "case" in price_basis or "carton" in price_basis:
                     prod["price_per_case"] = price_value
