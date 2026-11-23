@@ -891,9 +891,11 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     # names no currency anywhere). Detected by the parser's currency-unconfirmed
     # flag, so a normal row with a real currency is untouched.
     _ef0 = safe_data.get('error_flags')
-    if (not (safe_data.get('currency') or '').strip()
-            and isinstance(_ef0, list)
-            and any(str(f).lower().startswith('currency unconfirmed') for f in _ef0)):
+    _cc0 = str(safe_data.get('commercial_conditions') or '').lower()
+    _unconf0 = ('currency unconfirmed' in _cc0
+                or (isinstance(_ef0, list)
+                    and any('currency unconfirmed' in str(f).lower() for f in _ef0)))
+    if (not (safe_data.get('currency') or '').strip()) and _unconf0:
         safe_data['price_per_unit_eur'] = None
         safe_data['price_per_case_eur'] = None
         safe_data['fx_rate'] = None
@@ -2726,8 +2728,10 @@ def _apply_offer_defaults(data: dict) -> dict:
                     # out of comparison (Samuel 2026-11-21 HAZ; 2026-11-22 Spirits
                     # Online per-bottle list).
                     _ef = data.get('error_flags')
-                    _unconf = (isinstance(_ef, list) and any(
-                        str(f).lower().startswith('currency unconfirmed') for f in _ef))
+                    _cc = str(data.get('commercial_conditions') or '').lower()
+                    _unconf = ('currency unconfirmed' in _cc
+                               or (isinstance(_ef, list) and any(
+                                   'currency unconfirmed' in str(f).lower() for f in _ef)))
                     if not _has_price or _unconf:
                         continue
                 data[field] = default
