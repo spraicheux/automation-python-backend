@@ -3946,6 +3946,20 @@ def clean_product_data(product: dict) -> dict:
 
             # Convert None, empty strings, null, and 0 to appropriate default
             if value in [None, "Not Found", "", "null", 0, "0"]:
+                # A priced row the parser flagged "currency unconfirmed" (the file
+                # names no currency anywhere) must NOT be defaulted to EUR here —
+                # keep it None so the amount stays as quoted and out of comparison,
+                # exactly as a currency-less $ list is (Samuel 2026-11-21 HAZ;
+                # 2026-11-22 Spirits Online per-bottle list). This is the earliest
+                # EUR injection; the process_offer gates are defence-in-depth.
+                if field == 'currency':
+                    _cc_u = str(product.get('commercial_conditions') or '').lower()
+                    _ef_u = product.get('error_flags') or []
+                    if ('currency unconfirmed' in _cc_u
+                            or (isinstance(_ef_u, list)
+                                and any('currency unconfirmed' in str(f).lower() for f in _ef_u))):
+                        cleaned_product[field] = None
+                        continue
                 logger.info(f"[clean_product_data] Field '{field}': value={value!r} is empty/zero — using default: {default_value!r}")
                 cleaned_product[field] = default_value
             else:
