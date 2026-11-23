@@ -4013,25 +4013,33 @@ def clean_product_data(product: dict) -> dict:
     # trusting the LLM's key, which embedded "112CS" (cases/pallet, a
     # logistics value) on the Edo Johnnie Walker row. clean_product_key
     # (inside build_product_key) strips any T1/T2 / RF/NRF tokens.
-    # A bare CONTAINER word as the whole product name ("Cans", "Bottles") is a
-    # packaging descriptor, not a product identity (Samuel 2026-11-23: "Carlsberg
-    # | Cans" keyed separately from another supplier's "Carlsberg | Carlsberg"
-    # for the same 24×50cl can, so the two offers never compared). Move the
-    # container to bottle_or_can_type and fall the product name back to the brand,
-    # so the SKU keys to the same identity as the same product from any supplier.
+    # A PACKAGING-ONLY product name — a bare container word ("Cans") or a pure
+    # pack format ("24 x 50cl cans") with no real product word — is a packaging
+    # descriptor, not a product identity (Samuel 2026-11-23: the 24×50cl Carlsberg
+    # keyed "carlsberg|cans" / "carlsberg|24 x 50cl cans" depending on the run, so
+    # it never matched another supplier's "carlsberg|carlsberg" for the same can).
+    # Strip volumes / counts / x / container words; if nothing alphabetic remains,
+    # the name is pure packaging → move the container to bottle_or_can_type and
+    # fall the product name back to the brand, keying the SKU to the SAME identity
+    # as the same product from any supplier, regardless of how the row was worded.
     _pn = (cleaned_product.get('product_name') or '').strip()
-    _CONTAINER_WORDS = {
-        'can', 'cans', 'bottle', 'bottles', 'btl', 'btls',
-        'keg', 'kegs', 'cask', 'casks', 'drum', 'drums', 'tin', 'tins'}
-    if _pn.lower() in _CONTAINER_WORDS:
-        _brand = (cleaned_product.get('brand') or '').strip()
-        if _brand and _brand.lower() not in ("", "not found"):
-            if not (cleaned_product.get('bottle_or_can_type') or '').strip():
-                cleaned_product['bottle_or_can_type'] = _pn.lower().rstrip('s')
-            logger.info(
-                f"[clean_product_data] container-word product_name {_pn!r} → "
-                f"brand {_brand!r} (container moved to bottle_or_can_type)")
-            cleaned_product['product_name'] = _brand
+    if _pn:
+        _resid = _pn.lower()
+        _resid = re.sub(r'\d+(?:[.,]\d+)?\s*(?:cl|ml|cc|lt|l|litres?|liters?)\b', ' ', _resid)
+        _resid = re.sub(r'\b(?:cans?|bottles?|btls?|kegs?|casks?|drums?|tins?|pcs?|'
+                        r'pieces?|units?|cases?|packs?|ctns?)\b', ' ', _resid)
+        _resid = re.sub(r'[0-9x×*]+', ' ', _resid)
+        _resid = re.sub(r'[^a-z]+', ' ', _resid).strip()
+        if not _resid:
+            _brand = (cleaned_product.get('brand') or '').strip()
+            if _brand and _brand.lower() not in ("", "not found"):
+                _cont = re.search(r'\b(can|bottle|keg|cask|drum|tin)s?\b', _pn, re.IGNORECASE)
+                if _cont and not (cleaned_product.get('bottle_or_can_type') or '').strip():
+                    cleaned_product['bottle_or_can_type'] = _cont.group(1).lower()
+                logger.info(
+                    f"[clean_product_data] packaging-only product_name {_pn!r} → "
+                    f"brand {_brand!r} (container moved to bottle_or_can_type)")
+                cleaned_product['product_name'] = _brand
 
     if cleaned_product['product_name'] not in [None, "", "Not Found"]:
         from core.normalization import build_product_key

@@ -1147,16 +1147,20 @@ def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> in
         btoks = set(re.findall(r"[a-z0-9]+", b.lower()))
         bsig = _pack_sig(b)
         for o in offers:
-            ot = set(t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2)
-            if not (ot & btoks):
+            # The capacity line must NAME this product's BRAND — a shared pack
+            # format alone (e.g. 24×33cl) would otherwise tag a DIFFERENT brand's
+            # real available stock (Samuel 2026-11-23: the Carlsberg per-load line
+            # wrongly flagged Tuborg Green 24×33, which had 792 cases available).
+            brand_toks = set(t for t in re.findall(r"[a-z0-9]+", _norm(o.get("brand")).lower())
+                             if len(t) > 2)
+            if not brand_toks or not (brand_toks & btoks):
                 continue
             osig = _pack_sig(o.get("packaging_raw")) or _pack_sig(o.get("product_name"))
             qty_is_cap = _f(o.get("quantity_case")) == float(load_n)
-            # Match the block to its row by the per-load figure OR by the exact
-            # pack format, so BOTH twins of a "per load" product get the capacity
-            # note + review — even the twin the extractor already left
-            # quantity-less (Samuel 2026-11-23: only the 4×6×33 Carlsberg carried
-            # the flag; the 24×33 twin, with quantity already blank, did not).
+            # Within the matched brand, tie the block to its row by the per-load
+            # figure OR the exact pack format, so BOTH twins of a "per load"
+            # product get the capacity note + review — even the twin the extractor
+            # left quantity-less (Samuel 2026-11-23: the 24×33 Carlsberg twin).
             if not (qty_is_cap or (bsig and osig and bsig == osig)):
                 continue
             if qty_is_cap:
