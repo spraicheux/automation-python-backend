@@ -397,6 +397,12 @@ async def get_records(
                 func.lower(func.coalesce(OfferItemDB.product_name, '')),
                 func.coalesce(OfferItemDB.unit_volume_ml, 0),
                 func.coalesce(OfferItemDB.units_per_case, 0),
+                # Pack FORMAT: two distinct formats of one SKU at the same pack
+                # count/price ("24 x 330ml" vs "4 x 6 x 330ml", both 24/case)
+                # must BOTH stay visible, not collapse to one; a true re-statement
+                # shares the identical format and still collapses (Samuel
+                # 2026-11-22 Iron Gate / Carlsberg).
+                func.lower(func.coalesce(OfferItemDB.packaging_raw, '')),
                 # Supplier + source file
                 func.coalesce(OfferItemDB.supplier_name, ''),
                 OfferItemDB.source_file_id,

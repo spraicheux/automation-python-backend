@@ -43,8 +43,15 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "price per unit": "price_per_unit", "unit price": "price_per_unit",
     "price per bottle": "price_per_unit", "price bottle": "price_per_unit",
     "price per piece": "price_per_unit", "unit price eur": "price_per_unit",
+    # Abbreviated per-bottle / per-case headers ("Price / btl", "Price / cs")
+    # carry the BASIS in the header — map them straight to the basis'd field so
+    # the amount is a real per-bottle price, not a basis-unknown "_price_value"
+    # (Samuel 2026-11-22: Spirits Online LAST_CHANCE "Price / btl" list).
+    "price btl": "price_per_unit", "price per btl": "price_per_unit",
+    "price btls": "price_per_unit",
     "price per case": "price_per_case", "case price": "price_per_case",
     "price per carton": "price_per_case",
+    "price cs": "price_per_case", "price per cs": "price_per_case",
     # A bare "Price" column paired with a "Price basis" column (per bottle /
     # per case / per piece) — resolved to price_per_unit vs price_per_case
     # AFTER the row is read (Samuel QA_EMAIL E07, 2026-11-07).
@@ -54,12 +61,19 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "units per case": "units_per_case", "unit per case": "units_per_case",
     "bottles per case": "units_per_case", "pieces per case": "units_per_case",
     "pack size": "units_per_case", "pack": "units_per_case",
-    "abv": "alcohol_percent", "alcohol": "alcohol_percent",
+    # Abbreviated bottles-per-case ("Btls / cs", "Btls per cs").
+    "btls cs": "units_per_case", "btls per cs": "units_per_case",
+    "btl cs": "units_per_case", "bottles cs": "units_per_case",
+    "abv": "alcohol_percent", "alcohol": "alcohol_percent", "alc": "alcohol_percent",
     "alcohol percent": "alcohol_percent", "alc vol": "alcohol_percent",
     "alcohol by volume": "alcohol_percent", "abv vol": "alcohol_percent",
     "available quantity": "_quantity", "quantity available": "_quantity",
     "quantity": "_quantity", "qty": "_quantity", "stock": "_quantity",
     "available": "_quantity", "stock quantity": "_quantity",
+    # Stock stated in BOTTLES ("Q in btls" = available bottles, not cases).
+    "q in btls": "_qty_bottles", "qty in btls": "_qty_bottles",
+    "quantity in btls": "_qty_bottles", "q btls": "_qty_bottles",
+    "qty btls": "_qty_bottles", "q in bottles": "_qty_bottles",
     "availability": "_quantity", "availability quantity": "_quantity",
     "quantity as stated": "_quantity", "availability quantity as stated": "_quantity",
     "quantity unit": "quantity_unit", "qty unit": "quantity_unit",
@@ -82,6 +96,10 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "ean": "ean_code", "ean code": "ean_code", "barcode": "ean_code",
     "gtin": "ean_code", "ean13": "ean_code",
     "upc": "ean_code", "upc code": "ean_code", "upc number": "ean_code",
+    # A bottle-vs-case EAN pair: the bottle EAN is the item barcode, the case
+    # EAN is a separate carton barcode (Samuel 2026-11-22: LAST_CHANCE).
+    "ean bottle": "ean_code", "bottle ean": "ean_code",
+    "ean case": "ean_case", "ean carton": "ean_case", "case ean": "ean_case",
     "vintage": "vintage", "year": "vintage",
     "brand": "brand", "maker": "brand", "marque": "brand",
     "product": "product_name", "product name": "product_name",
@@ -358,6 +376,53 @@ def _num_thousands(raw: Any) -> Optional[float]:
         return None
 
 
+def _parse_amount(raw: Any) -> Tuple[Optional[float], bool]:
+    """Parse a PRICE/amount under either number convention, resolving the comma
+    so a European decimal comma is not read as a thousands separator. Returns
+    (value, ambiguous). The two conventions are told apart by the digits AFTER
+    the separator, never by guessing a magnitude (Samuel 2026-11-22: check the
+    amount against the wording, and flag — don't guess — when it is ambiguous):
+
+      '11,40'  -> (11.40, False)   comma + 2 trailing digits  = decimal comma
+      '7,05'   -> (7.05,  False)
+      '2,882'  -> (2882.0, False)  comma + groups of 3 digits = thousands
+      '1,140'  -> (1140.0, False)
+      '1.234,56' -> (1234.56, False)  mixed: last separator is the decimal
+      '1,234.56' -> (1234.56, False)
+      '1,2345' -> (12345.0, True)   a comma that is neither pattern -> ambiguous
+    """
+    if raw is None or raw == "":
+        return (None, False)
+    if isinstance(raw, (int, float)):
+        return (float(raw), False)
+    m = re.search(r"\d[\d.,]*", str(raw))
+    if not m:
+        return (None, False)
+    t = m.group(0)
+    has_dot, has_comma = "." in t, "," in t
+    if has_dot and has_comma:
+        # The LAST-occurring separator is the decimal point.
+        if t.rfind(",") > t.rfind("."):
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    elif has_comma:
+        parts = t.split(",")
+        if len(parts) == 2 and 1 <= len(parts[1]) <= 2:
+            t = parts[0] + "." + parts[1]            # 11,40 -> 11.40
+        elif all(len(p) == 3 for p in parts[1:]):
+            t = t.replace(",", "")                    # 2,882 / 1,140 -> thousands
+        else:
+            try:
+                return (float(t.replace(",", "")), True)   # neither -> ambiguous
+            except ValueError:
+                return (None, True)
+    try:
+        return (float(t), False)
+    except ValueError:
+        return (None, False)
+
+
 # ── Composite free-text price cells ────────────────────────────────────────
 # A single "Price" column often carries the currency AND one or more basis-
 # specific prices: "EUR 534.00/case (EUR 89.00/bottle)", "USD 16.25/bottle;
@@ -446,9 +511,11 @@ def _parse_price_cell(val: Any) -> Dict[str, Any]:
     out["currency"] = _detect_currency(s)
     found = False
     for m in _BASIS_PRICE_RE.finditer(s):
-        num = _num_thousands(m.group(1))
+        num, amb = _parse_amount(m.group(1))
         if num is None:
             continue
+        if amb:
+            out["basis_ambiguous"] = True
         if m.group(2).lower() in _CASE_WORDS:
             out["price_per_case"] = out["price_per_case"] or num
         else:
@@ -458,8 +525,9 @@ def _parse_price_cell(val: Any) -> Dict[str, Any]:
         return out
     bm = _BARE_NUM_RE.search(s)
     if bm:
-        out["price_value"] = _to_float(bm.group(1))
-        if _AMBIG_BASIS_RE.search(s):
+        _bv, _bamb = _parse_amount(bm.group(1))
+        out["price_value"] = _bv
+        if _bamb or _AMBIG_BASIS_RE.search(s):
             out["basis_ambiguous"] = True
     elif _is_on_request(s):
         out["on_request"] = True
@@ -481,6 +549,11 @@ def _parse_pack(val: Any) -> Optional[float]:
     low = s.lower()
     if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
         return None
+    # A keg / drum / cask sold as a single vessel is NOT a multi-unit case: its
+    # litre size must never be read as a pack count ("20 L keg" is one 20-litre
+    # keg, not a 20-pack — Samuel 2026-11-22 QA Blue Fjord).
+    if re.search(r"\bkegs?\b|\bdrums?\b|\bcasks?\b", low) and not re.search(r"[x×*]", low):
+        return None
     # Inner-box pack ("4 inner boxes × 12 pieces = 48 pieces"): the pack size is
     # the pieces-per-inner-box (12), NOT the 48-piece grand total. The item is
     # still priced per piece — the per-piece guard in clean_product_data keeps
@@ -499,13 +572,28 @@ def _parse_pack(val: Any) -> Optional[float]:
     if ("piece" in low or "pcs" in low) and not any(
             w in low for w in ("case", "carton", "/cs", "per cs", "ctn")):
         return None
-    m = re.search(r'=\s*(\d[\d,]*)', s)
+    # Strip bottle VOLUME measurements ("700 ml", "33cl", "1.75L") so a bottle
+    # SIZE is never counted as a pack unit — the old first-integer fallback read
+    # "6 x 700 ml bottles/case" as 700 and "4 x 6 x 330ml" as 4 (Samuel
+    # 2026-11-22 QA Raven Creek 700/case, Iron Gate 4×6 format).
+    counts = re.sub(r'\d+(?:[.,]\d+)?\s*(?:ml|cl|l|lt|litre|liter|cc)s?\b',
+                    ' ', s, flags=re.IGNORECASE)
+    # Dimensional pack "N x M [x K]" → multiply the count factors (4 × 6 = 24),
+    # once the per-bottle volume has been removed.
+    if re.search(r'\d+\s*[x×*]\s*\d+', counts):
+        factors = [int(n) for n in re.findall(r'(?<![\d.])\d+(?![\d.])', counts)]
+        if factors:
+            p = 1
+            for f in factors:
+                p *= f
+            return float(p)
+    m = re.search(r'=\s*(\d[\d,]*)', counts)
     if m:
         return _num_thousands(m.group(1))
-    m = re.search(r'(\d[\d,]*)\s*[A-Za-z ]*?(?:/|per)\s*case', s, re.IGNORECASE)
+    m = re.search(r'(\d[\d,]*)\s*[A-Za-z ]*?(?:/|per)\s*case', counts, re.IGNORECASE)
     if m:
         return _num_thousands(m.group(1))
-    m = re.search(r'(\d[\d,]*)', s)
+    m = re.search(r'(\d[\d,]*)', counts)
     return _num_thousands(m.group(1)) if m else None
 
 
@@ -692,8 +780,32 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         prod[field] = pc["price_value"]
                     if prod[field] is None:
                         prod[field] = _to_float(val)
+                    # The BASIS is known (the header says /btl or /cs) but the cell
+                    # may name no currency. Read it from the cell's number-format
+                    # mask (€ / explicit ISO code → confirmed; a bare $/£/¥ → symbol
+                    # only), and if still none, remember to flag it — never invent
+                    # one (Samuel 2026-11-21 HAZ rule; 2026-11-22 Spirits Online
+                    # "Price / btl" list states no currency anywhere).
+                    if prod[field] is not None and not prod.get("currency"):
+                        _fc = _fmt_currency(cell.number_format)
+                        if _fc:
+                            prod["currency"] = _fc
+                        else:
+                            _fs = _fmt_symbol(cell.number_format)
+                            if _fs:
+                                prod.setdefault("_quote_symbol", _fs)
+                            prod["_price_no_currency"] = True
                 elif field == "units_per_case":
                     prod[field] = _parse_pack(val)
+                    # Keep the verbatim pack/format cell ("24 x 330ml cans",
+                    # "4 x 6 x 330ml cans", "20L keg") so two distinct formats of
+                    # one product stay distinct in the table and are not collapsed
+                    # as duplicates (Samuel 2026-11-22 Iron Gate). A bare count
+                    # ("6") is not a format string — skip it.
+                    if not prod.get("packaging_raw"):
+                        _praw = str(val).strip()
+                        if re.search(r"[A-Za-z×x]", _praw):
+                            prod["packaging_raw"] = _praw
                     # An inner-box pack ("8 pieces per inner box") means the item
                     # is sold PER PIECE, not per case: keep the pieces-per-box as
                     # the pack, remember it so the quantity ("7 inner boxes") can
@@ -717,9 +829,28 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     _ibq = re.search(r"(\d[\d,]*)\s*inner\s*box", qty_raw, re.IGNORECASE)
                     if _ibq:
                         qty_innerbox_count = _num_thousands(_ibq.group(1))
-                    qty_val, _qu = _parse_quantity_cell(val)
-                    if _qu:
+                    _qv, _qu = _parse_quantity_cell(val)
+                    # A zero "Quantity" cell is a placeholder, not a real stock of
+                    # 0 — don't let it overwrite a bottle count already read from a
+                    # "Q in btls" column (Samuel 2026-11-22: LAST_CHANCE).
+                    if _qv not in (None, 0, 0.0) and qty_val in (None, 0, 0.0):
+                        qty_val = _qv
+                        if _qu:
+                            qty_unit = _qu
+                    elif _qu and not qty_unit:
                         qty_unit = _qu
+                elif field == "_qty_bottles":
+                    # Stock stated in BOTTLES ("Q in btls" = 432) — keep it in the
+                    # bottle unit, never as cases (comma = thousands: "1,440").
+                    _qb, _ = _split_num_unit(val)
+                    if _qb not in (None, 0, 0.0):
+                        qty_val = _qb
+                        qty_unit = "bottles"
+                elif field == "ean_case":
+                    _ec = (str(int(val)) if isinstance(val, float) and val.is_integer()
+                           else str(val).strip())
+                    if any(ch.isdigit() for ch in _ec):
+                        prod["ean_case"] = _ec
                 elif field == "quantity_unit":
                     qty_unit = str(val).strip()
                 elif field in ("offer_date", "valid_until", "best_before_date"):
@@ -964,6 +1095,26 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     flags.append("Price on request retained")
                 prod["needs_manual_review"] = True
 
+            # ── Priced line whose file names NO currency ─────────────────────
+            # The basis is known (header /btl or /cs) and the amount is shown as
+            # quoted, but the file states no currency (no €, ISO code or currency
+            # column). Keep the per-bottle/per-case amount visible, mark the
+            # currency unconfirmed, and keep it out of comparison — never guess EUR
+            # (Samuel 2026-11-21 HAZ; 2026-11-22 Spirits Online "Price / btl").
+            if prod.pop("_price_no_currency", False) and not prod.get("currency"):
+                prod.pop("_quote_symbol", None)
+                flags = prod.setdefault("error_flags", [])
+                _msg = ("currency unconfirmed — the file states no currency; "
+                        "amount shown as quoted, excluded from comparison")
+                if _msg not in flags:
+                    flags.append(_msg)
+                _note = ("price shown as quoted; the file states no currency "
+                         "(no €, ISO code or currency column) — currency unconfirmed")
+                prod["commercial_conditions"] = (
+                    (prod.get("commercial_conditions") + " | " + _note)
+                    if prod.get("commercial_conditions") else _note)
+                prod["needs_manual_review"] = True
+
             # ── Multi-option delivery where the PRICE applies to ONE option ──
             # "EUR 171/case applies to DAP Antwerp only; EXW Breda price TBC" →
             # resolve the stored incoterm/location to the PRICED option (DAP
@@ -1008,6 +1159,23 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
             # ── Quantity (unit parsed from the cell) ───────────────────────
             _assign_quantity(prod, qty_val, qty_unit)
+            # ── "N cases per load" is a truckload CAPACITY, not available stock ──
+            # Clear the figure the parser took as stock, keep it as a capacity
+            # note, and flag for review — unless the row ALSO states a real
+            # "N cases available" (Samuel 2026-11-22 QA Iron Gate; mirrors
+            # offer_reconcile.separate_load_capacity for the structured path). The
+            # field self-check surfaces the "per load" marker in the note.
+            if (re.search(r"per\s+load|load\s+capacity", row_text, re.IGNORECASE)
+                    and not re.search(r"\d[\d,]*\s*(?:cases?|cs)\s*available",
+                                      row_text, re.IGNORECASE)):
+                _cap = prod.get("quantity_case")
+                prod["quantity_case"] = None
+                _capn = f"{int(_cap)} cases per load " if _cap else ""
+                _lnote = (f"{_capn}(truckload capacity; available stock not stated)").strip()
+                _cc0 = prod.get("commercial_conditions") or ""
+                if "per load" not in _cc0.lower():
+                    prod["commercial_conditions"] = (_cc0 + " | " if _cc0 else "") + _lnote
+                prod["needs_manual_review"] = True
             # One quantity lives in ONE field. Stock stated in bottles with a
             # known pack ("1,440 bottles available (= 120 cases)", "24 bottles
             # available") is NOT also written into quantity_case: that derived
@@ -1070,6 +1238,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 else:
                     prod["moq_cases"] = moq_val
                     prod["moq_unit"] = "cases"
+
+            # A row the source itself labels a re-statement, not a fresh offer
+            # ("…shown again in source footer as stock summary, not another
+            # offer") is dropped so it is not stored as a duplicate line (Samuel
+            # 2026-11-22 QA Mountain Abbey footer; mirrors drop_summary_rows).
+            if re.search(r"not\s+another\s+offer", row_text, re.IGNORECASE):
+                continue
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,

@@ -89,6 +89,11 @@ _SUPPLIER_PATTERNS = [
     re.compile(r'\boffer\s+from\s+(.+)$', re.IGNORECASE),
     re.compile(r'\boffre\s+de\s+(.+)$', re.IGNORECASE),
     re.compile(r'\boffree\s+de\s+(.+)$', re.IGNORECASE),
+    # A title line that names the supplier after a dash — "OFFER — MERIDIAN
+    # TRADE", "OFFER - FBC TRADES". Case-sensitive OFFER + an uppercase/Title
+    # company name so a lowercase "offer - see attached" never matches (Samuel
+    # 2026-11-22: MERIDIAN TRADE WhatsApp header stored supplier "Not Found").
+    re.compile(r'OFFER\s*[—–\-]\s*([A-Z0-9][A-Za-z0-9&.\'’ ]{2,60})'),
     # Forwarded-email headers inside the body — "From:" (EN), "De:" (FR),
     # "Von:" (DE). A leading ">" quote marker is common on a forward. The
     # original supplier lives here, distinct from the person forwarding.
@@ -103,6 +108,9 @@ def _clean_supplier(name: str) -> Optional[str]:
     # "FBC Trades <connect@mail.fbctradeholdings.com>" → "FBC Trades": keep the
     # display name, drop the <email>. A bare "<email>" (no name) becomes "".
     name = re.sub(r'<[^>]*>', '', name).strip().strip('"\'')
+    # Drop a trailing channel/parenthetical tag — "MERIDIAN TRADE (WhatsApp)"
+    # → "MERIDIAN TRADE" (Samuel 2026-11-22).
+    name = re.sub(r'\s*\([^)]*\)\s*$', '', name).strip()
     name = re.sub(r'[\.,;:]+$', '', name).strip()
     # Reject a left-over email address or an obviously-not-a-name capture.
     if not name or "@" in name or len(name) > 120:

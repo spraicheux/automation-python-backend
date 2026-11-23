@@ -439,6 +439,103 @@ def annotate_pack_format(offers: List[Dict[str, Any]], source_text: str) -> int:
     return changed
 
 
+_DIM_FMT_RE = re.compile(
+    r'(\d+\s*[x×]\s*\d+(?:\s*[x×]\s*\d+)?\s*(?:ml|cl|l|litre|liter|lt)\b)',
+    re.IGNORECASE)
+
+
+def _dim_format(line: str) -> Optional[str]:
+    m = _DIM_FMT_RE.search(line or "")
+    return re.sub(r"\s+", " ", m.group(1).strip().lower()) if m else None
+
+
+def fold_distinct_pack_formats(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Two lots of the SAME product that differ only by a DIMENSIONAL pack format
+    ("24 x 33cl" vs "4 x 6 x 33cl", both 24/case at the same price) extract to
+    identical rows, so the display duplicate-guard then hides one. Fold each row's
+    distinct source format into product_name + packaging_raw so both stay visible
+    (Samuel 2026-11-22: MERIDIAN Carlsberg Lager — "Do not merge with line 1").
+    Complements annotate_pack_format, which only handles loose/wrapped wording."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    by_prod: Dict[tuple, list] = defaultdict(list)
+    for o in offers:
+        by_prod[(_norm(o.get("brand")), _norm(o.get("product_name")))].append(o)
+    changed = 0
+    for g in by_prod.values():
+        if len(g) < 2:
+            continue
+        toks = [t for t in re.findall(r"[a-z0-9]+", _ident(g[0]).lower()) if len(t) > 2]
+        if not toks:
+            continue
+        # Lines that name THIS product (all identity tokens present), each with a
+        # dimensional format — gathered as the distinct formats the source gives.
+        fmts: list = []
+        for ln in lines:
+            low = ln.lower()
+            if all(t in low for t in toks):
+                f = _dim_format(ln)
+                if f and f not in fmts:
+                    fmts.append(f)
+        # Fold only when the source offers at least one distinct format per row.
+        if len(fmts) < len(g) or len(fmts) < 2:
+            continue
+        # Already distinct by packaging_raw? then nothing to do.
+        existing = {_norm(o.get("packaging_raw")) for o in g}
+        if "" not in existing and len(existing) >= len(g):
+            continue
+        for o, fmt in zip(g, fmts):
+            nm = _clean(o.get("product_name"))
+            if fmt not in nm.lower():
+                o["product_name"] = f"{nm} ({fmt})" if nm else fmt
+            pr = _clean(o.get("packaging_raw"))
+            if fmt not in pr.lower():
+                o["packaging_raw"] = (pr + " | " if pr else "") + fmt
+            _mark(o)
+            changed += 1
+    return changed
+
+
+_FTL_QTY_RE = re.compile(
+    r'\b(\d+(?:\.\d+)?)\s*(?:x\s*)?ftl\b|\b(\d+)\s*full\s*(?:truck|load)',
+    re.IGNORECASE)
+
+
+def capture_ftl_quantity(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Preserve a quantity stated in full truckloads ("1 FTL; case quantity not
+    stated") the extractor left blank (Samuel 2026-11-22: Rémy Martin XO). Only
+    sets it when the row carries no other quantity, so a real case / bottle /
+    pallet count is never overwritten."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        if _f(o.get("quantity_ftl")):
+            continue
+        if any(_f(o.get(k)) for k in
+               ("quantity_case", "quantity_bottles", "quantity_pallets")):
+            continue
+        ln = _source_line_for(o, lines)
+        if not ln:
+            continue
+        m = _FTL_QTY_RE.search(ln)
+        if not m:
+            continue
+        try:
+            val = float(m.group(1) or m.group(2))
+        except (TypeError, ValueError):
+            continue
+        if val <= 0:
+            continue
+        o["quantity_ftl"] = val
+        o["quantity_unit"] = "ftl"
+        _mark(o)
+        changed += 1
+    return changed
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def _tok_prefix_header(parent_id: str, child_id: str) -> bool:
     """True when child_id is a MORE-SPECIFIC edition of parent_id: same leading
@@ -600,6 +697,10 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
         if total:
             o["quantity_bottles"] = float(total)
         o["quantity_case"] = None                 # not cases
+        # Label the pack an inner box (not a case) so the drawer/export does not
+        # read "6/case" (Samuel 2026-11-22: Nishane — "6 pieces per inner box").
+        if not _clean(o.get("packaging_raw")):
+            o["packaging_raw"] = f"{int(per)} pieces per inner box"
         mm = _INNERBOX_MOQ_RE.search(ln)
         if mm:
             o["moq_cases"] = float(_int(mm.group(1)))
