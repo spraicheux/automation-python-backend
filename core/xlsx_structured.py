@@ -1154,10 +1154,33 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # ── Inner-box, per-piece item: "7 inner boxes" of "8 pieces per
             # inner box" = 56 pieces. Store the piece total, NOT 7 cases, and let
             # the per-piece guard keep the case price empty (Samuel 2026-11-20).
-            if qty_innerbox_count and innerbox_pieces:
-                prod["quantity_bottles"] = qty_innerbox_count * innerbox_pieces
-                prod["quantity_unit"] = "pieces"
-                prod.pop("quantity_case", None)
+            if innerbox_pieces:
+                # The pieces-per-inner-box is NOT a case count — a per-piece item
+                # must show EMPTY case fields, with the inner-box size kept in
+                # packaging_raw (Samuel 2026-11-23: Lumière/Nishane read "6/case").
+                prod["units_per_case"] = None
+                if qty_innerbox_count:
+                    prod["quantity_bottles"] = qty_innerbox_count * innerbox_pieces
+                    prod["quantity_unit"] = "pieces"
+                    prod.pop("quantity_case", None)
+                    qty_val = None
+
+            # ── Same physical lot / alternative delivery option ────────────
+            # A row the source marks as the SAME stock shown again under another
+            # delivery option ("18 cs (same physical lot) … two delivery options;
+            # do not count quantity twice", Samuel 2026-11-23 Belle Rive) must not
+            # add its quantity again: keep the price so both options stay visible,
+            # but count the stock once.
+            if qty_val is not None and re.search(
+                    r"same\s+(?:physical\s+)?lot|do\s+not\s+count\b.*\btwice"
+                    r"|do\s+not\s+add\b.*\bstock|two\s+delivery\s+options",
+                    row_text, re.IGNORECASE):
+                _cc_sl = prod.get("commercial_conditions") or ""
+                if ("same physical lot" not in _cc_sl.lower()
+                        and "counted once" not in _cc_sl.lower()):
+                    prod["commercial_conditions"] = (_cc_sl + " | " if _cc_sl else "") + (
+                        "same physical lot as another line — stock counted once "
+                        "(alternative delivery option)")
                 qty_val = None
 
             # ── Quantity (unit parsed from the cell) ───────────────────────

@@ -47,6 +47,30 @@ def _deshout_supplier(name: str) -> str:
     return " ".join(_fix(t) for t in name.split())
 
 
+def _clear_stale_supplier_flags(safe_data, supplier_name, supplier_email=None):
+    """Drop "supplier_name not found" / "supplier_email not found" once the
+    supplier has actually been resolved — e.g. from a WhatsApp "OFFER — <NAME>"
+    header, which lands AFTER clean_product_data's own stale-flag cleanup ran.
+    Samuel 2026-11-23: Meridian rows kept "supplier not found" though the
+    supplier was Meridian Trade. A WhatsApp offer carries no email, so once the
+    supplier is positively identified the "email not found" note is noise too."""
+    flags = safe_data.get('error_flags')
+    if not isinstance(flags, list) or not flags:
+        return
+    def _real(v):
+        return bool(v) and str(v).strip().lower() not in ("", "not found", "unknown")
+    drop = set()
+    if _real(supplier_name):
+        drop.update(("supplier_name not found", "supplier_email not found"))
+    elif _real(supplier_email):
+        drop.add("supplier_email not found")
+    if not drop:
+        return
+    safe_data['error_flags'] = [
+        f for f in flags
+        if not (isinstance(f, str) and any(d in f for d in drop))]
+
+
 def _canonical_supplier_name(db, name):
     """Collapse the same commercial supplier onto ONE spelling so it appears
     consistently in the table, offer details and supplier filter (client §1).
@@ -3595,6 +3619,7 @@ async def process_offer(payload, job_id: str):
                     _sup_company, _sup_contact = _split_company_contact(
                         _resolve_supplier_name(_sup_name, payload),
                         _cond_source_text, _sup_email)
+                    _clear_stale_supplier_flags(safe_data, _sup_company, _sup_email)
 
                     offer = OfferItem(
                         uid=f"{uid}_{idx}",
@@ -3997,6 +4022,7 @@ async def process_offer(payload, job_id: str):
                 _sup_company, _sup_contact = _split_company_contact(
                     _resolve_supplier_name(_sup_name, payload),
                     _cond_source_text, _sup_email)
+                _clear_stale_supplier_flags(safe_data, _sup_company, _sup_email)
 
                 offer = OfferItem(
                     uid=uid,

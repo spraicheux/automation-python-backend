@@ -692,15 +692,24 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
             _lp = _wordnum(lm.group(1))
             if _lp:
                 total += _lp
-        o["units_per_case"] = float(per)          # pieces per inner box
+        # The pieces-per-inner-box is NOT a case count: a per-piece item must
+        # show EMPTY case fields (Samuel 2026-11-23 — Nishane still read
+        # "6/case" because units_per_case kept the inner-box size).
+        o["units_per_case"] = None
         o["quantity_unit"] = "pieces"
         if total:
             o["quantity_bottles"] = float(total)
         o["quantity_case"] = None                 # not cases
-        # Label the pack an inner box (not a case) so the drawer/export does not
-        # read "6/case" (Samuel 2026-11-22: Nishane — "6 pieces per inner box").
-        if not _clean(o.get("packaging_raw")):
-            o["packaging_raw"] = f"{int(per)} pieces per inner box"
+        # Label the pack an inner box (not a case). Overwrite a generic
+        # "bottle"/"piece" the extractor left — that blocked the inner-box label
+        # and left the drawer reading "6/case" (Samuel 2026-11-23: Nishane
+        # packaging_raw was "bottle").
+        _ib_label = f"{int(per)} pieces per inner box"
+        _praw_cur = _clean(o.get("packaging_raw")).lower()
+        if (not _praw_cur) or _praw_cur in (
+                "bottle", "bottles", "piece", "pieces", "pc", "pcs",
+                "candle", "candles"):
+            o["packaging_raw"] = _ib_label
         mm = _INNERBOX_MOQ_RE.search(ln)
         if mm:
             o["moq_cases"] = float(_int(mm.group(1)))
@@ -1104,6 +1113,17 @@ def fix_multipack_units(offers: List[Dict[str, Any]], source_text: str) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 _PER_LOAD_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*per\s*load", re.IGNORECASE)
 _AVAIL_QTY_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*(?:available|in\s*stock|offered)", re.IGNORECASE)
+_PACK_SIG_RE = re.compile(r"(\d+)\s*[x×*]\s*(\d+)(?:\s*[x×*]\s*(\d+))?\s*cl", re.IGNORECASE)
+
+
+def _pack_sig(text) -> Optional[str]:
+    """A pack-format signature ('4x6x33', '24x33') from any text, so a capacity
+    line can be matched to the RIGHT pack-format row (two formats of one product
+    share the brand/product tokens but differ by pack)."""
+    m = _PACK_SIG_RE.search(str(text or ""))
+    if not m:
+        return None
+    return "x".join(g for g in m.groups() if g)
 
 
 def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> int:
@@ -1125,13 +1145,22 @@ def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> in
         if not load_n:
             continue
         btoks = set(re.findall(r"[a-z0-9]+", b.lower()))
+        bsig = _pack_sig(b)
         for o in offers:
-            if _f(o.get("quantity_case")) != float(load_n):
-                continue
             ot = set(t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2)
             if not (ot & btoks):
                 continue
-            o["quantity_case"] = None
+            osig = _pack_sig(o.get("packaging_raw")) or _pack_sig(o.get("product_name"))
+            qty_is_cap = _f(o.get("quantity_case")) == float(load_n)
+            # Match the block to its row by the per-load figure OR by the exact
+            # pack format, so BOTH twins of a "per load" product get the capacity
+            # note + review — even the twin the extractor already left
+            # quantity-less (Samuel 2026-11-23: only the 4×6×33 Carlsberg carried
+            # the flag; the 24×33 twin, with quantity already blank, did not).
+            if not (qty_is_cap or (bsig and osig and bsig == osig)):
+                continue
+            if qty_is_cap:
+                o["quantity_case"] = None
             o["needs_manual_review"] = True
             cc = _clean(o.get("commercial_conditions"))
             if "per load" not in cc.lower():
