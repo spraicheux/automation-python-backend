@@ -884,6 +884,22 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
         if safe_data.get('currency') is None:
             safe_data['fx_source'] = None
         return safe_data
+    # A PRICED row whose source stated NO currency must not be defaulted to EUR
+    # or given a EUR comparable — keep the amount as quoted, currency unconfirmed,
+    # and out of comparison, exactly as a currency-less $ list is (Samuel
+    # 2026-11-21 HAZ; 2026-11-22 Spirits Online per-bottle list, where the file
+    # names no currency anywhere). Detected by the parser's currency-unconfirmed
+    # flag, so a normal row with a real currency is untouched.
+    _ef0 = safe_data.get('error_flags')
+    if (not (safe_data.get('currency') or '').strip()
+            and isinstance(_ef0, list)
+            and any(str(f).lower().startswith('currency unconfirmed') for f in _ef0)):
+        safe_data['price_per_unit_eur'] = None
+        safe_data['price_per_case_eur'] = None
+        safe_data['fx_rate'] = None
+        safe_data['fx_source'] = None
+        safe_data['currency'] = None
+        return safe_data
     # Per-row currency override: when the row's OWN source line quotes a single
     # currency different from the (possibly chunk-broadcast) value the LLM set,
     # trust the source line and force an FX recompute. Guarded to one unambiguous
@@ -3202,6 +3218,12 @@ async def process_offer(payload, job_id: str):
                 return (
                     _s(p.get("brand")), _s(p.get("product_name")),
                     p.get("unit_volume_ml") or 0, p.get("units_per_case") or 0,
+                    # Pack FORMAT distinguishes two lots of one SKU at the same
+                    # pack count/price ("24 x 330ml" vs "4 x 6 x 330ml") — both
+                    # are real offers and must survive ingest, not collapse to one
+                    # (Samuel 2026-11-22 Iron Gate). Mirrors the display
+                    # fingerprint in api/records.get_records.
+                    _s(p.get("packaging_raw")),
                     (p.get("ean_code") or "").strip().lstrip("0"),
                     p.get("price_per_unit") or 0, p.get("price_per_case") or 0,
                     _s(p.get("currency")), _s(p.get("retail_state")),

@@ -1239,6 +1239,18 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     prod["moq_cases"] = moq_val
                     prod["moq_unit"] = "cases"
 
+            # A gift-box trade token in the name ("… GBX" / "… NGBX") is a
+            # distinct presentation of the SKU. Record it in gift_box BEFORE
+            # name-normalisation strips the token, so a plain vs gift-box pair is
+            # labelled, not shown as two identical names (Samuel 2026-11-22:
+            # Diplomatico plain vs GBX, Herradura/Pampero GBX).
+            _nm_g = prod.get("product_name") or ""
+            if re.search(r"(?<![A-Za-z0-9])N?GBX(?![A-Za-z0-9])", _nm_g, re.IGNORECASE):
+                prod.setdefault(
+                    "gift_box",
+                    not re.search(r"(?<![A-Za-z0-9])NGBX(?![A-Za-z0-9])",
+                                  _nm_g, re.IGNORECASE))
+
             # A row the source itself labels a re-statement, not a fresh offer
             # ("…shown again in source footer as stock summary, not another
             # offer") is dropped so it is not stored as a duplicate line (Samuel
