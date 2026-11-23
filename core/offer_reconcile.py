@@ -1235,12 +1235,17 @@ def _floor_parse(block: str) -> Optional[Dict[str, Any]]:
         return None
     name = pm.group(1).strip(" ,-")
     a = _int(pm.group(2)); c = _int(pm.group(3)); d = _int(pm.group(4))
-    if d:                                  # A × C × D  → A*C units, D cl
+    # Use the LETTER "x" (not "×") as the dimension separator so the folded name
+    # canonicalises the SAME as the plain text/fold path, which writes "24 x 33cl"
+    # — canonical_product keeps "x" but strips "×", so a floor-list supplier's
+    # multi-format SKU ("tuborg green 24 × 33cl") must use "x" to match the same
+    # SKU from a text-path supplier ("tuborg green (24 x 33cl)") — Samuel 2026-11-24.
+    if d:                                  # A x C x D  → A*C units, D cl
         units = a * c; vol_cl = d; inner = c
-        pack_core = f"{a} × {c} × {d}cl"
-    else:                                  # A × C      → A units, C cl
+        pack_core = f"{a} x {c} x {d}cl"
+    else:                                  # A x C      → A units, C cl
         units = a; vol_cl = c; inner = None
-        pack_core = f"{a} × {c}cl"
+        pack_core = f"{a} x {c}cl"
     container = pm.group(5).lower().rstrip("s")       # can / bottle
     pack_disp = f"{pack_core} {container}"
     pm2 = _FLOOR_PRICE_RE.search(block)
