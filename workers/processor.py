@@ -2842,7 +2842,6 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.recover_dual_tray_format(offers, src)
     changed += _rec.fix_multipack_units(offers, src)
     changed += _rec.reconcile_floor_list(offers, src)
-    changed += _rec.separate_load_capacity(offers, src)
     changed += _rec.clear_currency_on_request(offers, src)
     changed += _rec.capture_conditional_incoterm(offers, src)
     changed += _rec.capture_ftl_quantity(offers, src)
@@ -2850,6 +2849,11 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.flag_unstated_price_basis(offers, src)
     changed += _rec.annotate_pack_format(offers, src)
     changed += _rec.fold_distinct_pack_formats(offers, src)
+    # AFTER the pack format is folded into packaging_raw / product_name, so a
+    # "per load" capacity line can be matched to the RIGHT pack-format twin and
+    # BOTH twins get the capacity note + review, not only the one the extractor
+    # happened to load with the figure (Samuel 2026-11-23: Carlsberg 24×33 twin).
+    changed += _rec.separate_load_capacity(offers, src)
     dropped = set()
     dropped |= _rec.merge_alt_delivery_lots(offers)
     dropped |= _rec.collapse_identical_commercial_lines(offers)
