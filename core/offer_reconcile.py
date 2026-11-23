@@ -1270,16 +1270,20 @@ _PACK_IN_NAME_RE = re.compile(
     re.IGNORECASE)
 
 
-def _floor_setname(o: Dict[str, Any], sp: Dict[str, Any]) -> None:
-    """Fold the pack format into the product name so two formats of one product
-    (Carlsberg Lager 24×33 vs 4×6×33) are DISTINCT SKUs, not one key that
-    supersedes the other, and a buyer can find the six-pack line by name."""
+def _floor_setname(o: Dict[str, Any], sp: Dict[str, Any], multi: bool = False) -> None:
+    """Fold the pack format into the product name ONLY when the same product has
+    more than one format in this list (Carlsberg Lager 24×33 vs 4×6×33) so the two
+    stay DISTINCT SKUs. A single-format product keeps its clean base name — baking
+    the format into every name (Samuel 2026-11-24) diverged this supplier's keys
+    from the same product quoted by another supplier on the plain text path
+    (Erkan "carlsberg 24 50cl" never matched Meridian "carlsberg"); the pack format
+    is still kept in packaging_raw either way."""
     base = _PACK_IN_NAME_RE.sub("", _clean(o.get("product_name"))).strip() or _clean(o.get("product_name"))
-    o["product_name"] = (f"{base} {sp['pack_core']}").strip()
+    o["product_name"] = (f"{base} {sp['pack_core']}").strip() if multi else base
 
 
-def _floor_enrich(o: Dict[str, Any], sp: Dict[str, Any]) -> None:
-    _floor_setname(o, sp)
+def _floor_enrich(o: Dict[str, Any], sp: Dict[str, Any], multi: bool = False) -> None:
+    _floor_setname(o, sp, multi)
     if sp["container"] and not _clean(o.get("bottle_or_can_type")):
         o["bottle_or_can_type"] = sp["container"]
     if sp["vol_ml"] and not _f(o.get("unit_volume_ml")):
@@ -1319,6 +1323,13 @@ def reconcile_floor_list(offers: List[Dict[str, Any]], source_text: str) -> int:
     parsed = [sp for sp in (_floor_parse(b) for b in priced) if sp]
     if len(parsed) < 3:
         return changed
+    # A product is MULTI-format only when it appears with >1 distinct pack in this
+    # list; only then is the pack baked into the name (see _floor_setname).
+    _fmt_by_name: Dict[frozenset, set] = defaultdict(set)
+    for sp in parsed:
+        _fmt_by_name[frozenset(_floor_toks(sp["name"]))].add(sp["pack_core"])
+    def _is_multi(sp):
+        return len(_fmt_by_name[frozenset(_floor_toks(sp["name"]))]) > 1
     used = set()
     for sp in parsed:
         stoks = _floor_toks(sp["name"])
@@ -1333,7 +1344,7 @@ def reconcile_floor_list(offers: List[Dict[str, Any]], source_text: str) -> int:
                 match = i; break
         if match is not None:
             used.add(match)
-            _floor_enrich(offers[match], sp)
+            _floor_enrich(offers[match], sp, _is_multi(sp))
             changed += 1
         else:
             # Recover: clone a sibling row of the same product (for currency /
@@ -1357,7 +1368,7 @@ def reconcile_floor_list(offers: List[Dict[str, Any]], source_text: str) -> int:
                 new.pop(k, None)
             new["quantity_case"] = float(sp["avail"]) if sp["avail"] else None
             new["commercial_conditions"] = None
-            _floor_enrich(new, sp)
+            _floor_enrich(new, sp, _is_multi(sp))
             offers.append(new)
             changed += 1
     return changed
