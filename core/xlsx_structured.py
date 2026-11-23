@@ -1103,6 +1103,9 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # (Samuel 2026-11-21 HAZ; 2026-11-22 Spirits Online "Price / btl").
             if prod.pop("_price_no_currency", False) and not prod.get("currency"):
                 prod.pop("_quote_symbol", None)
+                # Set the key explicitly (not merely absent) so downstream cleaners
+                # see "currency: None" and keep it, rather than filling a default.
+                prod["currency"] = None
                 flags = prod.setdefault("error_flags", [])
                 _msg = ("currency unconfirmed — the file states no currency; "
                         "amount shown as quoted, excluded from comparison")

@@ -3991,6 +3991,18 @@ def clean_product_data(product: dict) -> dict:
                 else:
                     cleaned_product[field] = str(value) if value is not None else default_value
         else:
+            # Same currency-unconfirmed guard as the in-product branch: when the
+            # row carries no currency KEY at all but the parser flagged it
+            # "currency unconfirmed" (file names no currency), keep it None rather
+            # than filling the EUR default (Samuel HAZ rule; Spirits Online list).
+            if field == 'currency':
+                _cc_u = str(product.get('commercial_conditions') or '').lower()
+                _ef_u = product.get('error_flags') or []
+                if ('currency unconfirmed' in _cc_u
+                        or (isinstance(_ef_u, list)
+                            and any('currency unconfirmed' in str(f).lower() for f in _ef_u))):
+                    cleaned_product[field] = None
+                    continue
             logger.info(f"[clean_product_data] Field '{field}': NOT in product — using default: {default_value!r}")
             cleaned_product[field] = default_value
 
