@@ -2720,7 +2720,15 @@ def _apply_offer_defaults(data: dict) -> dict:
                     _has_price = any(
                         data.get(k) not in (None, 0, 0.0)
                         for k in ('price_per_unit', 'price_per_case'))
-                    if not _has_price:
+                    # A priced row the parser flagged "currency unconfirmed" (the
+                    # file names no currency anywhere) must NOT get the EUR default
+                    # either — the amount stays as quoted, currency unconfirmed,
+                    # out of comparison (Samuel 2026-11-21 HAZ; 2026-11-22 Spirits
+                    # Online per-bottle list).
+                    _ef = data.get('error_flags')
+                    _unconf = (isinstance(_ef, list) and any(
+                        str(f).lower().startswith('currency unconfirmed') for f in _ef))
+                    if not _has_price or _unconf:
                         continue
                 data[field] = default
     return data
