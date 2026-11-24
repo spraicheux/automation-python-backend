@@ -332,6 +332,103 @@ def _iso_date(raw: Any) -> Optional[str]:
     return str(raw).strip()
 
 
+# Month names (English + French) for a circular whose title row writes the date
+# in words ("24 November 2026", "24 novembre 2026").
+_MONTHS = {
+    "jan": 1, "january": 1, "janv": 1, "janvier": 1,
+    "feb": 2, "february": 2, "fev": 2, "fevr": 2, "fevrier": 2, "février": 2, "févr": 2,
+    "mar": 3, "march": 3, "mars": 3,
+    "apr": 4, "april": 4, "avr": 4, "avril": 4,
+    "may": 5, "mai": 5,
+    "jun": 6, "june": 6, "juin": 6,
+    "jul": 7, "july": 7, "juil": 7, "juillet": 7,
+    "aug": 8, "august": 8, "aout": 8, "août": 8,
+    "sep": 9, "sept": 9, "september": 9, "septembre": 9,
+    "oct": 10, "october": 10, "octobre": 10,
+    "nov": 11, "november": 11, "novembre": 11,
+    "dec": 12, "december": 12, "decembre": 12, "décembre": 12,
+}
+_HD_ISO_RE = re.compile(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b")
+_HD_DMY_RE = re.compile(r"\b(\d{1,2})[./](\d{1,2})[./](20\d{2}|\d{2})\b")
+_HD_WORD_DMY_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-zûéèçîôàâäïüö]+)\.?,?\s+(20\d{2})\b", re.I)
+_HD_WORD_MDY_RE = re.compile(
+    r"\b([A-Za-zûéèçîôàâäïüö]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(20\d{2})\b", re.I)
+
+
+def _header_date(raw: Any) -> Optional[str]:
+    """Recognise an offer/circular date in a title-row cell → ISO string, or None.
+
+    Conservative on purpose: a real date object, or a string that fully states
+    day + month + year (a 4-digit year, or a spelled-out month). A bare number,
+    a pack spec like "12/70/40", or a lone year is NOT a date — those must never
+    be mistaken for the offer date (Samuel 2026-11-24, Grey Inlet dated header)."""
+    if raw is None or raw == "":
+        return None
+    # A date / datetime / Timestamp cell (openpyxl data_only) — but not a plain number.
+    if (not isinstance(raw, (int, float, bool))
+            and hasattr(raw, "year") and hasattr(raw, "month") and hasattr(raw, "day")):
+        try:
+            return f"{int(raw.year):04d}-{int(raw.month):02d}-{int(raw.day):02d}"
+        except Exception:
+            return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    m = _HD_ISO_RE.search(s)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = _HD_WORD_DMY_RE.search(s)
+    if m:
+        mo = _MONTHS.get(m.group(2).lower().rstrip("."))
+        if mo and 1 <= int(m.group(1)) <= 31:
+            return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}"
+    m = _HD_WORD_MDY_RE.search(s)
+    if m:
+        mo = _MONTHS.get(m.group(1).lower().rstrip("."))
+        if mo and 1 <= int(m.group(2)) <= 31:
+            return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(2)):02d}"
+    m = _HD_DMY_RE.search(s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        # European day/month order; a pack spec "12/70/40" fails the month range.
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    return None
+
+
+def _scan_header_offer_date(ws, header_row: int) -> Optional[str]:
+    """Find the offer date stated in the rows ABOVE the table header — a stock
+    circular states its date once, in a title row ("Northbank Trading BV ·
+    Stock circular · 24 November 2026"), not in a per-row column. Prefer a cell
+    sitting next to a date/offer label; never take a "valid until" / expiry date
+    as the offer date. Returns an ISO string, or None."""
+    labelled = fallback = None
+    maxc = ws.max_column or 1
+    for pr in range(1, header_row):
+        for pc in range(1, maxc + 1):
+            iso = _header_date(ws.cell(row=pr, column=pc).value)
+            if not iso:
+                continue
+            # Context = this cell + the one to its left (a "Date:" label often
+            # sits in the adjacent column).
+            ctx = " ".join(
+                str(ws.cell(row=pr, column=cc).value or "")
+                for cc in range(max(1, pc - 1), pc + 1)).lower()
+            if re.search(r"valid|expir|\buntil\b|\btill\b|best\s*before", ctx):
+                continue  # an expiry / validity date is not the offer date
+            if re.search(r"\bdate\b|\boffer\b|\bdated\b|\bas\s+of\b|circular|"
+                         r"price\s*list|stock\s*list", ctx):
+                labelled = labelled or iso
+            else:
+                fallback = fallback or iso
+    return labelled or fallback
+
+
 def _category_slug(raw: Any) -> Optional[str]:
     s = _norm(raw)
     if not s:
@@ -771,6 +868,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             if sheet_supplier:
                 break
 
+        # Offer date from the circular's title row (no per-row date column) — a
+        # stock/price list states its date once, above the table (Grey Inlet
+        # "… 24 November 2026"; Samuel 2026-11-24 "offer date unknown despite a
+        # dated header"). Applied as each row's offer_date below when the row has
+        # none of its own.
+        sheet_offer_date = _scan_header_offer_date(ws, header_row)
+
         for r in range(header_row + 1, ws.max_row + 1):
             prod: Dict[str, Any] = {}
             qty_val: Optional[float] = None
@@ -952,6 +1056,12 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     qty_unit = str(val).strip()
                 elif field in ("offer_date", "valid_until", "best_before_date"):
                     prod[field] = _iso_date(val)
+                    if field == "offer_date" and prod[field]:
+                        # Read deterministically from a labelled column — a real
+                        # document read, not an LLM guess, so the processor trusts
+                        # it (see _used_structured / _offer_date_trusted) instead
+                        # of dropping it as an uncorroborated per-row invention.
+                        prod["_offer_date_trusted"] = True
                 elif field == "_size":
                     size_raw = val
                     prod["packaging_raw"] = str(val).strip()
@@ -1264,6 +1374,14 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # ── Supplier from the sheet title row (no supplier column) ─────
             if sheet_supplier and not prod.get("supplier_name"):
                 prod["supplier_name"] = sheet_supplier
+
+            # ── Offer date from the circular's title row (no date column) ──
+            # Deterministic read of the document header, so flag it trusted: the
+            # processor keeps it instead of dropping it as an uncorroborated
+            # per-row date (Samuel 2026-11-24 Arden Crest "offer date unknown").
+            if sheet_offer_date and not prod.get("offer_date"):
+                prod["offer_date"] = sheet_offer_date
+                prod["_offer_date_trusted"] = True
 
             # ── Split a combined "EXW NL" delivery cell into incoterm + location ─
             # A "Delivery" column mapped to incoterm holds the term AND the place

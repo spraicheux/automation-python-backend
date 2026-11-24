@@ -2402,7 +2402,7 @@ def _offer_date_corroborated(parsed: Optional[datetime], raw_row_text: str,
 
 
 def _offer_date_or_flag(raw, source_filename: str, received: datetime,
-                       safe_data: dict) -> Optional[datetime]:
+                       safe_data: dict, trusted: bool = False) -> Optional[datetime]:
     """Client §4 (2026-11-06): the COMMERCIAL offer_date is only ever a date the
     offer itself stated. A date read from the source FILENAME is NOT a
     commercial offer date — it is returned separately (see the `document_date`
@@ -2411,10 +2411,16 @@ def _offer_date_or_flag(raw, source_filename: str, received: datetime,
     Returns the commercial offer_date (parsed from the offer, else None) and, as
     a side effect, writes `document_date` / `document_date_source` onto
     safe_data plus the appropriate labelled review flag.
+
+    `trusted` is set when the date was read DETERMINISTICALLY by the structured
+    xlsx parser (a labelled column or the circular's dated header). Such a date
+    is a real document read, not an LLM invention, so it skips the per-row
+    corroboration guard — which exists only to catch dates the model fabricated
+    that appear nowhere in the row's own text (Samuel 2026-11-24, Grey Inlet).
     """
     commercial = _parse_offer_date(raw)
     # Reject an invented offer_date not supported by the source (Samuel Jim Beam).
-    if commercial is not None and not _offer_date_corroborated(
+    if commercial is not None and not trusted and not _offer_date_corroborated(
             commercial, safe_data.get('_raw_row_text') or '', received):
         try:
             _fl = safe_data.get('error_flags') or []
@@ -3685,7 +3691,8 @@ async def process_offer(payload, job_id: str):
                         offer_date=_offer_date_or_flag(
                             merged_data.get('offer_date'),
                             payload.source_filename or "",
-                            datetime.utcnow(), safe_data),
+                            datetime.utcnow(), safe_data,
+                            trusted=bool(merged_data.get('_offer_date_trusted'))),
                         document_date=safe_data.get('document_date'),
                         document_date_source=safe_data.get('document_date_source'),
                         commercial_conditions=safe_data.get('commercial_conditions'),
@@ -4080,7 +4087,8 @@ async def process_offer(payload, job_id: str):
                     offer_date=_offer_date_or_flag(
                         extracted_data.get('offer_date'),
                         payload.source_filename or "",
-                        datetime.utcnow(), safe_data),
+                        datetime.utcnow(), safe_data,
+                        trusted=bool(extracted_data.get('_offer_date_trusted'))),
                     document_date=safe_data.get('document_date'),
                     document_date_source=safe_data.get('document_date_source'),
                     commercial_conditions=safe_data.get('commercial_conditions'),

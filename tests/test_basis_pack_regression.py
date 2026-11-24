@@ -21,7 +21,8 @@ import tempfile
 from openpyxl import Workbook
 
 from core.xlsx_structured import (extract_structured_products, _parse_pack,
-                                  _parse_quantity_cell)
+                                  _parse_quantity_cell, _header_date,
+                                  _scan_header_offer_date)
 from core.openai_client import clean_product_data
 import core.offer_reconcile as rec
 
@@ -206,6 +207,56 @@ def test_grey_ambiguous_dollar_xlsx():
     assert rows["Nova Scent EDP"]["currency"] in (None, "Not Found")
     assert rows["Nova Scent EDP"]["needs_manual_review"] is True
     assert not rows["Nova Scent EDP"].get("price_per_unit_eur")
+
+
+def test_header_date_helper():
+    # Real date forms a circular's title row uses — all recognised.
+    assert _header_date("2026-11-24") == "2026-11-24"
+    assert _header_date("24 November 2026") == "2026-11-24"
+    assert _header_date("November 24, 2026") == "2026-11-24"
+    assert _header_date("24 novembre 2026") == "2026-11-24"
+    assert _header_date("24/11/2026") == "2026-11-24"      # European day/month
+    import datetime as _dt
+    assert _header_date(_dt.datetime(2026, 11, 24, 9, 30)) == "2026-11-24"
+    assert _header_date(_dt.date(2026, 11, 24)) == "2026-11-24"
+    # NOT dates — a pack spec, a lone year, a bare number, a plain count.
+    assert _header_date("12/70/40") is None               # pack spec, not a date
+    assert _header_date("2026") is None                    # lone year
+    assert _header_date("Circular NM-1") is None
+    assert _header_date(40) is None                        # a quantity, not a date
+
+
+def test_header_offer_date_from_dated_header():
+    # A dated title row, NO per-row offer_date column → every row inherits the
+    # circular's date, read deterministically. OLD: offer date "unknown" because
+    # the structured parser only looked at per-row columns (Samuel Arden Crest).
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "dated.xlsx")
+        _grey_wb(p, "Net EUR per case", [
+            ["H01", "Pier Lager", "24 × 330 ml cans", "40 cases", "10.00", "EXW NL", "On floor"],
+        ])
+        rows = _by_name(p)
+    # _grey_wb writes a title row "NORTHWIND MERCHANTS BV | NM-1 | 2026-11-24".
+    assert rows["Pier Lager"]["offer_date"] == "2026-11-24"
+    assert rows["Pier Lager"].get("_offer_date_trusted") is True
+
+
+def test_header_valid_until_is_not_offer_date():
+    # A header that carries ONLY a "Valid until" date must not be mistaken for
+    # the offer date — an expiry is not when the offer was made.
+    from openpyxl import Workbook
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "vu.xlsx")
+        wb = Workbook(); ws = wb.active; ws.title = "Dock"
+        ws.append(["NORTHWIND MERCHANTS BV", "Valid until", "2026-12-31"])
+        ws.append(["Supplier ref", "Article", "Presentation", "Balance",
+                   "Net EUR per case", "Delivery", "Desk / warehouse remarks"])
+        ws.append(["V01", "Cove Ale", "24 × 330 ml cans", "40 cases", "10.00",
+                   "EXW NL", "On floor"])
+        wb.save(p)
+        rows = _by_name(p)
+    # The only header date is a validity date → offer date stays unknown, NOT 12-31.
+    assert rows["Cove Ale"].get("offer_date") in (None, "Not Found")
 
 
 if __name__ == "__main__":

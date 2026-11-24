@@ -3936,6 +3936,11 @@ def clean_product_data(product: dict) -> dict:
         # (Samuel 2026-11-18, Beefeater) — it was being dropped because the
         # scaffold didn't carry it.
         'commercial_conditions': None,
+        # Transient marker (not a DB column): the offer_date was read
+        # deterministically from a labelled column or the circular's dated header
+        # by the structured parser, so the worker trusts it instead of dropping it
+        # as an uncorroborated per-row date (Samuel 2026-11-24, Grey Inlet header).
+        '_offer_date_trusted': False,
     }
 
     cleaned_product = {}
