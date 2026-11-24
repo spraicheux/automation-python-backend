@@ -775,6 +775,7 @@ _BASIS_STATED_RE = re.compile(
     r"\bper\s+" + _BASIS_UNIT + r"\b"     # per case / per bottle / per can
     r"|/\s*" + _BASIS_UNIT + r"\b"        # /case  /cs  /btl  /can  /keg
     r"|\bthe\s+" + _BASIS_UNIT + r"\b"    # "the case" (Northbank "EUR 9,36 the case")
+    r"|\ba\s+" + _BASIS_UNIT + r"\b"      # "a case" (Southglass "EUR 9.12 a case")
     r"|\beach\b|\bapiece\b|\bp\s*/?\s*c\b",
     re.IGNORECASE)
 # A currency amount sits on the line (symbol/code before the number, or a number
