@@ -2834,6 +2834,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed = 0
     changed += _rec.repair_case_prices_from_source(offers, src)
     changed += _rec.fix_currency_from_source_line(offers, src)
+    changed += _rec.resolve_supplier_as_brand(offers, src)
     changed += _rec.fix_quantity_from_source(offers, src)
     changed += _rec.recover_tab_table_fields(offers, src)
     changed += _rec.fix_inner_box_from_text(offers, src)

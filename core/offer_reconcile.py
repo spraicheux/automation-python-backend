@@ -1037,6 +1037,81 @@ def merge_same_stock_restatement(offers: List[Dict[str, Any]], source_text: str)
     return dropped
 
 
+_SAME_PRODUCT_RE = re.compile(
+    r"\bsame\s+(?:beer|product|item|wine|spirit|gin|vodka|whisky|whiskey|rum|lager|"
+    r"brand|one|liquor|bottle)\b", re.IGNORECASE)
+
+
+def resolve_supplier_as_brand(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """A product's brand is never the supplier's own company name. When the
+    extractor stamps the supplier as the brand — because the line refers back to a
+    previous product ("Same beer, but the wrapped 4 six-packs…" → the Carlsberg
+    line above; Samuel 2026-11-24) — inherit the brand from the nearest PRECEDING
+    offer with a real brand, and replace an anaphora placeholder product name ("Same
+    Beer") with that product. The pack format stays distinct, so the wrapped line
+    remains its own row."""
+    if not source_text or not offers:
+        return 0
+    sup = _norm(offers[0].get("supplier_name"))
+    if not sup:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+
+    def _idx(o):
+        # A supplier-as-brand row has a polluted identity (the brand is the supplier
+        # name, which also appears in the header line), so locate it by its PRODUCT
+        # tokens only; donors (real brands) use the normal matcher.
+        if _norm(o.get("brand")) == sup:
+            toks = [t for t in re.findall(r"[a-z0-9]+", str(o.get("product_name") or "").lower())
+                    if len(t) > 2]
+            ln, best = None, 0
+            for L in lines:
+                s = sum(1 for t in toks if t in L.lower())
+                if s > best:
+                    ln, best = L, s
+            ln = ln if best >= 1 else None
+        else:
+            ln = _source_line_for(o, lines)
+        try:
+            return lines.index(ln) if ln else -1
+        except ValueError:
+            return -1
+    idxmap = {id(o): _idx(o) for o in offers}
+    changed = 0
+    for o in offers:
+        if _norm(o.get("brand")) != sup:
+            continue                      # brand isn't the supplier → nothing to fix
+        my = idxmap[id(o)]
+        if my < 0:
+            continue
+        donor, best = None, -1
+        for other in offers:
+            if other is o:
+                continue
+            ob = _norm(other.get("brand"))
+            if not ob or ob == sup:
+                continue
+            oi = idxmap[id(other)]
+            if 0 <= oi <= my and oi > best:
+                donor, best = other, oi
+        if not donor:
+            continue
+        new_brand = donor.get("brand")
+        o["brand"] = new_brand
+        pn = str(o.get("product_name") or "")
+        if _SAME_PRODUCT_RE.search(pn) or _norm(pn) in ("same beer", "same product", "same"):
+            o["product_name"] = donor.get("product_name") or new_brand
+        flags = list(o.get("error_flags") or [])
+        fnote = (f"brand resolved to {new_brand} from a 'same product' reference "
+                 f"(was the supplier name); kept as a separate pack format")
+        if fnote not in flags:
+            flags.append(fnote)
+        o["error_flags"] = flags
+        _mark(o)
+        changed += 1
+    return changed
+
+
 def drop_buy_inquiry_rows(offers: List[Dict[str, Any]], source_text: str) -> Set[str]:
     """Remove a buy-side ENQUIRY line the extractor stored as a sellable offer. In a
     multi-line WhatsApp/email that is mostly a sell offer, one line can be a request
@@ -1686,9 +1761,14 @@ def reconcile_floor_list(offers: List[Dict[str, Any]], source_text: str) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 _WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
             "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
-_INNERBOX_OF_RE = re.compile(r"(\w+)\s+inner\s*box(?:es)?\s+of\s+(\w+)", re.IGNORECASE)
-_LOOSE_PLUS_RE = re.compile(r"plus\s+(\w+)\s+loose", re.IGNORECASE)
-_MIN_INNER_RE = re.compile(r"minimum\s+(\w+)\s+inner", re.IGNORECASE)
+# "N inner boxes/cartons of M [candles]" — box OR carton, digit or spelled number
+# (Samuel 2026-11-24: Fog Bell "7 inner cartons of four").
+_INNERBOX_OF_RE = re.compile(
+    r"(\w+)\s+inner\s*(?:box(?:es)?|cartons?)\s+of\s+(\w+)", re.IGNORECASE)
+# "+ / plus / and one loose <piece>" (Fog Bell "and one loose piece").
+_LOOSE_PLUS_RE = re.compile(r"(?:plus|and|\+)\s+(\w+)\s+loose", re.IGNORECASE)
+# "minimum one [sealed] inner" — tolerate an adjective before "inner".
+_MIN_INNER_RE = re.compile(r"minimum\s+(\w+)\s+(?:\w+\s+)?inner", re.IGNORECASE)
 
 
 def _wordnum(tok) -> Optional[int]:
@@ -1723,13 +1803,23 @@ def fix_inner_box_of_n(offers: List[Dict[str, Any]], source_text: str) -> int:
         loose = _wordnum(lm.group(1)) if lm else 0
         if loose:
             total += loose
-        o["units_per_case"] = float(per)
+        # Pieces-per-inner is NOT a case count — a per-piece item shows EMPTY case
+        # fields, with the inner-box size kept in packaging_raw (same as
+        # fix_inner_box_from_text; Nishane/Lumière 2026-11-23).
+        o["units_per_case"] = None
         o["quantity_unit"] = "pieces"
         o["quantity_bottles"] = float(total)
         o["quantity_case"] = None
-        if re.search(r"per\s+(?:candle|piece|pc)\b", ln, re.IGNORECASE):
+        _praw_cur = _clean(o.get("packaging_raw")).lower()
+        if (not _praw_cur) or _praw_cur in (
+                "bottle", "bottles", "piece", "pieces", "pc", "pcs", "candle", "candles"):
+            o["packaging_raw"] = f"{int(per)} pieces per inner box"
+        # Per-piece pricing: "per piece/candle" OR a bare "EUR 14.20 each" (Fog Bell).
+        if re.search(r"per\s+(?:candle|piece|pc)\b|\beach\b", ln, re.IGNORECASE):
             o["price_per_case"] = None
             o["price_per_case_eur"] = None
+            o["error_flags"] = [f for f in (o.get("error_flags") or [])
+                                if "price_per_case calculated" not in str(f).lower()]
         mm = _MIN_INNER_RE.search(ln)
         if mm and _wordnum(mm.group(1)):
             o["moq_cases"] = float(_wordnum(mm.group(1)))
