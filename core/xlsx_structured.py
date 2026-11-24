@@ -561,6 +561,11 @@ def _parse_pack(val: Any) -> Optional[float]:
     low = s.lower()
     if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
         return None
+    # A gift SET / pack sold as one set is the sale unit, not a case: never derive a
+    # case price from "3 × 40 g" inside it (Samuel 2026-11-24: Alder S02 "Gift set of
+    # 3 × 40 g" at EUR 21/set became EUR 2,520/case = 21 × 120). The price is per set.
+    if re.search(r"\b(?:gift\s*set|set\s+of)\b", low):
+        return None
     # A keg / drum / cask sold as a single vessel is NOT a multi-unit case: its
     # litre size must never be read as a pack count ("20 L keg" is one 20-litre
     # keg, not a 20-pack — Samuel 2026-11-22 QA Blue Fjord).
@@ -588,7 +593,7 @@ def _parse_pack(val: Any) -> Optional[float]:
     # SIZE is never counted as a pack unit — the old first-integer fallback read
     # "6 x 700 ml bottles/case" as 700 and "4 x 6 x 330ml" as 4 (Samuel
     # 2026-11-22 QA Raven Creek 700/case, Iron Gate 4×6 format).
-    counts = re.sub(r'\d+(?:[.,]\d+)?\s*(?:ml|cl|l|lt|litre|liter|cc)s?\b',
+    counts = re.sub(r'\d+(?:[.,]\d+)?\s*(?:ml|cl|l|lt|litre|liter|cc|kg|g|gr|gram)s?\b',
                     ' ', s, flags=re.IGNORECASE)
     # Dimensional pack "N x M [x K]" → multiply the count factors (4 × 6 = 24),
     # once the per-bottle volume has been removed.
@@ -624,14 +629,33 @@ def _parse_quantity_cell(val: Any) -> Tuple[Optional[float], Optional[str]]:
     if isinstance(val, (int, float)):
         return (float(val), None)
     outside = _PAREN_RE.sub(" ", str(val).strip())  # drop parenthetical equivalents
-    # "N pallets of M cases" is a real case count (N×M), not N pallets — the
+    # Drop a lot CODE so its trailing digits are never read as the quantity
+    # (Samuel 2026-11-24: Alder C01 "Lot SN71: 19 cs + 5 loose" was read as 71).
+    outside = re.sub(r'\blot\s+[A-Za-z0-9/\-]+\s*:?', ' ', outside, flags=re.IGNORECASE)
+    outside = re.sub(r'\b[A-Za-z]{2,}\d+[A-Za-z0-9]*\b', ' ', outside)  # bare codes (SN71, VN39)
+    # An explicit "Total N cases" wins over a split line ("72 cs …; 28 cs …";
+    # Alder A03 "Total 100 cases on floor").
+    mt = re.search(r'total\s+(\d[\d,]*)\s*cases?', outside, re.IGNORECASE)
+    if mt and _num_thousands(mt.group(1)):
+        return (_num_thousands(mt.group(1)), "cases")
+    # "N pallets of/×/x M cases" is a real case count (N×M), not N pallets — the
     # pallet figure alone loses the per-pallet case size (Samuel 2026-11-20:
-    # Bunnahabhain "7 pallets of 32 cases" = 224 cases).
-    m = re.search(r'(\d[\d,]*)\s*pallets?\s*of\s*(\d[\d,]*)\s*cases?', outside, re.IGNORECASE)
+    # Bunnahabhain "7 pallets of 32 cases" = 224; 2026-11-24 Alder C02
+    # "8 pallets × 42 cases" = 336).
+    m = re.search(r'(\d[\d,]*)\s*pallets?\s*(?:of|[x×*])\s*(\d[\d,]*)\s*cases?',
+                  outside, re.IGNORECASE)
     if m:
         _n = _num_thousands(m.group(1)); _m = _num_thousands(m.group(2))
         if _n and _m:
             return (_n * _m, "cases")
+    # A date-split availability ("72 cs BBD …; 28 cs BBD …") with no explicit total
+    # is the SUM of its parts (Alder A03 = 100). Only when several "N cs/cases"
+    # counts appear and no single total is given.
+    _parts = re.findall(r'(\d[\d,]*)\s*(?:cs|cases?)\b', outside, re.IGNORECASE)
+    if len(_parts) >= 2:
+        _tot = sum(_num_thousands(p) or 0 for p in _parts)
+        if _tot:
+            return (float(_tot), "cases")
     m = re.search(r'=\s*(\d[\d,]*(?:\.\d+)?)\s*([A-Za-z]+)', outside)
     if m:
         return (_num_thousands(m.group(1)), (m.group(2) or "").strip().lower() or None)
@@ -844,8 +868,18 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     # be expanded to pieces, and surface "inner box" in
                     # packaging_raw so the per-piece guard downstream fires and no
                     # case price is fabricated (Samuel 2026-11-20: Acqua di Parma).
-                    if re.search(r"per\s*inner\s*box|inner\s*box(?:es)?\s*[x×]",
-                                 str(val), re.IGNORECASE):
+                    # "N pieces per inner [box/carton]" — read the count directly
+                    # (_parse_pack returns None for a pieces-only pack). Also the
+                    # "inner box × N pieces" form (Alder S01 "8 pieces per inner").
+                    _ibm = re.search(
+                        r"(\d[\d,]*)\s*(?:pieces?|pcs?|candles?|units?)\s*(?:/|per)\s*inner",
+                        str(val), re.IGNORECASE)
+                    if _ibm:
+                        innerbox_pieces = _num_thousands(_ibm.group(1))
+                        if not prod.get("packaging_raw"):
+                            prod["packaging_raw"] = str(val).strip()
+                    elif re.search(r"per\s*inner\s*box|inner\s*box(?:es)?\s*[x×]",
+                                   str(val), re.IGNORECASE):
                         innerbox_pieces = prod[field]
                         if not prod.get("packaging_raw"):
                             prod["packaging_raw"] = str(val).strip()
@@ -858,7 +892,10 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     moq_raw_cell = str(val).strip()
                 elif field == "_quantity":
                     qty_raw = str(val)
-                    _ibq = re.search(r"(\d[\d,]*)\s*inner\s*box", qty_raw, re.IGNORECASE)
+                    # "N inner boxes", "N inner cartons", or just "N inners"
+                    # (Alder S01 "3 inners + 2 single candles").
+                    _ibq = re.search(r"(\d[\d,]*)\s*inner(?:\s*box(?:es)?|\s*cartons?|s)?\b",
+                                     qty_raw, re.IGNORECASE)
                     if _ibq:
                         qty_innerbox_count = _num_thousands(_ibq.group(1))
                     _qv, _qu = _parse_quantity_cell(val)
@@ -1231,7 +1268,14 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 # packaging_raw (Samuel 2026-11-23: Lumière/Nishane read "6/case").
                 prod["units_per_case"] = None
                 if qty_innerbox_count:
-                    prod["quantity_bottles"] = qty_innerbox_count * innerbox_pieces
+                    _pieces = qty_innerbox_count * innerbox_pieces
+                    # Add a "+ N single/loose [candles/pieces]" remainder (Alder S01
+                    # "3 inners + 2 single candles" = 24 + 2 = 26).
+                    _lm = re.search(r"\+\s*(\d[\d,]*)\s*(?:single|loose)",
+                                    qty_raw or "", re.IGNORECASE)
+                    if _lm and _num_thousands(_lm.group(1)):
+                        _pieces += _num_thousands(_lm.group(1))
+                    prod["quantity_bottles"] = _pieces
                     prod["quantity_unit"] = "pieces"
                     prod.pop("quantity_case", None)
                     qty_val = None
@@ -1243,8 +1287,9 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # add its quantity again: keep the price so both options stay visible,
             # but count the stock once.
             if qty_val is not None and re.search(
-                    r"same\s+(?:physical\s+)?lot|do\s+not\s+count\b.*\btwice"
-                    r"|do\s+not\s+add\b.*\bstock|two\s+delivery\s+options",
+                    r"same\s+(?:physical\s+)?lot|same\s+\S+\s+parcel|same\s+parcel"
+                    r"|do\s+not\s+count\b.*\btwice|do\s+not\s+add\b.*\bstock"
+                    r"|two\s+delivery\s+options|price\s+on\s+(?:the\s+)?line\s+above",
                     row_text, re.IGNORECASE):
                 _cc_sl = prod.get("commercial_conditions") or ""
                 if ("same physical lot" not in _cc_sl.lower()
@@ -1369,6 +1414,55 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                     continue
             except Exception:
                 pass
+
+            # ── GREEN-TRUST GUARDRAIL ───────────────────────────────────────
+            # A buyer must be able to quote a GREEN row without reopening the
+            # source. So any row whose price/quantity we cannot confidently
+            # reconcile is flagged YELLOW, never left green (Samuel 2026-11-24:
+            # he is happy with yellow when something is unclear; a wrong green is
+            # the failure). These guards are deterministic and err toward review.
+            def _flag(msg: str):
+                prod["needs_manual_review"] = True
+                _f = prod.setdefault("error_flags", [])
+                if msg not in _f:
+                    _f.append(msg)
+
+            # (a) Sold out / closed parcel → not sellable stock.
+            if re.search(r"\bsold\s*out\b|closed\s+parcel|no\s+longer\s+available"
+                         r"|out\s+of\s+stock|discontinued", row_text, re.IGNORECASE):
+                for _qk in ("quantity_case", "quantity_bottles",
+                            "quantity_pallets", "quantity_ftl"):
+                    prod.pop(_qk, None)
+                _flag("sold out / closed parcel — not available; retained for reference")
+            # (b) A currency but no price = the amount wasn't captured. Never show
+            #     it green (Alder A03 lost its EUR 8.64).
+            if (prod.get("currency") and prod.get("currency") not in ("Not Found",)
+                    and prod.get("price_per_unit") is None
+                    and prod.get("price_per_case") is None
+                    and not price_on_request
+                    and "as quoted" not in str(prod.get("commercial_conditions") or "").lower()):
+                _flag("currency present but no price captured — confirm the price against the source")
+            # (c) Case price and unit price disagree (case ≠ unit × pack) → a
+            #     conflicting or fabricated price (Alder W04 "EUR 36/case; EUR 8/btl").
+            _pc = prod.get("price_per_case"); _pu = prod.get("price_per_unit")
+            _uc = prod.get("units_per_case")
+            try:
+                if (_pc and _pu and _uc and float(_uc) > 1
+                        and abs(float(_pc) - float(_pu) * float(_uc))
+                        > max(0.02, float(_pu) * float(_uc) * 0.02)):
+                    _flag("prices conflict (case price ≠ unit × pack) — confirm which applies")
+            except (TypeError, ValueError):
+                pass
+            # (d) A declared total that disagrees with its own date/BBD breakdown
+            #     (Alder W02 "102 cases declared" vs "80 + 24 = 104").
+            _md = re.search(r"(\d[\d,]*)\s*cases?\s*declared", row_text, re.IGNORECASE)
+            if _md:
+                _decl = _num_thousands(_md.group(1))
+                _splits = [int(x.replace(",", "")) for x in
+                           re.findall(r"(\d[\d,]*)\s*cs\b", row_text, re.IGNORECASE)]
+                if _decl and len(_splits) >= 2 and sum(_splits) != _decl:
+                    _flag(f"declared {int(_decl)} cases but the breakdown sums to "
+                          f"{sum(_splits)} — confirm the quantity")
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,
