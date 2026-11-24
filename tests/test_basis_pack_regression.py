@@ -98,7 +98,10 @@ def _by_ref(path):
     rows = extract_structured_products(path) or []
     out = {}
     for r in rows:
-        out[r.get("product_reference")] = clean_product_data(dict(r))
+        c = clean_product_data(dict(r))
+        key = (c.get("product_reference") or r.get("supplier_reference")
+               or c.get("supplier_reference") or c.get("product_name"))
+        out[key] = c
     return out
 
 
@@ -149,6 +152,60 @@ def test_guardrail_end_to_end():
     assert rows["T09"]["units_per_case"] == 24
     assert round(rows["T09"]["price_per_unit"], 2) == 0.33
     assert "6-pack" in (rows["T09"].get("commercial_conditions") or "")
+
+
+def _grey_wb(path, price_header, data_rows):
+    # A "dock list" whose columns are named differently (Samuel 2026-11-24, Grey
+    # Inlet): Supplier ref / Article / Presentation / Balance / <price> / Delivery
+    # / remarks. Must route to the structured path (where the guardrails live).
+    wb = Workbook(); ws = wb.active; ws.title = "Dock"
+    ws.append(["NORTHWIND MERCHANTS BV", "NM-1", "2026-11-24"])
+    ws.append(["Supplier ref", "Article", "Presentation", "Balance",
+               price_header, "Delivery", "Desk / warehouse remarks"])
+    for row in data_rows:
+        ws.append(row)
+    wb.save(path)
+
+
+def _by_name(path):
+    out = {}
+    for r in (extract_structured_products(path) or []):
+        c = clean_product_data(dict(r))
+        full = f"{c.get('brand') or ''} {c.get('product_name') or ''}".strip()
+        out[full] = c
+        out[(c.get("product_name") or "").strip()] = c
+    return out
+
+
+def test_grey_balance_and_net_eur_heading():
+    # 'Balance' → quantity; 'Net EUR per case' heading states the currency.
+    # OLD: unrecognised columns → LLM path → quantity & currency lost, green.
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "a.xlsx")
+        _grey_wb(p, "Net EUR per case", [
+            ["G01", "Harbor Ale", "24 × 330 ml cans", "40 cases", "10.00", "EXW NL", "On floor"],
+            ["G02", "Quay Soda", "24 × 250 ml cans", "3 pallets of 50 cases", "8.40", "FCA Hull", "Min one pallet"],
+        ])
+        rows = _by_name(p)
+    assert rows["Harbor Ale"]["quantity_case"] == 40.0
+    assert rows["Harbor Ale"]["price_per_case"] == 10.0
+    assert rows["Harbor Ale"]["currency"] == "EUR"
+    assert rows["Quay Soda"]["quantity_case"] == 150.0   # 3 pallets × 50
+
+
+def test_grey_ambiguous_dollar_xlsx():
+    # '$20 … Dollar denomination to be confirmed: Canada or US' → currency
+    # unconfirmed, NO EUR, flagged. OLD: assumed USD, FX-converted, green.
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "b.xlsx")
+        _grey_wb(p, "Quotation", [
+            ["G03", "Nova Scent EDP", "50 ml", "12 pieces", "$20 each", "EXW Hull",
+             "Dollar denomination to be confirmed: Canada or US"],
+        ])
+        rows = _by_name(p)
+    assert rows["Nova Scent EDP"]["currency"] in (None, "Not Found")
+    assert rows["Nova Scent EDP"]["needs_manual_review"] is True
+    assert not rows["Nova Scent EDP"].get("price_per_unit_eur")
 
 
 if __name__ == "__main__":

@@ -80,8 +80,17 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     # route to the structured (all-sheet) path instead of the first-sheet-only LLM path.
     "warehouse position": "_quantity", "position": "_quantity",
     "quotation": "_price_value", "quote": "_price_value",
-    "ref lot": "product_reference", "ref": "product_reference",
+    "desk quote": "_price_value", "ref lot": "product_reference", "ref": "product_reference",
     "delivery": "incoterm", "desk notes": "notes",
+    # Grey Inlet dock/cellar list (Samuel 2026-11-24): different column names for
+    # the same fields. "Balance" = stock; "Article" = product; "Presentation" =
+    # pack; "Net EUR per case" states currency AND basis in the heading itself.
+    "balance": "_quantity", "article": "product_name", "presentation": "units_per_case",
+    "net eur per case": "price_per_case", "net price per case": "price_per_case",
+    "eur per case": "price_per_case", "eur/case": "price_per_case",
+    "net eur per bottle": "price_per_unit", "eur per bottle": "price_per_unit",
+    "supplier ref": "product_reference", "desk / warehouse remarks": "notes",
+    "warehouse remarks": "notes",
     # Stock stated in BOTTLES ("Q in btls" = available bottles, not cases).
     "q in btls": "_qty_bottles", "qty in btls": "_qty_bottles",
     "quantity in btls": "_qty_bottles", "q btls": "_qty_bottles",
@@ -730,6 +739,20 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
         logger.info(f"[xlsx_structured] sheet {ws.title!r}: header at row {header_row}, "
                     f"{len(colmap)} mapped columns: {sorted(set(colmap.values()))}")
 
+        # A price column header that NAMES a currency ("Net EUR per case") states
+        # the currency explicitly — the "basis in a column heading" Samuel wants
+        # honoured (2026-11-24). Apply it to a priced row that has no currency of
+        # its own. A bare "$" in a heading is ambiguous and is NOT taken as USD.
+        sheet_price_currency = None
+        for _hc, _hf in colmap.items():
+            if _hf in ("price_per_case", "price_per_unit", "_price_value"):
+                _hcm = re.search(r"\b(EUR|USD|GBP|CHF|HKD|SGD)\b",
+                                 str(ws.cell(row=header_row, column=_hc).value or ""),
+                                 re.IGNORECASE)
+                if _hcm:
+                    sheet_price_currency = _hcm.group(1).upper()
+                    break
+
         # Supplier from a title row ABOVE the header ("Larch Pier Trading BV |
         # Stock circular LP-207") — the structured sheet has no supplier column
         # and the sender is not trusted as the supplier (Samuel 2026-11-20).
@@ -1076,6 +1099,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # leave bottle AND case prices blank, keep the quantity, flag for
             # review — the same rule text/WhatsApp offers follow (Samuel
             # 2026-11-20: Larch Pier Plymouth USD 64.50).
+            # A currency named in the price COLUMN HEADING fills a priced row that
+            # states none of its own (Grey Inlet "Net EUR per case" → EUR).
+            if (sheet_price_currency and not prod.get("currency")
+                    and (prod.get("price_per_case") is not None
+                         or prod.get("price_per_unit") is not None)):
+                prod["currency"] = sheet_price_currency
+
             # An explicit basis + currency stated in a NOTE on the SAME row resolves
             # a bare price cell — read the supplier's note before flagging (Alder
             # W03: quotation "5.64", desk note "EUR 0.47 per can × 12 cans … Excel
@@ -1255,8 +1285,16 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # (Alder A01, 2026-11-24) means the amount is real but the currency is
             # not: keep it as quoted, drop any guessed currency, blank the EUR
             # comparable, and flag — never show it as EUR.
+            # Also covers an ambiguous dollar ("$24 … Dollar denomination to be
+            # confirmed: Canada or US" — Grey Inlet P-16 Arden Crest, 2026-11-24)
+            # and "settlement currency still with accounts" (P-15). A bare $ is
+            # never silently taken as USD and converted to EUR.
             if (re.search(r"currency[^.]*?(awaiting|to\s+be\s+confirmed|not\s+confirmed"
-                          r"|unconfirmed|t\.?b\.?c\.?|to\s+follow)|awaiting\s+treasury",
+                          r"|unconfirmed|t\.?b\.?c\.?|to\s+follow|with\s+accounts|still\s+with)"
+                          r"|awaiting\s+treasury"
+                          r"|denomination[^.]*?(?:to\s+be\s+confirmed|confirmed|unclear)"
+                          r"|\b(?:canada\s+or\s+us|us\s+or\s+canada|cad\s+or\s+usd|usd\s+or\s+cad)\b"
+                          r"|dollar[^.]*?(?:to\s+be\s+confirmed|canada|unclear)",
                           row_text, re.IGNORECASE)
                     and (prod.get("price_per_unit") is not None
                          or prod.get("price_per_case") is not None)):

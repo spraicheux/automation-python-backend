@@ -1055,13 +1055,23 @@ def resolve_supplier_as_brand(offers: List[Dict[str, Any]], source_text: str) ->
     sup = _norm(offers[0].get("supplier_name"))
     if not sup:
         return 0
+    # The brand may be the supplier name WITHOUT its legal suffix ("Southglass
+    # Drinks" vs "Southglass Drinks BV" — Samuel 2026-11-24), so match on the
+    # suffix-stripped form too.
+    sup_core = re.sub(r"\s*\b(bv|bvba|ltd|limited|llc|gmbh|inc|incorporated|sa|nv|"
+                      r"srl|ag|plc|corp|co)\b\s*$", "", sup).strip()
+
+    def _is_sup(b) -> bool:
+        bn = _norm(b)
+        return bool(bn) and (bn == sup or bn == sup_core)
+
     lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
 
     def _idx(o):
         # A supplier-as-brand row has a polluted identity (the brand is the supplier
         # name, which also appears in the header line), so locate it by its PRODUCT
         # tokens only; donors (real brands) use the normal matcher.
-        if _norm(o.get("brand")) == sup:
+        if _is_sup(o.get("brand")):
             toks = [t for t in re.findall(r"[a-z0-9]+", str(o.get("product_name") or "").lower())
                     if len(t) > 2]
             ln, best = None, 0
@@ -1079,7 +1089,7 @@ def resolve_supplier_as_brand(offers: List[Dict[str, Any]], source_text: str) ->
     idxmap = {id(o): _idx(o) for o in offers}
     changed = 0
     for o in offers:
-        if _norm(o.get("brand")) != sup:
+        if not _is_sup(o.get("brand")):
             continue                      # brand isn't the supplier → nothing to fix
         my = idxmap[id(o)]
         if my < 0:
@@ -1089,7 +1099,7 @@ def resolve_supplier_as_brand(offers: List[Dict[str, Any]], source_text: str) ->
             if other is o:
                 continue
             ob = _norm(other.get("brand"))
-            if not ob or ob == sup:
+            if not ob or _is_sup(ob):
                 continue
             oi = idxmap[id(other)]
             if 0 <= oi <= my and oi > best:
