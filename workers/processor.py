@@ -3258,7 +3258,8 @@ async def process_offer(payload, job_id: str):
                                 # fallbacks — only if not already set by text
                                 # extraction. These are absent from product_data
                                 # dicts so merged_data picks them up from here.
-                                for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name'):
+                                for _mf in ('offer_date', 'incoterm', 'location', 'currency', 'supplier_name',
+                                            '_offer_date_trusted'):
                                     _fv = file_extracted.get(_mf)
                                     if _fv and not extracted_data.get(_mf):
                                         extracted_data[_mf] = _fv
@@ -3462,6 +3463,14 @@ async def process_offer(payload, job_id: str):
                             continue
                         if merged_data.get(_mf) in (None, '', 'Not Found', 'nan', 'NaN') and extracted_data.get(_mf) not in (None, '', 'Not Found', 'nan', 'NaN'):
                             merged_data[_mf] = extracted_data[_mf]
+
+                    # A document-level offer date read from the sheet header is
+                    # trusted (see _doc_metadata); carry that onto the row so
+                    # _offer_date_or_flag keeps it rather than dropping it as an
+                    # uncorroborated per-row date. clean_product_data defaults the
+                    # per-row flag to False, so set it explicitly from the document.
+                    if extracted_data.get('_offer_date_trusted'):
+                        merged_data['_offer_date_trusted'] = True
 
                     if merged_data.get('product_key') in [None, '', 'Not Found']:
                         logger.warning(

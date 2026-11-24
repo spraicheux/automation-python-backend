@@ -806,6 +806,32 @@ def _scale_percent(cell) -> Optional[float]:
     return v
 
 
+def scan_workbook_offer_date(file_path: str) -> Optional[str]:
+    """Offer date from a circular's TITLE rows, for the LLM-fallback path (which
+    never runs the structured column reader). Opens the workbook and scans the
+    top rows of the first sheet with the SAME date recogniser and valid/expiry
+    exclusion the structured reader uses, so both readers read the dated header
+    the same way (Samuel 2026-11-25, parity). Returns an ISO string, or None."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=False)
+    except Exception:
+        return None
+    try:
+        ws = wb.worksheets[0] if wb.worksheets else None
+        if ws is None or not ws.max_row:
+            return None
+        upto = min(ws.max_row + 1, 13)   # the first ~12 rows (the title block)
+        return _scan_header_offer_date(ws, upto)
+    except Exception:
+        return None
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
 def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]]:
     """Deterministically extract products from every well-structured sheet.
     Returns a list of raw product dicts (pre-clean), or None when no sheet has a

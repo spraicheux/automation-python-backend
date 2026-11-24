@@ -2550,6 +2550,24 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         # First non-keyword non-blank row ends the metadata block
                         if _doc_metadata:
                             break
+                # A circular often states its date only in a FREE title row
+                # ("Harbor & Vale Traders — stock note — 25 November 2026"), which
+                # the label pre-scan above cannot catch. Read it deterministically
+                # from the sheet header so the LLM-fallback path carries the offer
+                # date too — parity with the structured reader (Samuel 2026-11-25).
+                if not _doc_metadata.get("offer_date"):
+                    try:
+                        from core.xlsx_structured import scan_workbook_offer_date
+                        _hd = scan_workbook_offer_date(file_path)
+                        if _hd:
+                            _doc_metadata["offer_date"] = _hd
+                    except Exception as _hde:
+                        logger.warning(f"[extract_from_file] header-date scan failed: {_hde}")
+                # A document offer date read deterministically from the header (by
+                # either pre-scan) is a real read, not an LLM guess — mark it so the
+                # worker keeps it instead of dropping it via the per-row corroboration.
+                if _doc_metadata.get("offer_date"):
+                    _doc_metadata["_offer_date_trusted"] = True
                 if _doc_metadata:
                     logger.info(f"[extract_from_file] XLSX metadata pre-scan: {_doc_metadata}, first_product_row={_first_product_row}")
 

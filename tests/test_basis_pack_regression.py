@@ -22,7 +22,7 @@ from openpyxl import Workbook
 
 from core.xlsx_structured import (extract_structured_products, _parse_pack,
                                   _parse_quantity_cell, _header_date,
-                                  _scan_header_offer_date)
+                                  _scan_header_offer_date, scan_workbook_offer_date)
 from core.openai_client import clean_product_data
 import core.offer_reconcile as rec
 
@@ -257,6 +257,34 @@ def test_header_valid_until_is_not_offer_date():
         rows = _by_name(p)
     # The only header date is a validity date → offer date stays unknown, NOT 12-31.
     assert rows["Cove Ale"].get("offer_date") in (None, "Not Found")
+
+
+def test_workbook_offer_date_for_fallback_path():
+    # The LLM-fallback path (unfamiliar headers) must still read the circular's
+    # dated title row — parity with the structured reader (Samuel 2026-11-25).
+    from openpyxl import Workbook
+    with tempfile.TemporaryDirectory() as d:
+        # A free title row with the date in words, then unfamiliar headers + data.
+        p = os.path.join(d, "fallback.xlsx")
+        wb = Workbook(); ws = wb.active; ws.title = "Note"
+        ws.append(["Harbor & Vale Traders — stock note — 25 November 2026"])
+        ws.append(["Line", "What's in it", "How it's packed", "On hand", "Figure"])
+        ws.append(["1", "Totton Pale Ale", "24 x 330ml", "60 cases", "EUR 11.00 per case"])
+        wb.save(p)
+        # Unfamiliar headers → structured reader declines (so the LLM path is used)…
+        assert extract_structured_products(p) is None
+        # …but the workbook scanner still reads the dated title row.
+        assert scan_workbook_offer_date(p) == "2026-11-25"
+
+    # A title row carrying ONLY a validity date must not be read as the offer date.
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "vu.xlsx")
+        wb = Workbook(); ws = wb.active; ws.title = "Note"
+        ws.append(["Harbor & Vale Traders", "Valid until", "2026-12-31"])
+        ws.append(["Line", "What's in it", "How it's packed", "On hand", "Figure"])
+        ws.append(["1", "Totton Pale Ale", "24 x 330ml", "60 cases", "EUR 11.00 per case"])
+        wb.save(p)
+        assert scan_workbook_offer_date(p) is None
 
 
 def test_review_gate_is_reader_agnostic():
