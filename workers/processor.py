@@ -2768,6 +2768,55 @@ def _apply_offer_defaults(data: dict) -> dict:
     return data
 
 
+def _enforce_review_gate(orm_rows: list, stored: list, source_text: str,
+                         job_id: str) -> int:
+    """Reader-agnostic enforcement (Samuel 2026-11-25): apply the stored-row
+    validation to EVERY row — whichever reader produced it — so a value the
+    source cannot confirm is flagged for review and kept out of Best Prices, the
+    12-month view and alerts, instead of only showing in the banner. `orm_rows`
+    and `stored` are the SAME rows in the same order (orm_rows are the live ORM
+    objects, stored their plain-dict view). Returns the number of rows flagged."""
+    try:
+        from core.field_check import rows_to_flag
+    except Exception as e:
+        logger.warning(f"[enforce] rows_to_flag unavailable for {job_id}: {e}")
+        return 0
+    import json as _json
+    flagged = rows_to_flag(stored, source_text or "")
+    n = 0
+    for idx, info in flagged.items():
+        if idx >= len(orm_rows):
+            continue
+        o = orm_rows[idx]
+        reason = info.get("reason") or "source could not confirm a value"
+        # Flag string + boolean: the pill, benchmark exclusion and the flag
+        # classifier all key on these, so set both (defence in depth).
+        try:
+            flags = _json.loads(o.error_flags) if o.error_flags else []
+            if not isinstance(flags, list):
+                flags = []
+        except Exception:
+            flags = []
+        _msg = f"source-fidelity: {reason}"
+        if _msg not in flags:
+            flags.append(_msg)
+        o.error_flags = _json.dumps(flags)
+        if not o.needs_manual_review:
+            o.needs_manual_review = True
+        # Currency the source never confirmed → drop the EUR comparable and the
+        # guessed currency so the amount stays as quoted, never shown as EUR
+        # (Arden class: "$24, currency to confirm, no EUR price").
+        if info.get("neutralize_currency"):
+            o.price_per_unit_eur = None
+            o.price_per_case_eur = None
+            o.currency = None
+        n += 1
+    if n:
+        logger.warning(f"[enforce] job {job_id}: review-gate flagged {n} row(s) "
+                       f"the source could not confirm")
+    return n
+
+
 def _refresh_selfcheck(job_id: str, source_text: str) -> None:
     """Re-run the tier-2 self-check on the CURRENT stored rows and overwrite the
     source's reconciliation, so the dashboard/export banner reflects the
@@ -2779,6 +2828,7 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
         import json as _json
         db = get_session_factory()()
         try:
+            orm_rows = db.query(OfferItemDB).filter(OfferItemDB.job_id == job_id).all()
             stored = [{
                 "brand": o.brand, "product_name": o.product_name,
                 "currency": o.currency,
@@ -2789,7 +2839,7 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
                 "units_per_case": o.units_per_case, "unit_volume_ml": o.unit_volume_ml,
                 "size_weight_g": o.size_weight_g, "incoterm": o.incoterm,
                 "location": o.location, "commercial_conditions": o.commercial_conditions,
-            } for o in db.query(OfferItemDB).filter(OfferItemDB.job_id == job_id).all()]
+            } for o in orm_rows]
             missed, phantom = [], []
             if source_text:
                 _rc = reconcile_source_vs_rows(source_text, stored)
@@ -2802,6 +2852,10 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
             result = {"missed": missed, "phantom": phantom,
                       "field_issues": field_issues, "source_fidelity": src_fid}
             any_issue = missed or phantom or field_issues or src_fid
+            # Reader-agnostic ENFORCEMENT: flag every row the validation cannot
+            # confirm and keep it out of Best Prices / history / alerts, not just
+            # in the banner (Samuel 2026-11-25). orm_rows ↔ stored are aligned.
+            _enforced = _enforce_review_gate(orm_rows, stored, source_text, job_id)
             sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
             if sf is not None:
                 sf.reconciliation = _json.dumps(result) if any_issue else None
@@ -2818,8 +2872,11 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
                     sf.expected_row_count = len(stored) + len(missed)
                     sf.import_incomplete = bool(missed)
                 db.commit()
+            elif _enforced:
+                db.commit()
             logger.info(f"reconcile: self-check refreshed for {job_id} — "
-                        f"{len(field_issues)} field, {len(src_fid)} fidelity")
+                        f"{len(field_issues)} field, {len(src_fid)} fidelity, "
+                        f"{_enforced} enforced")
         finally:
             db.close()
     except Exception as e:
@@ -3836,6 +3893,8 @@ async def process_offer(payload, job_id: str):
                 import json as _json
                 _rdb = get_session_factory()()
                 try:
+                    _orm_rows = _rdb.query(OfferItemDB).filter(
+                        OfferItemDB.job_id == job_id).all()
                     _stored = [{
                         "brand": o.brand, "product_name": o.product_name,
                         "currency": o.currency,
@@ -3851,8 +3910,7 @@ async def process_offer(payload, job_id: str):
                         "incoterm": o.incoterm,
                         "location": o.location,
                         "commercial_conditions": o.commercial_conditions,
-                    } for o in _rdb.query(OfferItemDB).filter(
-                        OfferItemDB.job_id == job_id).all()]
+                    } for o in _orm_rows]
                     # Tier-2 source↔row reconcile only for a pure text offer (needs
                     # the source lines); the field-accuracy check runs on EVERY
                     # ingest path — it inspects the stored rows alone.
@@ -3878,11 +3936,19 @@ async def process_offer(payload, job_id: str):
                                "field_issues": _field_issues,
                                "source_fidelity": _src_fid}
                     _any = _missed or _phantom or _field_issues or _src_fid
+                    # Reader-agnostic ENFORCEMENT (Samuel 2026-11-25): the same
+                    # validation keeps every unconfirmable row — from ANY reader,
+                    # structured or LLM-fallback — out of Best Prices / history /
+                    # alerts, not just in the banner.
+                    _enf = _enforce_review_gate(
+                        _orm_rows, _stored, _cond_source_text or "", job_id)
                     _sf = _rdb.query(SourceFileDB).filter(
                         SourceFileDB.job_id == job_id).first()
                     if _sf is not None:
                         _sf.reconciliation = (_json.dumps(_result)
                                               if _any else None)
+                        _rdb.commit()
+                    elif _enf:
                         _rdb.commit()
                     if _any:
                         logger.warning(

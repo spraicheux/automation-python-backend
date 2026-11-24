@@ -290,3 +290,70 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
                           f"source: {shown}{more}")
 
     return issues
+
+
+# An ambiguous / unconfirmed currency stated in the source or the row's own note.
+# The reader-agnostic twin of the structured parser's $-ambiguity guard: a bare
+# "$" the source itself says is not settled ("denomination to be confirmed:
+# Canada or US", "settlement currency awaiting confirmation") must NOT be shown
+# as a confirmed currency or FX-converted to EUR, whichever reader produced the
+# row (Samuel 2026-11-24: Arden Crest, LLM-path twin of the structured fix).
+import re as _re
+_AMBIG_CUR_RE = _re.compile(
+    r"denomination[^.]*?(?:to\s+be\s+confirmed|unconfirmed|unclear|not\s+confirmed)"
+    r"|\b(?:canada\s+or\s+us|us\s+or\s+canada|cad\s+or\s+usd|usd\s+or\s+cad)\b"
+    r"|dollar[^.]*?(?:to\s+be\s+confirmed|unconfirmed|canada|unclear)"
+    r"|currency[^.]*?(?:to\s+be\s+confirmed|unconfirmed|awaiting|unclear|not\s+confirmed)"
+    r"|settlement\s+currency[^.]*?(?:confirm|unconfirmed|awaiting)",
+    _re.IGNORECASE)
+
+
+def rows_to_flag(rows: List[Dict[str, Any]],
+                 source_text: str) -> Dict[int, Dict[str, Any]]:
+    """Reader-agnostic ENFORCEMENT gate (Samuel 2026-11-25).
+
+    The two checks above produce a human banner but do not, on their own, keep a
+    bad row out of Best Prices / the 12-month view / alerts — that gate is the
+    row's needs_manual_review flag, which until now only the per-reader passes
+    set. This maps every finding back to its row so the SAME validation decides
+    the green/yellow state of EVERY imported row, whichever reader produced it:
+    structured, LLM-fallback, PDF, email or WhatsApp.
+
+    Returns {row_index: {"reason", "neutralize_currency"}}. A flagged row must be
+    set needs_manual_review = True; when neutralize_currency is set the stored
+    currency was not confirmed by the source, so the EUR comparables are dropped
+    and the amount is kept as quoted (never shown as a confirmed currency / EUR).
+    Row order matches the input list, so the caller aligns it with its ORM rows.
+
+    Reuses check_field_accuracy / check_source_fidelity per row, so the gate and
+    the banner can never diverge; adds the ambiguous-currency test the stored-row
+    checks structurally cannot make without the source.
+    """
+    out: Dict[int, Dict[str, Any]] = {}
+    src = source_text or ""
+    have_src = bool(src.strip())
+    for i, r in enumerate(rows):
+        reasons: List[str] = []
+        try:
+            reasons += check_field_accuracy([r])
+        except Exception:
+            pass
+        try:
+            reasons += check_source_fidelity([r], src)
+        except Exception:
+            pass
+        # (G) ambiguous / unconfirmed currency — the Arden class. A priced row
+        # whose source window (or own recorded note) says the denomination is not
+        # settled must not stand as a confirmed currency; drop the EUR comparable.
+        neutralize = False
+        if _pos(r.get("price_per_unit")) or _pos(r.get("price_per_case")):
+            wins = _windows(src, _name(r)) if have_src else []
+            if (any(_AMBIG_CUR_RE.search(w) for w in wins)
+                    or _AMBIG_CUR_RE.search(str(r.get("commercial_conditions") or ""))):
+                reasons.append(
+                    f"{_name(r)}: the source does not confirm the currency "
+                    f"(denomination to be confirmed) — kept as quoted, no EUR price")
+                neutralize = True
+        if reasons:
+            out[i] = {"reason": reasons[0], "neutralize_currency": neutralize}
+    return out

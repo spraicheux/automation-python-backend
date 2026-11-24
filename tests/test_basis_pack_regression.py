@@ -259,6 +259,45 @@ def test_header_valid_until_is_not_offer_date():
     assert rows["Cove Ale"].get("offer_date") in (None, "Not Found")
 
 
+def test_review_gate_is_reader_agnostic():
+    # The enforcement gate runs on STORED ROWS + source text, so it flags a bad
+    # row no matter which reader produced it (structured, LLM-fallback, PDF,
+    # email). This is the fix for Samuel 2026-11-25: the validation must apply to
+    # every row before it can be shown confirmed or enter Best Prices.
+    from core.field_check import rows_to_flag
+
+    # (a) Ambiguous currency — the Arden class, as the LLM fallback would store it
+    # (it guessed USD and FX-converted). Source says the denomination is unsettled
+    # → flag AND neutralise: drop the EUR, keep the amount as quoted.
+    src = ("Arden Crest EDP perfume, 12 pieces, $24 each. "
+           "Dollar denomination to be confirmed: Canada or US.")
+    row = {"brand": "Arden", "product_name": "Crest EDP", "currency": "USD",
+           "price_per_unit": 24.0, "price_per_unit_eur": 21.94, "quantity_bottles": 12.0}
+    f = rows_to_flag([row], src)
+    assert 0 in f and f[0]["neutralize_currency"] is True
+
+    # (b) A clearly-supported EUR row (source states "per case" + EUR) is NOT
+    # flagged — valid information is retained, zero false positive.
+    src_ok = "Pier Lager 24 x 330 ml cans, 40 cases, EUR 10.00 per case, EXW NL"
+    ok = {"brand": "Pier", "product_name": "Lager", "currency": "EUR",
+          "price_per_case": 10.0, "price_per_unit": 0.42, "units_per_case": 24.0,
+          "price_per_case_eur": 10.0, "quantity_case": 40.0,
+          "commercial_conditions": "EUR 10.00 per case"}
+    assert rows_to_flag([ok], src_ok) == {}
+
+    # (c) A price with no currency is unconfirmable regardless of reader → flagged.
+    assert 0 in rows_to_flag([{"brand": "Foo", "product_name": "Bar",
+                               "currency": None, "price_per_unit": 5.0}], "")
+
+    # (d) An amount with a currency but NO basis word in the source → basis was
+    # assumed → flagged (the per-case/per-bottle split can't be trusted).
+    src_nb = "Cobble Stout, 300 cases, GBP 55 ex Hull"
+    nb = {"brand": "Cobble", "product_name": "Stout", "currency": "GBP",
+          "price_per_case": 55.0, "price_per_unit": 2.29, "units_per_case": 24.0,
+          "quantity_case": 300.0}
+    assert 0 in rows_to_flag([nb], src_nb)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
