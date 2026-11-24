@@ -82,6 +82,15 @@ def _freeform_wb(path):
                "EXW Hull", "Closed parcel; retained for reference"])
     ws.append(["T06", "Foxtrot Vermouth", "6 × 1 L", "50 cases",
                "EUR 30 / case; EUR 8 / btl", "EXW Breda", "Both figures received; desk checking"])
+    # T07: stock unit NOT labelled — price unit (piece) is clear, stock unit is not.
+    ws.append(["T07", "Helix Body Mist", "100 ml spray", "Balance: 200",
+               "USD 7 / piece", "EXW Utrecht", "Warehouse did not label quantity unit"])
+    # T08: bare price cell, but the same-row note states currency AND per-case basis.
+    ws.append(["T08", "Icarus Soda", "12 × 250 ml cans", "90 cases",
+               "6.00", "EXW NL", "Net rate EUR 0.50 per can × 12 cans; cell is in EUR/case"])
+    # T09: multi-pack-of-packs — price is per 6-pack, must be labelled.
+    ws.append(["T09", "Juno Lager", "4 wrapped sixes × 330 ml", "30 cases",
+               "EUR 8 / case", "EXW NL", "Wrapped format"])
     wb.save(path)
 
 
@@ -122,6 +131,22 @@ def test_guardrail_end_to_end():
 
     # T06 conflicting prices (30 ≠ 8×6) → flagged. OLD: green.
     assert rows["T06"]["needs_manual_review"] is True
+
+    # T07 stock unit not labelled → price per piece preserved, stock flagged, NOT
+    # assumed "cases". OLD: 200 cases, green, eligible (Alder S03 class).
+    assert rows["T07"]["price_per_unit"] == 7.0
+    assert rows["T07"]["needs_manual_review"] is True
+    assert "unit" in " ".join(rows["T07"].get("error_flags") or []).lower()
+
+    # T08 same-row note gives currency + per-case basis → EUR 6/case, green.
+    # OLD: currency & basis "missing", flagged (Alder W03 class).
+    assert rows["T08"]["price_per_case"] == 6.0
+    assert rows["T08"]["currency"] == "EUR"
+    assert not rows["T08"].get("needs_manual_review")
+
+    # T09 "4 wrapped sixes" → the price is labelled per 6-pack with a per-can figure.
+    assert "6-pack" in (rows["T09"].get("commercial_conditions") or "")
+    assert "/can" in (rows["T09"].get("commercial_conditions") or "")
 
 
 if __name__ == "__main__":

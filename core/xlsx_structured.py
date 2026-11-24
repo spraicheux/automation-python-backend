@@ -1071,6 +1071,28 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # leave bottle AND case prices blank, keep the quantity, flag for
             # review — the same rule text/WhatsApp offers follow (Samuel
             # 2026-11-20: Larch Pier Plymouth USD 64.50).
+            # An explicit basis + currency stated in a NOTE on the SAME row resolves
+            # a bare price cell — read the supplier's note before flagging (Alder
+            # W03: quotation "5.64", desk note "EUR 0.47 per can × 12 cans … Excel
+            # quotation cell is in EUR/case" → EUR 5.64/case, green).
+            if (price_value is not None
+                    and prod.get("price_per_case") is None
+                    and prod.get("price_per_unit") is None):
+                _mnc = re.search(r"\b(EUR|USD|GBP|CHF|HKD|SGD)\s*/\s*(?:case|cases|cs)\b"
+                                 r"|in\s+(EUR|USD|GBP|CHF|HKD|SGD)\s*/\s*(?:case|cs)",
+                                 row_text, re.IGNORECASE)
+                _mnu = re.search(r"\b(EUR|USD|GBP|CHF|HKD|SGD)\s*/\s*(?:bottle|btl|can|unit|piece|pc)\b",
+                                 row_text, re.IGNORECASE)
+                if _mnc:
+                    prod["price_per_case"] = price_value
+                    if not prod.get("currency"):
+                        prod["currency"] = (_mnc.group(1) or _mnc.group(2)).upper()
+                    price_value = None
+                elif _mnu:
+                    prod["price_per_unit"] = price_value
+                    if not prod.get("currency"):
+                        prod["currency"] = _mnu.group(1).upper()
+                    price_value = None
             if price_value is not None and not basis_ambiguous and _AMBIG_BASIS_RE.search(row_text):
                 basis_ambiguous = True
             # A bare price with NO currency AND no basis token is doubly
@@ -1426,6 +1448,35 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                 _f = prod.setdefault("error_flags", [])
                 if msg not in _f:
                     _f.append(msg)
+
+            # (a0) Stock unit NOT labelled by the source → the count stands but the
+            #      unit is unknown; never silently assume "cases" (Alder S03
+            #      "Balance: 360 … Warehouse did not label quantity unit").
+            if re.search(r"did\s+not\s+label|unit\s+not\s+(?:labelled|labeled|stated|given)"
+                         r"|quantity\s+unit\s+(?:unknown|unclear|not\s+stated|missing)"
+                         r"|no\s+quantity\s+unit|unlabel", row_text, re.IGNORECASE):
+                _n = (prod.get("quantity_case") or prod.get("quantity_bottles")
+                      or prod.get("quantity_pallets"))
+                if _n:
+                    prod["quantity_unit"] = "units (not stated)"
+                    _flag(f"stock unit not stated by the source — {int(_n)} units, "
+                          f"unit unconfirmed (price is per piece)")
+
+            # (a1) A multi-pack-of-packs: say which unit the price is for (Alder A04
+            #      "4 wrapped sixes" — EUR 2.16 is per 6-pack, EUR 0.36 per can).
+            _praw = str(prod.get("packaging_raw") or "")
+            _mp = re.search(r"(\d+)\s*(?:wrapped\s*)?(?:six(?:es)?|6[\s-]?packs?)", _praw, re.IGNORECASE)
+            if _mp and prod.get("price_per_case") and "/can" not in str(prod.get("commercial_conditions") or "").lower():
+                _cans = int(_mp.group(1)) * 6
+                try:
+                    _percan = round(float(prod["price_per_case"]) / _cans, 4)
+                    _cur = prod.get("currency") or ""
+                    _nt = (f"price shown is per 6-pack; "
+                           f"{(_cur + ' ') if _cur else ''}{_percan:g}/can")
+                    _cc = prod.get("commercial_conditions") or ""
+                    prod["commercial_conditions"] = (_cc + " | " if _cc else "") + _nt
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
 
             # (a) Sold out / closed parcel → not sellable stock.
             if re.search(r"\bsold\s*out\b|closed\s+parcel|no\s+longer\s+available"
