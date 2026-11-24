@@ -152,10 +152,20 @@ def reconcile_source_vs_rows(source_text: str,
         return {"missed": [], "phantom": [], "source_lines": 0, "matched": 0}
 
     # ── Source side ──────────────────────────────────────────────────────────
+    try:
+        from core.inquiry import is_strong_buy_line
+    except Exception:
+        is_strong_buy_line = lambda _t: False
     priced, noprice = [], []
     for raw in source_text.split("\n"):
         line = re.sub(r"^[>\s]+", "", raw).strip()
         if not line:
+            continue
+        # A buy-side ENQUIRY line ("a customer wants … can you source?") is a
+        # request, not a sellable offer: it is deliberately not stored, so it must
+        # NOT be reported as a "missed" sale (Samuel 2026-11-24: North Pier 2024;
+        # the same point he raised for Alder A07's buying enquiry).
+        if is_strong_buy_line(line):
             continue
         pr = _line_prices(line)
         if pr and _TERMS_HEADER_RE.search(line):
