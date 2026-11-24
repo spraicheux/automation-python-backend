@@ -855,14 +855,24 @@ def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> i
             continue                      # no price (or already cleared) to judge
         if "as quoted" in (str(o.get("commercial_conditions") or "")).lower():
             continue                      # explicit-phrase rule already handled it
-        ln = _source_line_for(o, lines)
+        # A UNIQUE source line (one line holds every identity token) can be read
+        # for the amount; the fuzzy best-overlap matcher returns the SAME line for
+        # every duplicate-named lot, so it must NEVER drive the amount — it put
+        # "EUR 145" on all six Chivas lots (caught on prod, 2026-11-24). For a
+        # non-unique row the LLM's own per-row field is the quoted amount.
+        toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+        hits = [l for l in lines if toks and all(t in l.lower() for t in toks)]
+        ln = hits[0] if len(hits) == 1 else _source_line_for(o, lines)
         if not ln or not _AMOUNT_RE.search(ln):
             continue                      # can't see the amount on the line → don't touch
         if _BASIS_STATED_RE.search(ln):
             continue                      # basis IS stated → leave it green
-        # Quote the amount the supplier WROTE, read from the source line — not the
-        # LLM's price field, which this run held 726 (=121×6) for Clase Azul.
-        amt, cur = _quoted_from_source(ln, o)
+        # Unique line → quote the amount the supplier WROTE (fixes a derived field,
+        # e.g. Clase Azul 726 = 121×6). Non-unique → the row's own field is right.
+        if len(hits) == 1:
+            amt, cur = _quoted_from_source(ln, o)
+        else:
+            amt, cur = (pc or pu), _clean(o.get("currency"))
         for f in ("price_per_unit", "price_per_case",
                   "price_per_unit_eur", "price_per_case_eur"):
             o[f] = None
