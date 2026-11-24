@@ -979,6 +979,64 @@ def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str
     return changed
 
 
+_SAME_STOCK_RE = re.compile(
+    r"same\s+stock\s+(?:either\s+way|both\s+ways|regardless)"
+    r"|same\s+stock\b|same\s+(?:physical\s+)?lot\s+either|one\s+(?:and\s+the\s+same|single)\s+lot",
+    re.IGNORECASE)
+
+
+def merge_same_stock_restatement(offers: List[Dict[str, Any]], source_text: str) -> Set[str]:
+    """One lot quoted under two delivery options that the source explicitly calls
+    the SAME stock ("…deliver Lille at EUR 53.40/case instead … Same stock either
+    way", Samuel 2026-11-24 Whitley Neill) must count once. The extractor sometimes
+    splits it into two rows and stamps BOTH with the base delivery term, so
+    merge_alt_delivery_lots can't tell them apart (same incoterm, two prices). This
+    uses the source phrase as the authority: keep the richest row, fold the other
+    price/term into a note, and count the stock once. Returns dropped uids."""
+    if not source_text:
+        return set()
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    dropped: Set[str] = set()
+    groups: Dict[tuple, list] = defaultdict(list)
+    for o in offers:
+        groups[(_norm(o.get("brand")), _norm(o.get("product_name")))].append(o)
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        ln = _source_line_for(g[0], lines)
+        if not ln or not _SAME_STOCK_RE.search(ln):
+            continue
+        # Same physical stock → the quantity must be the one shared figure.
+        qtys = {_primary_qty(o) for o in g if _primary_qty(o) is not None}
+        if len(qtys) != 1:
+            continue
+        keep = sorted(g, key=lambda o: (
+            bool(_f(o.get("price_per_case"))),
+            bool(_clean(o.get("lead_time"))),
+            not bool(o.get("needs_manual_review"))), reverse=True)[0]
+        alts = []
+        for o in g:
+            if o is keep:
+                continue
+            dropped.add(o.get("uid"))
+            term = " ".join(x for x in (_clean(o.get("incoterm")), _clean(o.get("location"))) if x)
+            apc = _f(o.get("price_per_case")); acur = _clean(o.get("currency"))
+            label = (term or "alternative delivery")
+            if apc:
+                label += f" ({(acur + ' ') if acur else ''}{apc:g}/case)"
+            alts.append(label)
+        if alts:
+            note = ("Also available (same stock, counted once): "
+                    + " ; ".join(dict.fromkeys(alts)))
+            cc = _clean(keep.get("commercial_conditions"))
+            if "same stock" not in cc.lower():
+                keep["commercial_conditions"] = (cc + " | " if cc else "") + note
+            _mark(keep)
+        if dropped:
+            offers[:] = [o for o in offers if o.get("uid") not in dropped]
+    return dropped
+
+
 def drop_buy_inquiry_rows(offers: List[Dict[str, Any]], source_text: str) -> Set[str]:
     """Remove a buy-side ENQUIRY line the extractor stored as a sellable offer. In a
     multi-line WhatsApp/email that is mostly a sell offer, one line can be a request

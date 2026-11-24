@@ -61,6 +61,10 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "units per case": "units_per_case", "unit per case": "units_per_case",
     "bottles per case": "units_per_case", "pieces per case": "units_per_case",
     "pack size": "units_per_case", "pack": "units_per_case",
+    # "Packing" cell holds the pack format ("24 × 500 ml cans", "4 wrapped sixes
+    # × 330 ml") — parsed for units-per-case AND kept verbatim as packaging_raw so
+    # two formats of one product stay distinct (Alder A03 vs A04, 2026-11-24).
+    "packing": "units_per_case", "packing format": "units_per_case",
     # Abbreviated bottles-per-case ("Btls / cs", "Btls per cs").
     "btls cs": "units_per_case", "btls per cs": "units_per_case",
     "btl cs": "units_per_case", "bottles cs": "units_per_case",
@@ -453,15 +457,15 @@ _CUR_RE = re.compile(
 # A number tied to an explicit per-unit basis: "534.00/case", "89 per bottle".
 _BASIS_PRICE_RE = re.compile(
     r'(\d[\d,]*(?:\.\d+)?)\s*(?:/|per)\s*'
-    r'(case|cases|carton|cartons|ctn|bottle|bottles|btl|unit|units|'
-    r'piece|pieces|pcs|pc|each|can|cans)\b', re.IGNORECASE)
+    r'(case|cases|cs|carton|cartons|ctn|bottle|bottles|btl|unit|units|'
+    r'piece|pieces|pcs|pc|each|can|cans|keg|kegs|set|sets)\b', re.IGNORECASE)
 _BARE_NUM_RE = re.compile(r'(\d[\d,]*(?:\.\d+)?)')
 # A cell that deliberately withholds the basis ("basis not stated", "per bottle
 # or per case?") — never guess a basis; retain the amount as-quoted + review.
 _AMBIG_BASIS_RE = re.compile(
     r'basis\s*(?:not\s*stated|unclear|unknown|unspecified|\?)|'
     r'per\s+\w+\s+or\s+per\s+\w+|not\s*stated[^.]*basis', re.IGNORECASE)
-_CASE_WORDS = {"case", "cases", "carton", "cartons", "ctn"}
+_CASE_WORDS = {"case", "cases", "cs", "carton", "cartons", "ctn"}
 
 
 def _detect_currency(s: str) -> Optional[str]:
@@ -827,6 +831,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                         _praw = str(val).strip()
                         if re.search(r"[A-Za-z×x]", _praw):
                             prod["packaging_raw"] = _praw
+                    # The pack cell also states the volume ("24 × 500 ml cans",
+                    # "6 × 1 L") — fill unit_volume_ml so the peer-group key carries
+                    # the size and the SKU can match another supplier's (Alder, 2026-11-24).
+                    if not prod.get("unit_volume_ml"):
+                        _pv = _parse_size_ml(val)
+                        if _pv:
+                            prod["unit_volume_ml"] = _pv
                     # An inner-box pack ("8 pieces per inner box") means the item
                     # is sold PER PIECE, not per case: keep the pieces-per-box as
                     # the pack, remember it so the quantity ("7 inner boxes") can

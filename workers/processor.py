@@ -2859,6 +2859,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.separate_load_capacity(offers, src)
     dropped = set()
     dropped |= _rec.drop_buy_inquiry_rows(offers, src)
+    dropped |= _rec.merge_same_stock_restatement(offers, src)
     dropped |= _rec.merge_alt_delivery_lots(offers)
     dropped |= _rec.collapse_identical_commercial_lines(offers)
     dropped |= _rec.drop_summary_rows(offers)
