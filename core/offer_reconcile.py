@@ -792,6 +792,45 @@ _LEAD_QTY_RE = re.compile(
 _CAPACITY_RE = re.compile(
     r"per\s+(?:full\s+)?(?:load|truck|pallet|container)|truckload|\bcapacity\b",
     re.IGNORECASE)
+# The price amount + its currency as WRITTEN on the line (symbol/code before the
+# number, or a number followed by a currency word). Used to quote the amount the
+# supplier actually wrote — never a figure the LLM derived (Samuel 2026-11-24:
+# Clase Azul "121 Euro" had been quoted back as EUR 726 = 121×6).
+_SRC_PRICE_RE = re.compile(
+    r"(USD|EUR|GBP|CHF|HKD|SGD|AED|US\$|\$|€|£)\s*([\d][\d.,]*)"
+    r"|([\d][\d.,]*)\s*(euros?|dollars?|pounds?|usd|eur|gbp|chf|hkd)\b",
+    re.IGNORECASE)
+_CUR_WORD = {"euro": "EUR", "euros": "EUR", "dollar": "USD", "dollars": "USD",
+             "pound": "GBP", "pounds": "GBP", "$": "USD", "us$": "USD",
+             "€": "EUR", "£": "GBP"}
+
+
+def _norm_amt(s: str) -> Optional[float]:
+    """Parse a price string with a European-or-US decimal mark ("8,99", "74.50",
+    "1,630" thousands) into a float."""
+    s = s.strip()
+    if "," in s and "." in s:
+        s = (s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".")
+             else s.replace(",", ""))
+    elif "," in s:
+        head, tail = s.rsplit(",", 1)
+        s = head.replace(",", "") + "." + tail if len(tail) in (1, 2) else s.replace(",", "")
+    return _f(s)
+
+
+def _quoted_from_source(ln: str, o: Dict[str, Any]) -> tuple:
+    """(amount, currency) the supplier WROTE on this line. Falls back to the row's
+    own figure only when the line has no parseable price."""
+    if ln:
+        m = _SRC_PRICE_RE.search(ln)
+        if m:
+            raw = m.group(2) or m.group(3)
+            amt = _norm_amt(raw) if raw else None
+            sym = (m.group(1) or m.group(4) or "").lower()
+            cur = _CUR_WORD.get(sym, sym.upper()) if sym else _clean(o.get("currency"))
+            if amt is not None:
+                return amt, cur
+    return (_f(o.get("price_per_case")) or _f(o.get("price_per_unit"))), _clean(o.get("currency"))
 
 
 def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
@@ -821,8 +860,9 @@ def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> i
             continue                      # can't see the amount on the line → don't touch
         if _BASIS_STATED_RE.search(ln):
             continue                      # basis IS stated → leave it green
-        cur = _clean(o.get("currency"))
-        amt = pc or pu
+        # Quote the amount the supplier WROTE, read from the source line — not the
+        # LLM's price field, which this run held 726 (=121×6) for Clase Azul.
+        amt, cur = _quoted_from_source(ln, o)
         for f in ("price_per_unit", "price_per_case",
                   "price_per_unit_eur", "price_per_case_eur"):
             o[f] = None

@@ -254,23 +254,28 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
         # Anchored on a UNIQUE identity-token line only — a fuzzy match collapses
         # duplicate-named lots and would mis-report (same guard as the fixer).
         if _LEAD_QTY_RE is not None and have_src:
-            qv = r.get("quantity_case") or r.get("quantity_bottles")
-            if _pos(qv):
-                toks = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) > 2]
-                hits = ([ln for ln in src.splitlines()
-                         if toks and all(t in ln.lower() for t in toks)]
-                        if toks else [])
-                if len(hits) == 1 and not _CAPACITY_RE.search(hits[0]):
-                    m = _LEAD_QTY_RE.match(hits[0].strip())
-                    if m:
-                        try:
-                            src_n = int(m.group(1).replace(",", "").replace(" ", ""))
-                        except ValueError:
-                            src_n = 0
-                        if src_n and abs(float(qv) - src_n) > 0.5:
-                            issues.append(
-                                f"{name}: stored quantity {float(qv):g} differs from "
-                                f"the {src_n} stated at the start of the source line")
+            toks = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) > 2]
+            hits = ([ln for ln in src.splitlines()
+                     if toks and all(t in ln.lower() for t in toks)]
+                    if toks else [])
+            if len(hits) == 1 and not _CAPACITY_RE.search(hits[0]):
+                m = _LEAD_QTY_RE.match(hits[0].strip())
+                if m:
+                    try:
+                        src_n = int(m.group(1).replace(",", "").replace(" ", ""))
+                    except ValueError:
+                        src_n = 0
+                    unit = m.group(2).lower()
+                    # Compare only the SAME-unit stored field: a "cases" line never
+                    # judges a bottles quantity (the LLM named two JD lots alike,
+                    # Samuel 2026-11-24).
+                    fld = ("quantity_case" if unit.startswith("case") or unit == "cs"
+                           else "quantity_bottles")
+                    qv = r.get(fld)
+                    if src_n and _pos(qv) and abs(float(qv) - src_n) > 0.5:
+                        issues.append(
+                            f"{name}: stored {unit} quantity {float(qv):g} differs "
+                            f"from the {src_n} stated at the start of the source line")
 
     # Emit one collapsed line per distinct marker reason: a single assumption
     # shared by every row (EPIC) becomes "12 rows: …", a one-off stays named.
