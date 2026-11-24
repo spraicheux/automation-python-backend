@@ -932,7 +932,18 @@ def _normalize_currency_and_prices(safe_data: dict) -> dict:
     # currency, so a multi-currency row or a currency-less row is left untouched
     # (Samuel Harbor & Vale mixed-currency offer, 2026-11-14).
     _rrt = safe_data.get('_raw_row_text')
+    # Never let a neighbour's currency bleed onto a row the source itself says is
+    # unsettled ("$26 … denomination to be confirmed"). On the Excel LLM batch
+    # path _raw_row_text is the whole chunk, so a sibling row's "EUR" would other-
+    # wise be stamped here as this row's currency (Samuel 2026-11-25, Vale Court).
+    _rrt_ambig = False
     if _rrt:
+        try:
+            from core.field_check import _AMBIG_CUR_RE as _ACR
+            _rrt_ambig = bool(_ACR.search(str(_rrt)))
+        except Exception:
+            _rrt_ambig = False
+    if _rrt and not _rrt_ambig:
         _row_cur = _row_currency_from_text(_rrt)
         _cur_now = (safe_data.get('currency') or 'EUR').strip()
         _cur_now = _CURRENCY_SYMBOLS.get(_cur_now, _cur_now).upper()
@@ -2800,16 +2811,23 @@ def _enforce_review_gate(orm_rows: list, stored: list, source_text: str,
         _msg = f"source-fidelity: {reason}"
         if _msg not in flags:
             flags.append(_msg)
-        o.error_flags = _json.dumps(flags)
-        if not o.needs_manual_review:
-            o.needs_manual_review = True
-        # Currency the source never confirmed → drop the EUR comparable and the
-        # guessed currency so the amount stays as quoted, never shown as EUR
-        # (Arden class: "$24, currency to confirm, no EUR price").
+        # Currency the source never confirmed → drop the EUR comparable, the
+        # guessed currency and its FX so the amount stays as quoted, never shown
+        # as EUR (Arden class: "$24, currency to confirm, no EUR price"). Also
+        # drop any stale "currency normalized to … from the source line" note an
+        # upstream pass left, so the row's flags match its final state.
         if info.get("neutralize_currency"):
             o.price_per_unit_eur = None
             o.price_per_case_eur = None
             o.currency = None
+            o.fx_rate = None
+            o.fx_source = None
+            flags = [f for f in flags
+                     if "normalized to" not in str(f).lower()
+                     and "normalised to" not in str(f).lower()]
+        o.error_flags = _json.dumps(flags)
+        if not o.needs_manual_review:
+            o.needs_manual_review = True
         n += 1
     if n:
         logger.warning(f"[enforce] job {job_id}: review-gate flagged {n} row(s) "
