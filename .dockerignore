@@ -1,0 +1,25 @@
+# Keep production credentials out of the staging image. Everything on this
+# list is NEVER copied into the Docker build context.
+.env
+.env.*
+*.key
+*.pem
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.github/
+# scratch + evidence pack files — not needed inside the staging image
+PHASE3_*.csv
+PHASE3_*.txt
+PHASE3_*.pdf
+PHASE3_*.md
+PHASE3_FULL_BACKUP_*
+test.db
+_ci_*.txt
+_dedup_*.sql
+_v2_sources_*.sql
+phase3_*.sql
+JW_RECONCILIATION.md
+scripts/phase3_evidence_queries.sql

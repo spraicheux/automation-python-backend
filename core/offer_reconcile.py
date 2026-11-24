@@ -766,6 +766,168 @@ _BASIS_UNSTATED_RE = re.compile(
     r"per\s+\w+\s+or\s+per\s+\w+|"   # "per bottle or per case" (Woodford, Samuel 2026-11-20)
     r"price\s+basis\s+not\s+stated", re.IGNORECASE)
 
+# A price basis IS stated when the line names the unit the amount is for — "per
+# case", "/btl", "the case", "each". Shared by flag_absent_price_basis (below)
+# and the self-check (field_check.check_source_fidelity) so the two never drift.
+_BASIS_UNIT = (r"(?:cases?|cs|bottles?|btls?|bot|units?|pieces?|pcs?|pc|cans?|"
+               r"kegs?|sets?|litres?|liters?|ltr|l)")
+_BASIS_STATED_RE = re.compile(
+    r"\bper\s+" + _BASIS_UNIT + r"\b"     # per case / per bottle / per can
+    r"|/\s*" + _BASIS_UNIT + r"\b"        # /case  /cs  /btl  /can  /keg
+    r"|\bthe\s+" + _BASIS_UNIT + r"\b"    # "the case" (Northbank "EUR 9,36 the case")
+    r"|\beach\b|\bapiece\b|\bp\s*/?\s*c\b",
+    re.IGNORECASE)
+# A currency amount sits on the line (symbol/code before the number, or a number
+# followed by a written currency word). Comma-decimals (8,99) are fine here.
+_AMOUNT_RE = re.compile(
+    r"(?:USD|EUR|GBP|CHF|HKD|SGD|AED|US\$|\$|€|£)\s*\d"
+    r"|\d[\d.,]*\s*(?:euros?|dollars?|pounds?|usd|eur|gbp|chf|hkd)\b",
+    re.IGNORECASE)
+# A line that OPENS with an explicit stock count — "23800 bottles …", "1650
+# cases …" — the quantity the extractor must preserve verbatim. Tolerates the
+# "> " / bullet quote markers a forwarded email puts in front of each line.
+_LEAD_QTY_RE = re.compile(
+    r"^[\s>*•·\-]*(\d[\d, ]*\d|\d)\s*(cases?|bottles?|btls?|btl|units?|pcs?|pieces?|cs)\b",
+    re.IGNORECASE)
+_CAPACITY_RE = re.compile(
+    r"per\s+(?:full\s+)?(?:load|truck|pallet|container)|truckload|\bcapacity\b",
+    re.IGNORECASE)
+
+
+def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Price basis ASSUMED from convention. When a text offer quotes a bare amount
+    with NO per-unit/per-case word on the line ("at 121 Euro", "116 USD"), the
+    extractor guesses per-case and back-fills the other side — a guess the source
+    does not support (Samuel 2026-11-24: Sabina "at 121 Euro" became EUR 121/case
+    AND EUR 20.17/bottle; Clase Azul, a per-bottle super-premium, read as €20/btl).
+    Keep the quoted amount + currency, clear BOTH comparables, flag for review.
+
+    This is the gap that let the URD/HAZ basis rule regress: flag_unstated_price_basis
+    only fires when the supplier WRITES "basis not stated" / "per bottle or case".
+    Real suppliers omit the basis silently, so this keys on the ABSENCE of a basis
+    word near the amount, not the presence of a disclaimer."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
+        if not (pc or pu):
+            continue                      # no price (or already cleared) to judge
+        if "as quoted" in (str(o.get("commercial_conditions") or "")).lower():
+            continue                      # explicit-phrase rule already handled it
+        ln = _source_line_for(o, lines)
+        if not ln or not _AMOUNT_RE.search(ln):
+            continue                      # can't see the amount on the line → don't touch
+        if _BASIS_STATED_RE.search(ln):
+            continue                      # basis IS stated → leave it green
+        cur = _clean(o.get("currency"))
+        amt = pc or pu
+        for f in ("price_per_unit", "price_per_case",
+                  "price_per_unit_eur", "price_per_case_eur"):
+            o[f] = None
+        o["needs_manual_review"] = True
+        quoted = f"{cur} {amt:g}".strip() if amt else "amount"
+        flags = [f for f in (o.get("error_flags") or [])
+                 if "calculated from price_per_case" not in str(f).lower()
+                 and "price_per_case calculated" not in str(f).lower()]
+        fnote = (f"{quoted} quoted — price basis not stated (per bottle or case); "
+                 f"excluded from price comparison until confirmed")
+        if fnote not in flags:
+            flags.append(fnote)
+        o["error_flags"] = flags
+        cc = _clean(o.get("commercial_conditions"))
+        if "as quoted" not in cc.lower():
+            o["commercial_conditions"] = ((cc + " | " if cc else "")
+                                          + f"as quoted: {quoted} (price basis not stated)")
+        _mark(o)
+        changed += 1
+    return changed
+
+
+def fix_quantity_from_source(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Preserve an explicit stock count the extractor mangled. The LLM silently
+    turned "23800 bottles … lead time 7 days" into 3,400 (= 23800 ÷ 7), yet the
+    sibling line "20100 bottles" came through intact — an arithmetic hallucination,
+    not a deterministic bug, so it can't be prompt-tuned away (Samuel 2026-11-24).
+    When a line OPENS with "<N> cases/bottles" and the stored quantity differs,
+    restore the stated number and flag it. Capacity lines ("per load") are left to
+    capture_ftl_quantity."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        # Overwriting a quantity is destructive, so demand an UNAMBIGUOUS match:
+        # exactly ONE source line that contains every identity token of this row.
+        # The fuzzy best-overlap matcher (_source_line_for) collapses duplicate-
+        # named lots onto one line — five Chivas lots all matched the "240 cases"
+        # line — so it must never drive a correction (caught in offline test,
+        # 2026-11-24). A unique match is the only safe anchor.
+        toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+        if not toks:
+            continue
+        hits = [ln for ln in lines if all(t in ln.lower() for t in toks)]
+        if len(hits) != 1:
+            continue
+        ln = hits[0]
+        if _CAPACITY_RE.search(ln):
+            continue
+        m = _LEAD_QTY_RE.match(ln)
+        if not m:
+            continue
+        src_n = _int(m.group(1))
+        if not src_n:
+            continue
+        unit = m.group(2).lower()
+        fld = "quantity_case" if (unit.startswith("case") or unit == "cs") else "quantity_bottles"
+        cur = _f(o.get(fld))
+        if cur is None or abs(cur - src_n) < 0.5:
+            continue                      # no stored value to correct, or already right
+        o[fld] = float(src_n)
+        flags = list(o.get("error_flags") or [])
+        fnote = (f"quantity corrected to {src_n} {unit} stated in the source "
+                 f"(extractor stored {cur:g})")
+        if fnote not in flags:
+            flags.append(fnote)
+        o["error_flags"] = flags
+        o["needs_manual_review"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
+
+def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Drop a T1/T2 customs status the source never states for a line. The LLM
+    stamped T2 on nine Sabina rows (Chivas, Hennessy, Veuve, Havana, Baileys, JD
+    Honey) when only Proper12 carried it (Samuel 2026-11-24). Mirror of
+    clear_unsourced_incoterm: act only when the matched source line for THIS
+    product carries no T1/T2 token of its own."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        cs = _clean(o.get("custom_status"))
+        m = re.search(r"t\s*([12])\b", cs, re.IGNORECASE) if cs else None
+        if not m:
+            continue
+        tier = m.group(1)
+        ln = _source_line_for(o, lines)
+        if not ln or re.search(rf"\bT\s*{tier}\b", ln, re.IGNORECASE):
+            continue                      # line not found, or it DOES state T{tier}
+        o["custom_status"] = None
+        flags = list(o.get("error_flags") or [])
+        fnote = (f"customs status T{tier} not stated in the source for this line "
+                 f"(inherited from another line)")
+        if fnote not in flags:
+            flags.append(fnote)
+        o["error_flags"] = flags
+        o["needs_manual_review"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
 
 def flag_unstated_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
     """When the source explicitly says the price basis is NOT stated (Beefeater

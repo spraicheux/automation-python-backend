@@ -151,6 +151,15 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
     # (EPIC's per-case basis) reads as a single line, not N identical ones.
     _marker_rows: Dict[str, List[str]] = {}
 
+    # Shared source-detection regexes (same ones the reconcile passes use, so the
+    # green gate and the fixer never disagree). Lazily imported to avoid a cycle;
+    # if unavailable the source tests (D/E/F) simply don't run.
+    try:
+        from core.offer_reconcile import (
+            _BASIS_STATED_RE, _AMOUNT_RE, _LEAD_QTY_RE, _CAPACITY_RE)
+    except Exception:
+        _BASIS_STATED_RE = _AMOUNT_RE = _LEAD_QTY_RE = _CAPACITY_RE = None
+
     for r in rows:
         name = _name(r)
         inco = (str(r.get("incoterm") or "")).strip().upper()
@@ -212,6 +221,56 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
             if marker in cc_low:
                 _marker_rows.setdefault(why, []).append(name)
                 break
+
+        # (D) Assumed price basis — THE check that was missing. A row carrying a
+        # per-case or per-unit price whose source line shows a bare amount with no
+        # basis word (per case / per bottle / each / /cs / /btl) had its basis
+        # ASSUMED by the extractor, not read from the source (Samuel 2026-11-24:
+        # Sabina "at 121 Euro" → €121/case + €20.17/btl, all green). This verifies
+        # the condition against the source directly, so it catches an unfamiliar
+        # supplier's wording even when the reconcile fixer's phrasing list misses
+        # it. Skips rows already kept "as quoted" (the fixer handled those).
+        if (_BASIS_STATED_RE is not None and wins
+                and (_pos(r.get("price_per_unit")) or _pos(r.get("price_per_case")))
+                and "as quoted" not in cc_low):
+            if (any(_AMOUNT_RE.search(w) for w in wins)
+                    and not any(_BASIS_STATED_RE.search(w) for w in wins)):
+                issues.append(
+                    f"{name}: the source states an amount but not the price basis "
+                    f"(per bottle or per case) — the stored basis was assumed")
+
+        # (E) Invented / inherited customs status. A T1/T2 the source never states
+        # for this line bled down from another (Sabina: T2 on nine rows, stated
+        # only on Proper12).
+        cstat = (str(r.get("custom_status") or "")).strip().upper()
+        if cstat in ("T1", "T2") and wins:
+            if not any(re.search(rf"\b{cstat}\b", w, re.IGNORECASE) for w in wins):
+                issues.append(
+                    f"{name}: customs status {cstat} is not stated in the source "
+                    f"for this line (likely inherited from another line)")
+
+        # (F) Mangled explicit quantity. The source line opens with "<N> cases/
+        # bottles" but the stored count differs (JD Honey: 23,800 stored as 3,400).
+        # Anchored on a UNIQUE identity-token line only — a fuzzy match collapses
+        # duplicate-named lots and would mis-report (same guard as the fixer).
+        if _LEAD_QTY_RE is not None and have_src:
+            qv = r.get("quantity_case") or r.get("quantity_bottles")
+            if _pos(qv):
+                toks = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) > 2]
+                hits = ([ln for ln in src.splitlines()
+                         if toks and all(t in ln.lower() for t in toks)]
+                        if toks else [])
+                if len(hits) == 1 and not _CAPACITY_RE.search(hits[0]):
+                    m = _LEAD_QTY_RE.match(hits[0].strip())
+                    if m:
+                        try:
+                            src_n = int(m.group(1).replace(",", "").replace(" ", ""))
+                        except ValueError:
+                            src_n = 0
+                        if src_n and abs(float(qv) - src_n) > 0.5:
+                            issues.append(
+                                f"{name}: stored quantity {float(qv):g} differs from "
+                                f"the {src_n} stated at the start of the source line")
 
     # Emit one collapsed line per distinct marker reason: a single assumption
     # shared by every row (EPIC) becomes "12 rows: …", a one-off stays named.

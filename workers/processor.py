@@ -2834,6 +2834,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed = 0
     changed += _rec.repair_case_prices_from_source(offers, src)
     changed += _rec.fix_currency_from_source_line(offers, src)
+    changed += _rec.fix_quantity_from_source(offers, src)
     changed += _rec.recover_tab_table_fields(offers, src)
     changed += _rec.fix_inner_box_from_text(offers, src)
     changed += _rec.fix_inner_box_of_n(offers, src)
@@ -2846,7 +2847,9 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.capture_conditional_incoterm(offers, src)
     changed += _rec.capture_ftl_quantity(offers, src)
     changed += _rec.clear_unsourced_incoterm(offers, src)
+    changed += _rec.clear_unsourced_custom_status(offers, src)
     changed += _rec.flag_unstated_price_basis(offers, src)
+    changed += _rec.flag_absent_price_basis(offers, src)
     changed += _rec.annotate_pack_format(offers, src)
     changed += _rec.fold_distinct_pack_formats(offers, src)
     # AFTER the pack format is folded into packaging_raw / product_name, so a
