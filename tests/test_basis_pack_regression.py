@@ -144,9 +144,11 @@ def test_guardrail_end_to_end():
     assert rows["T08"]["currency"] == "EUR"
     assert not rows["T08"].get("needs_manual_review")
 
-    # T09 "4 wrapped sixes" → the price is labelled per 6-pack with a per-can figure.
+    # T09 "4 wrapped sixes" = 24 cans → the per-unit price is per CAN (not per
+    # six-pack), and the six-pack price is noted. OLD: units_per_case 4, €2/unit.
+    assert rows["T09"]["units_per_case"] == 24
+    assert round(rows["T09"]["price_per_unit"], 2) == 0.33
     assert "6-pack" in (rows["T09"].get("commercial_conditions") or "")
-    assert "/can" in (rows["T09"].get("commercial_conditions") or "")
 
 
 if __name__ == "__main__":

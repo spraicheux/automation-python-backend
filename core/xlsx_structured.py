@@ -595,6 +595,11 @@ def _parse_pack(val: Any) -> Optional[float]:
     # 2026-11-22 QA Raven Creek 700/case, Iron Gate 4×6 format).
     counts = re.sub(r'\d+(?:[.,]\d+)?\s*(?:ml|cl|l|lt|litre|liter|cc|kg|g|gr|gram)s?\b',
                     ' ', s, flags=re.IGNORECASE)
+    # "N (wrapped) sixes / six-packs" is N × 6 cans — so a case of "4 wrapped sixes"
+    # is 24 cans, and the per-unit price is per CAN, not per six-pack (Samuel
+    # 2026-11-24: Alder A04 EUR 2.16/unit must read EUR 0.36/can).
+    counts = re.sub(r'(\d+)\s*(?:wrapped\s*)?(?:sixe?s|six[\s-]?packs?|6[\s-]?packs?)',
+                    lambda m: f"{m.group(1)} x 6", counts, flags=re.IGNORECASE)
     # Dimensional pack "N x M [x K]" → multiply the count factors (4 × 6 = 24),
     # once the per-bottle volume has been removed.
     if re.search(r'\d+\s*[x×*]\s*\d+', counts):
@@ -1464,15 +1469,19 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
             # (a1) A multi-pack-of-packs: say which unit the price is for (Alder A04
             #      "4 wrapped sixes" — EUR 2.16 is per 6-pack, EUR 0.36 per can).
+            # The per-unit price now reads per CAN (units_per_case is total cans).
+            # Surface the six-pack price too, so both are explicit (Samuel's A04).
             _praw = str(prod.get("packaging_raw") or "")
-            _mp = re.search(r"(\d+)\s*(?:wrapped\s*)?(?:six(?:es)?|6[\s-]?packs?)", _praw, re.IGNORECASE)
-            if _mp and prod.get("price_per_case") and "/can" not in str(prod.get("commercial_conditions") or "").lower():
-                _cans = int(_mp.group(1)) * 6
+            _mp = re.search(r"(\d+)\s*(?:wrapped\s*)?(?:six(?:es)?|six[\s-]?packs?|6[\s-]?packs?)",
+                            _praw, re.IGNORECASE)
+            if _mp and prod.get("price_per_case") and "per 6-pack" not in str(prod.get("commercial_conditions") or "").lower():
+                _sp = int(_mp.group(1))
                 try:
-                    _percan = round(float(prod["price_per_case"]) / _cans, 4)
+                    _six = round(float(prod["price_per_case"]) / _sp, 4)
                     _cur = prod.get("currency") or ""
-                    _nt = (f"price shown is per 6-pack; "
-                           f"{(_cur + ' ') if _cur else ''}{_percan:g}/can")
+                    prod["bottle_or_can_type"] = prod.get("bottle_or_can_type") or "can"
+                    _nt = (f"wrapped {_sp} × 6 cans; "
+                           f"{(_cur + ' ') if _cur else ''}{_six:g} per 6-pack")
                     _cc = prod.get("commercial_conditions") or ""
                     prod["commercial_conditions"] = (_cc + " | " if _cc else "") + _nt
                 except (TypeError, ValueError, ZeroDivisionError):
