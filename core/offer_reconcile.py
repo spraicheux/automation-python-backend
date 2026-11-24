@@ -979,6 +979,40 @@ def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str
     return changed
 
 
+def drop_buy_inquiry_rows(offers: List[Dict[str, Any]], source_text: str) -> Set[str]:
+    """Remove a buy-side ENQUIRY line the extractor stored as a sellable offer. In a
+    multi-line WhatsApp/email that is mostly a sell offer, one line can be a request
+    ("a customer wants 90 cases of North Pier rosé 2024 at around EUR 39/case. Can
+    you source that vintage for us?" — Samuel 2026-11-24). The message-level RFQ
+    classifier can't see it (the whole message carries prices), so match the row's
+    own source line against the strong buy-phrase detector and drop it. Returns the
+    set of dropped uids; the offers list is filtered in place."""
+    if not source_text:
+        return set()
+    try:
+        from core.inquiry import is_strong_buy_line
+    except Exception:
+        return set()
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    dropped: Set[str] = set()
+    for o in offers:
+        ln = _source_line_for(o, lines)
+        if ln and is_strong_buy_line(ln):
+            uid = o.get("uid")
+            if uid is not None:
+                dropped.add(uid)
+            o["_buy_inquiry_drop"] = True
+    if dropped:
+        offers[:] = [o for o in offers if o.get("uid") not in dropped]
+    else:
+        # No uids yet (pre-save) — filter by the marker instead.
+        before = len(offers)
+        offers[:] = [o for o in offers if not o.get("_buy_inquiry_drop")]
+        if len(offers) != before:
+            dropped.add("_marker")
+    return dropped
+
+
 def flag_unstated_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
     """When the source explicitly says the price basis is NOT stated (Beefeater
     "USD 75.00, basis not stated — per bottle or case"), the record must not pass

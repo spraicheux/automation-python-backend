@@ -2858,6 +2858,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     # happened to load with the figure (Samuel 2026-11-23: Carlsberg 24×33 twin).
     changed += _rec.separate_load_capacity(offers, src)
     dropped = set()
+    dropped |= _rec.drop_buy_inquiry_rows(offers, src)
     dropped |= _rec.merge_alt_delivery_lots(offers)
     dropped |= _rec.collapse_identical_commercial_lines(offers)
     dropped |= _rec.drop_summary_rows(offers)

@@ -70,6 +70,14 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "available quantity": "_quantity", "quantity available": "_quantity",
     "quantity": "_quantity", "qty": "_quantity", "stock": "_quantity",
     "available": "_quantity", "stock quantity": "_quantity",
+    # Freeform stock-circular labels (Samuel 2026-11-24, Alder Quay 4-tab workbook):
+    # "Warehouse position" holds the stock count, "Quotation" the price, "Ref./lot"
+    # the reference, "Delivery" the incoterm+location. These let a multi-tab circular
+    # route to the structured (all-sheet) path instead of the first-sheet-only LLM path.
+    "warehouse position": "_quantity", "position": "_quantity",
+    "quotation": "_price_value", "quote": "_price_value",
+    "ref lot": "product_reference", "ref": "product_reference",
+    "delivery": "incoterm", "desk notes": "notes",
     # Stock stated in BOTTLES ("Q in btls" = available bottles, not cases).
     "q in btls": "_qty_bottles", "qty in btls": "_qty_bottles",
     "quantity in btls": "_qty_bottles", "q btls": "_qty_bottles",
@@ -763,6 +771,19 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
                             prod["price_per_case"] = pc["price_per_case"]
                         if pc["price_per_unit"] is not None:
                             prod["price_per_unit"] = pc["price_per_unit"]
+                        # Basis is known (the cell said /can, /case, /btl) but the
+                        # cell named NO currency — read it from the number-format
+                        # mask, else remember to flag it, never guess EUR (Samuel
+                        # 2026-11-24: Alder A01 "0.03 / can", currency awaiting).
+                        if not prod.get("currency"):
+                            _fc = price_fmt_currency or _fmt_currency(cell.number_format)
+                            if _fc:
+                                prod["currency"] = _fc
+                            else:
+                                _fs = price_fmt_symbol or _fmt_symbol(cell.number_format)
+                                if _fs:
+                                    prod.setdefault("_quote_symbol", _fs)
+                                prod["_price_no_currency"] = True
                     elif pc["price_value"] is not None:
                         price_value = pc["price_value"]
                         basis_ambiguous = pc["basis_ambiguous"]
@@ -1139,6 +1160,45 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             if sheet_supplier and not prod.get("supplier_name"):
                 prod["supplier_name"] = sheet_supplier
 
+            # ── Split a combined "EXW NL" delivery cell into incoterm + location ─
+            # A "Delivery" column mapped to incoterm holds the term AND the place
+            # ("EXW NL", "FCA Ghent", "DAP Lille" — Alder Quay 2026-11-24). Parse
+            # the term off the front and keep the rest as the location (first two
+            # words), so the peer-group key matches a supplier that states the same
+            # place, instead of carrying "EXW NL" as the whole incoterm.
+            _inc = str(prod.get("incoterm") or "").strip()
+            _ism = re.match(r"^(EXW|FCA|FOB|CIF|CFR|CPT|CIP|DAP|DDP|DAT|DPU|FAS)\b[\s\-]*(.*)$",
+                            _inc, re.IGNORECASE)
+            if _ism:
+                prod["incoterm"] = _ism.group(1).upper()
+                _loc = _ism.group(2).strip(" .-")
+                if _loc and not prod.get("location"):
+                    prod["location"] = " ".join(_loc.split()[:2])
+
+            # ── Currency explicitly left UNCONFIRMED in the row text ─────────
+            # A note like "Settlement currency awaiting treasury confirmation"
+            # (Alder A01, 2026-11-24) means the amount is real but the currency is
+            # not: keep it as quoted, drop any guessed currency, blank the EUR
+            # comparable, and flag — never show it as EUR.
+            if (re.search(r"currency[^.]*?(awaiting|to\s+be\s+confirmed|not\s+confirmed"
+                          r"|unconfirmed|t\.?b\.?c\.?|to\s+follow)|awaiting\s+treasury",
+                          row_text, re.IGNORECASE)
+                    and (prod.get("price_per_unit") is not None
+                         or prod.get("price_per_case") is not None)):
+                prod["currency"] = None
+                prod["price_per_unit_eur"] = None
+                prod["price_per_case_eur"] = None
+                flags = prod.setdefault("error_flags", [])
+                _m = ("currency unconfirmed — the source states the currency is "
+                      "awaiting confirmation; amount kept as quoted, excluded from comparison")
+                if _m not in flags:
+                    flags.append(_m)
+                _n = "price shown as quoted; currency awaiting confirmation — unconfirmed"
+                prod["commercial_conditions"] = (
+                    (prod.get("commercial_conditions") + " | " + _n)
+                    if prod.get("commercial_conditions") else _n)
+                prod["needs_manual_review"] = True
+
             # ── Location / incoterm from a free "Delivery / notes" cell ─────
             # That column is often unmapped, so parse the first incoterm +
             # location out of the whole-row text (Samuel 2026-11-20: Larch Pier
@@ -1191,7 +1251,8 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # "N cases available" (Samuel 2026-11-22 QA Iron Gate; mirrors
             # offer_reconcile.separate_load_capacity for the structured path). The
             # field self-check surfaces the "per load" marker in the note.
-            if (re.search(r"per\s+load|load\s+capacity", row_text, re.IGNORECASE)
+            if (re.search(r"per\s+(?:full\s+)?load|load\s+capacity|per\s+(?:full\s+)?truck",
+                          row_text, re.IGNORECASE)
                     and not re.search(r"\d[\d,]*\s*(?:cases?|cs)\s*available",
                                       row_text, re.IGNORECASE)):
                 _cap = prod.get("quantity_case")
@@ -1281,8 +1342,22 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             # ("…shown again in source footer as stock summary, not another
             # offer") is dropped so it is not stored as a duplicate line (Samuel
             # 2026-11-22 QA Mountain Abbey footer; mirrors drop_summary_rows).
-            if re.search(r"not\s+another\s+offer", row_text, re.IGNORECASE):
+            if re.search(r"not\s+another\s+offer|\brecap\b|no\s+further\s+allocation"
+                         r"|stock\s+summary", row_text, re.IGNORECASE):
                 continue
+
+            # A buy-side ENQUIRY row inside a sell workbook ("Wanted: 50 kegs …
+            # Buying enquiry only. Can anyone supply?" — Alder A07, 2026-11-24) is
+            # a request, not a sellable offer: drop it so it never enters stock,
+            # Best Prices or the benchmark. Mirrors the text-offer RFQ drop.
+            try:
+                from core.inquiry import is_strong_buy_line
+                if is_strong_buy_line(row_text):
+                    logger.info(f"[xlsx_structured] sheet {ws.title!r} row {r}: "
+                                f"buy-side enquiry — not stored as an offer")
+                    continue
+            except Exception:
+                pass
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,

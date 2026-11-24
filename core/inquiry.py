@@ -84,6 +84,40 @@ _WANTED = re.compile(r"""(?ix)
 """, re.VERBOSE)
 
 
+# ── Strong, unambiguous BUY phrasing that fires even WITH a price on the line ──
+# For an enquiry embedded in a multi-line offer / multi-tab workbook, the whole
+# message carries a price, so classify_inquiry (which bails on any price) can't
+# see it. These phrases are buy-side beyond doubt — a target/budget price does not
+# make them a sell offer (Samuel 2026-11-24: Northbank "a customer wants 90 cases
+# … at around EUR 39/case. Can you source that vintage?"; Alder A07 "Wanted: 50
+# kegs … Buying enquiry only. Can anyone supply?").
+_STRONG_BUY = re.compile(r"""(?ix)
+    \b(
+        buying \s+ (?: enquiry | inquiry )                        |
+        buy \s+ (?: enquiry | inquiry )                           |
+        purchase \s+ (?: enquiry | inquiry )                      |
+        can \s+ anyone \s+ (?: supply | source | offer | help )   |
+        can \s+ (?: you | we ) \s+ source                         |
+        could \s+ you \s+ source                                  |
+        (?: a \s+ )? (?: customer | client | buyer ) \s+
+            (?: wants? | needs? | is \s+ looking | requires? | seeks? ) |
+        (?: looking | wishing | wanting ) \s+ to \s+ buy          |
+        (?: we | i ) \s+ (?: want | wish | need ) \s+ to \s+ (?: buy | purchase | source ) |
+        wanted \s*:                                               |
+        \b w t b \b                                               |
+        \b r f q \b                                               |
+        request \s+ for \s+ (?: quotation | quote )
+    )
+""", re.VERBOSE)
+
+
+def is_strong_buy_line(text: Optional[str]) -> bool:
+    """True when a single line/row is unambiguously a buy-side enquiry, even if it
+    also quotes a (target) price. Used to keep an RFQ line inside a larger offer or
+    workbook from being stored as a sellable row."""
+    return bool(text) and bool(_STRONG_BUY.search(str(text)))
+
+
 def _wanted(text: str) -> str:
     m = _WANTED.search(text)
     if not m:
