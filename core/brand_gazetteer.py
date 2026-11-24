@@ -94,8 +94,11 @@ BRANDS: list[str] = [
     "Cody Vody",  # QA fictional brand (Samuel acceptance set)
     # ── Spirits — gin ───────────────────────────────────────────────
     "Bombay Sapphire", "Beefeater", "Hendrick's", "Tanqueray", "Gordon's",
+    "Whitley Neill",
+    # ── Spirits — whisky / scotch ───────────────────────────────────
+    "Whyte & Mackay",
     # ── Spirits — cognac / brandy ───────────────────────────────────
-    "Hennessy", "Rémy Martin", "Martell", "Courvoisier",
+    "Hennessy", "Rémy Martin", "Martell", "Courvoisier", "Saint-Rémy", "Saint Remy",
     # ── Spirits — liqueur / other ───────────────────────────────────
     "Jägermeister", "Aperol", "Campari", "Baileys", "Cointreau",
     "Disaronno", "Grand Marnier",

@@ -4266,6 +4266,24 @@ def clean_product_data(product: dict) -> dict:
                 logger.warning(f"[clean_product_data] brand-from-name fallback failed: {_be}")
     # ──────────────────────────────────────────────────────────────────
 
+    # ─── Strip an "ABV° volume L." suffix baked into the product name ──────
+    # The Spirits Online / LAST_CHANCE dialect appends "40.00° 1.000 L." to every
+    # name ("Blood Orange Gin 43.00° 1.000 L."). Both numbers are already captured
+    # in alcohol_percent / unit_volume_ml, so the suffix only pollutes the
+    # canonical id and blocks cross-supplier grouping (Samuel 2026-11-24: the
+    # Whitley Neill / Whyte & Mackay rows did not match their peers). Strip it only
+    # when the volume is already stored, so no measurement is ever lost.
+    _pn = cleaned_product.get('product_name')
+    if (_pn and _pn not in ("Not Found", "", None)
+            and cleaned_product.get('unit_volume_ml')):
+        _clean_pn = re.sub(
+            r"\s*\d+(?:[.,]\d+)?\s*°\s*\d+(?:[.,]\d+)?\s*[Ll]\.?(?:\s+N?GBX)?\s*$",
+            "", _pn).strip(" ,.-")
+        if _clean_pn != _pn:
+            if not _clean_pn:
+                _clean_pn = cleaned_product.get('brand') or _pn
+            cleaned_product['product_name'] = _clean_pn
+
     # ─── EAN CHECK-DIGIT VALIDATION + AUTO-REPAIR ─────────────────────
     # The LLM occasionally concatenates the first digit of the next
     # column (price) onto the EAN when the source PDF has narrow
