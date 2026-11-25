@@ -266,9 +266,44 @@ def reconcile_source_vs_rows(source_text: str,
     # just name it in the banner (Samuel 2026-11-25: Cairn/Linen were correctly
     # listed phantom yet stayed green and quotable). sigs is one-per-row in input
     # order, so enumerate(sigs) gives the stored-row index directly.
+    # A workbook with a per-case / per-bottle PRICE COLUMN carries its prices as
+    # BARE numbers in the data rows (the currency sits in the header), so the
+    # priced-line matcher above can't join them and would wrongly call the row a
+    # phantom/invented value (Samuel 2026-11-25: Estuary N01 Copper Fen EUR 78/case,
+    # N02 Amber EUR 9.80). When such a column exists, a stored price that appears as
+    # a bare number anywhere in the source is supported — not a phantom.
+    _columnar = bool(re.search(
+        r"(?:net\s+)?(?:eur|usd|gbp|chf|hkd|sgd|price|amount|desk\s+quote|quotation)"
+        r"\s*(?:/|per)\s*(?:case|bottle|btl|unit|piece|pc|candle|set|keg)",
+        source_text, re.IGNORECASE))
+    _src_lines = [l for l in source_text.splitlines() if l.strip()] if _columnar else []
+
+    def _price_in_source(rs) -> bool:
+        # The stored price is a BARE number on the row's OWN source line (the
+        # currency being in the column header). Line-scoped so a number appearing
+        # elsewhere for a different product never falsely clears a phantom.
+        if not _columnar:
+            return False
+        toks = [t for t in re.findall(r"[a-z0-9]+",
+                ((rs["row"].get("brand") or "") + " " +
+                 (rs["row"].get("product_name") or "")).lower()) if len(t) > 2]
+        if not toks:
+            return False
+        wants = {round(p[0], 2) for p in rs["prices"]}
+        for ln in _src_lines:
+            low = ln.lower()
+            if all(t in low for t in toks):
+                for _t in re.findall(r"(?<![\w.])\d[\d.,]*", ln):
+                    try:
+                        if round(float(_t.replace(",", "")), 2) in wants:
+                            return True
+                    except ValueError:
+                        pass
+        return False
+
     phantom, phantom_idx = [], []
     for _i, rs in enumerate(sigs):
-        if not rs["matched"] and rs["prices"]:
+        if not rs["matched"] and rs["prices"] and not _price_in_source(rs):
             phantom.append(_row_label(rs["row"]))
             phantom_idx.append(_i)
     total_src = len(priced) + len(noprice)

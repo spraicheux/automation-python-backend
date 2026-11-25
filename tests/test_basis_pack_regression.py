@@ -531,6 +531,26 @@ def test_innerbox_price_survives_absent_basis_pass():
     assert o.get("quantity_bottles") == 26.0 and o.get("price_per_unit") == 7.4
 
 
+# ── recon54: columnar price is supported, not a phantom ──────────────────────────
+def test_columnar_price_is_not_a_phantom():
+    from core.reconcile import reconcile_source_vs_rows
+    # a "Net EUR per case" column carries the price as a bare number on the row —
+    # the stored EUR 78 must NOT be reported as an invented/phantom value.
+    src = ("Reference Product Bottles per case Available cases Net EUR per case Terms\n"
+           "N1 Harbour Stout 700 ml 6 44 78 EXW NL T2")
+    rc = reconcile_source_vs_rows(src, [{"brand": "Harbour", "product_name": "Stout",
+        "currency": "EUR", "price_per_case": 78.0, "price_per_unit": 13.0,
+        "price_per_case_eur": 78.0, "price_per_unit_eur": 13.0}])
+    assert rc["phantom"] == []
+    # but a free-text invented case price (no price column) IS still a phantom
+    rc2 = reconcile_source_vs_rows(
+        "W5 Cairn Thread Gin 700ml, 6 bottles/case. Desk figure GBP 3.60.",
+        [{"brand": "Cairn", "product_name": "Thread Gin", "currency": "GBP",
+          "price_per_case": 21.6, "price_per_unit": 3.6,
+          "price_per_case_eur": 25.8, "price_per_unit_eur": 4.3}])
+    assert any("cairn" in p.lower() for p in rc2["phantom"])
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
