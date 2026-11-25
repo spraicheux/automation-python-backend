@@ -875,19 +875,29 @@ def _quoted_from_source(ln: str, o: Dict[str, Any]) -> tuple:
     return (_f(o.get("price_per_case")) or _f(o.get("price_per_unit"))), _clean(o.get("currency"))
 
 
+# An EXPLICITLY-APPLICABLE price basis — anchored to a currency, a figure/price
+# word, or a column heading — is valid even when not physically next to the amount
+# (Samuel 2026-11-26: "the basis has to be explicitly applicable to it, not
+# adjacent"; e.g. Reed "the figure is EUR per case", a "Net EUR per case" column).
+# A PACK spec ("6 bottles per case") is NOT anchored this way, so it is not a basis.
+_BASIS_CLAUSE_RE = re.compile(
+    r"(?:USD|EUR|GBP|CHF|HKD|SGD|CAD|AUD|\$|€|£|net|figure|price|amount|quote|rate|"
+    r"quotation|desk\s+quote)\s*(?:is\s+)?(?:[\w.,$€£]+\s+){0,3}?(?:per|/)\s*"
+    r"(?:case|bottle|btl|unit|piece|pc|candle|set|keg|six-?pack|carton)",
+    re.IGNORECASE)
+
+
 def _basis_stated_near_price(ln: str) -> bool:
-    """True only when a price-basis word ('per case', '/btl', 'each') sits NEXT to
-    the price amount — not merely somewhere on the line. A pack spec earlier on the
-    line ('6 bottles per case') must NOT be read as the price basis for an un-based
-    amount later on it (Samuel 2026-11-25: Estuary D05 Cairn 'GBP 66' was taken as
-    per-case because 'per case' appeared in the pack column)."""
-    found = False
+    """True when the price basis is stated FOR the amount: either a basis word next
+    to the price, OR an explicitly-applicable clause / column heading elsewhere on
+    the line ('the figure is EUR per case', 'Net EUR per case', 'EUR 0.52 per
+    bottle'). A pack spec ('6 bottles per case') is NOT such a clause and does not
+    count (Samuel 2026-11-25/26)."""
     for m in _SRC_PRICE_RE.finditer(ln):
         win = ln[max(0, m.start() - 6): m.end() + 22]
         if _BASIS_STATED_RE.search(win):
-            found = True
-            break
-    return found
+            return True
+    return bool(_BASIS_CLAUSE_RE.search(ln))
 
 
 def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
@@ -1736,6 +1746,14 @@ def apply_basis_from_twin(offers: List[Dict[str, Any]], twin_map: Dict[tuple, se
     own price is never touched, and an INDEPENDENT case price is left alone."""
     changed = 0
     for o in offers:
+        # A row whose OWN source confirms the basis — a per-set/per-candle/each
+        # price (honor_retail / inner-box), or a structured column header — is a
+        # CONFIRMED quote and must never be overridden by a twin. This is what
+        # Samuel 2026-11-26 required: "a later import must not silently change
+        # another import's confirmed or unconfirmed price basis." It is also what
+        # made a duplicate resend / a stale earlier copy wrongly blank Dune & Linen.
+        if o.get("_unit_priced") or o.get("_structured_row"):
+            continue
         pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
         upc = _f(o.get("units_per_case"))
         if not (pc or pu):

@@ -567,6 +567,40 @@ def test_explicit_each_price_overrides_bled_value():
     assert o2["price_per_unit"] == 18.0 and o2["price_per_case"] is None
 
 
+# ── recon56: Samuel 2026-11-26 — twin rule, explicit basis, derived case price ───
+def test_twin_never_overrides_a_source_confirmed_price():
+    # a row whose OWN source confirms the basis (per-set price) must NOT be blanked
+    # by a cross-source basis twin (a stale/duplicate import's unconfirmed copy).
+    tmap = {rec._twin_key_fields("Acme", "Dune", None): {21.0}}
+    o = {"brand": "Dune", "product_name": "Gift Set", "supplier_name": "Acme",
+         "price_per_unit": 21.0, "price_per_case": None, "unit_volume_ml": None,
+         "_unit_priced": True}
+    rec.apply_basis_from_twin([o], tmap)
+    assert o["price_per_unit"] == 21.0
+    # a genuinely basis-ambiguous DERIVED row is still synced down
+    o2 = {"brand": "Beef", "product_name": "Gin", "supplier_name": "Acme",
+          "price_per_unit": 12.5, "price_per_case": 75.0, "units_per_case": 6.0,
+          "unit_volume_ml": 700}
+    rec.apply_basis_from_twin([o2], {rec._twin_key_fields("Acme", "Beef", 700): {75.0}})
+    assert o2["price_per_case"] is None
+
+def test_basis_clause_applies_without_adjacency():
+    # an explicitly-applicable basis (column heading / note) counts even when not
+    # next to the amount; a pack spec does not.
+    assert rec._basis_stated_near_price("Reed Tonic 56 cases 6.24 EXW NL The figure is EUR per case: EUR 0.52 per bottle x 12")
+    assert rec._basis_stated_near_price("Bracken Pils 4 wrapped six-packs per case 28 cases EUR 2.70 per six-pack EXW NL")
+    assert not rec._basis_stated_near_price("Cairn Gin 6 bottles per case 17 cases GBP 66 EXW NL")
+
+def test_derived_case_price_is_not_a_phantom():
+    from core.reconcile import reconcile_source_vs_rows
+    src = ("Reference Product Bottles per case Available cases Net EUR per case Terms\n"
+           "D2 Bracken Pils 4 wrapped six-packs per case 28 cases EUR 2.70 per six-pack EXW NL")
+    rc = reconcile_source_vs_rows(src, [{"brand": "Bracken", "product_name": "Pils",
+        "currency": "EUR", "price_per_case": 10.8, "price_per_unit": 0.45,
+        "units_per_case": 24.0, "price_per_case_eur": 10.8}])
+    assert rc["phantom"] == []
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

@@ -295,10 +295,17 @@ def reconcile_source_vs_rows(source_text: str,
             if all(t in low for t in toks):
                 for _t in re.findall(r"(?<![\w.])\d[\d.,]*", ln):
                     try:
-                        if round(float(_t.replace(",", "")), 2) in wants:
-                            return True
+                        n = round(float(_t.replace(",", "")), 2)
                     except ValueError:
-                        pass
+                        continue
+                    if n in wants:
+                        return True
+                    # A case price DERIVED from a stated per-pack price is supported,
+                    # not invented (Samuel 2026-11-26: D02 "EUR 2.70 per six-pack" ×4
+                    # = EUR 10.80/case is a clearly specified wrapped SKU).
+                    if any(abs(w - n * k) < 0.01 for w in wants
+                           for k in (2, 3, 4, 6, 8, 12, 24)):
+                        return True
         return False
 
     phantom, phantom_idx = [], []

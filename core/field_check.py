@@ -220,7 +220,10 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
             ("assumed", "a basis/value was assumed, not stated in the source"),
             ("price tbc", "the source leaves a price to be confirmed"),
             ("price to be confirmed", "the source leaves a price to be confirmed"),
-            ("also available", "the source offers this lot under an alternative delivery term — confirm which applies"),
+            # NB: a stated dual-delivery option ("Also available (same stock,
+            # counted once): DAP …") is NOT a review ambiguity — both terms are
+            # explicitly offered; it stays visible as a note but does not flag the
+            # row (Samuel 2026-11-26: "both are offered, no need to confirm which").
             ("conditional", "the source makes this offer conditional"),
             ("subject to confirmation", "the source makes this subject to confirmation"),
             ("price basis not stated",
