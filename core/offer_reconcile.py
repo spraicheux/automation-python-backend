@@ -972,6 +972,29 @@ def _unique_source_line(o: Dict[str, Any], lines: List[str]) -> Optional[str]:
     return hits[0] if len(hits) == 1 else None
 
 
+def _row_line_by_amount(o: Dict[str, Any], lines: List[str]) -> Optional[str]:
+    """Like _unique_source_line but, when two lots share the name (Grey Inlet
+    Eider Rock C-83 open vs C-84 closed), disambiguate by the row's own price /
+    quantity number so each lot resolves to its OWN line. Returns None if still
+    ambiguous — the caller then does nothing, never acts on the wrong lot."""
+    toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+    if not toks:
+        return None
+    cand = [l for l in lines if all(t in l.lower() for t in toks)]
+    if len(cand) == 1:
+        return cand[0]
+    nums = []
+    for fld in ("price_per_case", "price_per_unit", "quantity_case", "quantity_bottles"):
+        v = _f(o.get(fld))
+        if v:
+            nums.append(str(int(v)) if float(v) == int(v) else f"{v:g}")
+    # Word/decimal boundaries so a quantity/price number is not matched inside a
+    # customs token ("T2") or another number ("27", "2.70", "43%").
+    matched = [l for l in cand
+               if any(re.search(rf"(?<![\w.]){re.escape(n)}(?![\w.])", l) for n in nums)]
+    return matched[0] if len(matched) == 1 else None
+
+
 # ── Superseded / withdrawn price (Samuel 2026-11-25) ─────────────────────────
 # Estuary Birch "Superseded: current price EUR 60 per case; 54 was the previous
 # quote" was stored as 54. When the source states the CURRENT price and marks the
@@ -1034,7 +1057,12 @@ _NO_STOCK_RE = re.compile(
     r"reserved\s+in\s+full|fully\s+reserved|reserved\b[^.]*\bno\s+stock"
     r"|no\s+stock\s+(?:available|left|remaining)(?:\s+for\s+new\s+orders)?"
     r"|nothing\s+(?:left|available)\s+to\s+(?:offer|sell)"
-    r"|not\s+available\s+for\s+new\s+orders|sold\s+out|all\s+sold\b",
+    r"|not\s+available\s+for\s+new\s+orders|sold\s+out|all\s+sold\b"
+    # "Prior parcel closed, no balance; retained for accounts" — a closed parcel
+    # with no sellable balance (Samuel 2026-11-25: Grey Inlet C-84 Eider Rock,
+    # stored green at a USD 2/case accounts placeholder).
+    r"|parcel\s+closed|closed\b[^.]*\bno\s+balance|no\s+balance\b"
+    r"|retained\s+for\s+accounts|for\s+accounts\s+only",
     re.IGNORECASE)
 
 
@@ -1050,7 +1078,7 @@ def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> i
     for o in offers:
         if o.get("_no_stock_flagged"):
             continue
-        ln = _unique_source_line(o, lines)
+        ln = _row_line_by_amount(o, lines)
         if not ln or not _NO_STOCK_RE.search(ln):
             continue
         flags = list(o.get("error_flags") or [])
@@ -1292,7 +1320,12 @@ def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str
 
 _SAME_STOCK_RE = re.compile(
     r"same\s+stock\s+(?:either\s+way|both\s+ways|regardless)"
-    r"|same\s+stock\b|same\s+(?:physical\s+)?lot\s+either|one\s+(?:and\s+the\s+same|single)\s+lot",
+    r"|same\s+stock\b|same\s+(?:physical\s+)?lot\s+either|one\s+(?:and\s+the\s+same|single)\s+lot"
+    # "Same MK884 allocation … Alternative for whole parcel only" — one parcel
+    # quoted a second way (Samuel 2026-11-25: Grey Inlet C-81/C-81B Morrow Key Rye).
+    r"|same\s+[A-Z0-9-]{2,}\s+(?:allocation|parcel|lot)"
+    r"|alternative\s+for\s+(?:the\s+)?whole\s+parcel"
+    r"|alternative\s+for\s+(?:the\s+)?same\s+(?:parcel|stock|lot)",
     re.IGNORECASE)
 
 
@@ -1314,12 +1347,17 @@ def merge_same_stock_restatement(offers: List[Dict[str, Any]], source_text: str)
     for g in groups.values():
         if len(g) < 2:
             continue
-        ln = _source_line_for(g[0], lines)
-        if not ln or not _SAME_STOCK_RE.search(ln):
+        # The "same stock / alternative for the whole parcel" phrase can sit on
+        # EITHER row of the pair (Grey Inlet C-81B carries it, not C-81), so scan
+        # every source line that names this product, not just the first row's line.
+        toks = [t for t in re.findall(r"[a-z0-9]+", _ident(g[0]).lower()) if len(t) > 2]
+        glines = [l for l in lines if toks and all(t in l.lower() for t in toks)]
+        if not any(_SAME_STOCK_RE.search(l) for l in glines):
             continue
-        # Same physical stock → the quantity must be the one shared figure.
+        # Same physical stock → at most one distinct quantity across the pair (an
+        # alternative-terms row often carries no quantity of its own).
         qtys = {_primary_qty(o) for o in g if _primary_qty(o) is not None}
-        if len(qtys) != 1:
+        if len(qtys) > 1:
             continue
         keep = sorted(g, key=lambda o: (
             bool(_f(o.get("price_per_case"))),

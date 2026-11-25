@@ -103,6 +103,12 @@ _STRONG_BUY = re.compile(r"""(?ix)
         we \s+ (?: do \s+ not | don't | dont ) \s+ (?: have | stock | carry )
             \s+ (?: this | the | that | it | any | such ) |
         we \s+ (?: do \s+ not | don't | dont ) \s+ stock \s+ (?: this | it | that ) |
+        # "Buying for a customer. Target only; please offer." — a line sourcing for
+        # a customer at a target price is a buy request, not a sell offer (Samuel
+        # 2026-11-25: Grey Inlet 00704 Gannet, stored as a green sellable row).
+        buying \s+ for \s+ (?: a \s+ )? (?: customer | client | buyer | end \s+ user ) |
+        target \s+ only |
+        please \s+ (?: offer | quote | advise \s+ (?: your | best ) ) |
         can \s+ anyone \s+ (?: supply | source | offer | help )   |
         can \s+ (?: you | we ) \s+ source                         |
         could \s+ you \s+ source                                  |

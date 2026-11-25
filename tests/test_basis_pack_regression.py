@@ -414,6 +414,41 @@ def test_amount_pass_skips_duplicate_named_lots():
     assert [o["price_per_case"] for o in offs] == [9.0, 10.0]
 
 
+# ── recon51: Grey Inlet GI482 reconciliation findings (new wording) ─────────────
+def test_same_parcel_alternative_counted_once():
+    # one parcel quoted a second way ("same LOT allocation … alternative for the
+    # whole parcel") must merge to one row, not double-count the stock.
+    src = ("H1 Oak Spire Rye 6x700, lot OS12: 20 cases, USD 20 per bottle EXW NL.\n"
+           "H1B Oak Spire Rye 6x700, same OS12 allocation, EUR 130 per case, "
+           "alternative for the whole parcel only, delivered FR.")
+    offs = [{"brand": "Oak Spire", "product_name": "Rye", "price_per_case": 120.0,
+             "price_per_unit": 20.0, "currency": "USD", "quantity_case": 20.0,
+             "incoterm": "EXW", "location": "NL", "uid": "h1"},
+            {"brand": "Oak Spire", "product_name": "Rye", "price_per_case": 130.0,
+             "currency": "EUR", "quantity_case": None, "location": "FR", "uid": "h1b"}]
+    dropped = rec.merge_same_stock_restatement(offs, src)
+    assert len(dropped) == 1 and len(offs) == 1
+
+def test_buying_for_a_customer_is_a_request():
+    from core.inquiry import is_strong_buy_line
+    assert is_strong_buy_line("Z1 Oak Spire Rye, 100 cases 6.24 EXW NL. Buying for a customer. Target only; please offer.")
+    assert not is_strong_buy_line("Z2 Oak Spire Rye, 48 cases 10.56 EXW NL. On the floor.")
+
+def test_closed_parcel_no_balance_flagged_dup_safe():
+    # two same-named lots: the CLOSED one ("no balance") is flagged; the OPEN one
+    # (distinguished only by its price/qty) is left alone.
+    src = ("V7 Pine Rock Dry Gin 6x700, 27 cases USD 72 per case EXW NL, T2 applies.\n"
+           "V8 Pine Rock Dry Gin 6x700, 13 cases USD 2 per case EXW NL. "
+           "Prior parcel closed, no balance; retained for accounts.")
+    closed = {"brand": "Pine Rock", "product_name": "Dry Gin", "price_per_case": 2.0,
+              "currency": "USD", "quantity_case": 13.0, "needs_manual_review": False}
+    openp = {"brand": "Pine Rock", "product_name": "Dry Gin", "price_per_case": 72.0,
+             "currency": "USD", "quantity_case": 27.0, "needs_manual_review": False}
+    rec.flag_no_available_stock([closed, openp], src)
+    assert closed["needs_manual_review"] is True
+    assert openp["needs_manual_review"] is False
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
