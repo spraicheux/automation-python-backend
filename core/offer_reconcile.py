@@ -609,7 +609,7 @@ _PER_PIECE_RE = re.compile(r"(?:per|/)\s*(?:piece|pc|pcs|candle)s?\b", re.IGNORE
 # boxes available … EUR 38/piece") — the pieces-per-box and the available box
 # count are stated separately, not as "N inner boxes x M pieces".
 _PIECES_PER_BOX_RE = re.compile(
-    r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc|candles?)\s*(?:/|per)\s*inner\s*box", re.IGNORECASE)
+    r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc|candles?)\s*(?:/|per)\s*inner(?:\s*box)?", re.IGNORECASE)
 _BOXES_AVAIL_RE = re.compile(
     r"(\d[\d,]*)\s*inner\s*box(?:es)?\s*(?:available|avail|in\s*stock|offered)", re.IGNORECASE)
 _ANY_BOXES_RE = re.compile(r"(\d[\d,]*)\s*inner\s*box(?:es)?\b", re.IGNORECASE)
@@ -627,20 +627,37 @@ def _boxes_available(ln: str) -> Optional[int]:
     return None
 
 
+_INNERBOX_OF_RE = re.compile(
+    r"(?<![\d.])(\d[\d,]*)\s+inner\s*box(?:es)?\s+of\s+(\d[\d,]*)", re.IGNORECASE)  # "3 inner boxes of 8"
+_BOX_SIZE_OF_RE = re.compile(
+    r"inner\s*box(?:es)?\s*of\s*(\d[\d,]*)", re.IGNORECASE)              # "inner boxes of 8 candles"
+_INNERS_COUNT_RE = re.compile(r"(\d[\d,]*)\s*inners?\b", re.IGNORECASE)  # "3 inners"
+
+
 def _innerbox_counts(ln: str):
-    """(pieces_per_box, total_pieces) from either inner-box phrasing:
-    'N inner boxes x M pieces [= T pieces]' (Montblanc) or 'M pieces/inner box …
-    N inner boxes available' (Nishane). (None, None) when it isn't one."""
+    """(pieces_per_box, total_pieces) from any inner-box phrasing:
+    'N inner boxes x M pieces [= T pieces]' (Montblanc); 'M pieces/inner box …
+    N inner boxes available' (Nishane); 'N inner boxes of M' or 'inner boxes of M
+    … N inners' (Samuel 2026-11-25: Estuary/NF Linen). (None, None) otherwise."""
+    boxes = per = None
     m = _INNERBOX_RE.search(ln)
-    if m:
+    pm = _PIECES_PER_BOX_RE.search(ln)
+    bs = _BOX_SIZE_OF_RE.search(ln)
+    if m:                                 # "N inner boxes x M pieces"
         boxes = _int(m.group(1)); per = _int(m.group(2))
+    elif pm:                              # "M pieces/candles per inner [box]"
+        per = _int(pm.group(1))
+    elif bs:                              # "inner boxes of M [candles]"
+        per = _int(bs.group(1))
     else:
-        pm = _PIECES_PER_BOX_RE.search(ln)
-        if not pm:
-            return None, None
-        per = _int(pm.group(1)); boxes = _boxes_available(ln)
+        mo = _INNERBOX_OF_RE.search(ln)   # "N inner boxes of M" (last resort)
+        if mo:
+            boxes = _int(mo.group(1)); per = _int(mo.group(2))
     if not per:
         return None, None
+    if boxes is None:                     # count from "N inners" / "N inner boxes available"
+        ic = _INNERS_COUNT_RE.search(ln)
+        boxes = _int(ic.group(1)) if ic else _boxes_available(ln)
     eq = _INNERBOX_EQ_RE.search(ln)
     total = _int(eq.group(1)) if eq else (boxes * per if boxes else None)
     return per, total
@@ -715,12 +732,34 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
             o["moq_cases"] = float(_int(mm.group(1)))
             o["moq_unit"] = "inner boxes"
         # per-piece pricing: drop any fabricated per-case price, and the now-stale
-        # "case price = unit × pack" info flag that would otherwise mislead.
-        if _PER_PIECE_RE.search(ln):
+        # "case price = unit × pack" info flag that would otherwise mislead. "each"
+        # and "apiece" are per-piece too (Samuel 2026-11-25: W06 "GBP 7.10 each").
+        if _PER_PIECE_RE.search(ln) or re.search(r"\b(?:each|apiece)\b", ln, re.IGNORECASE):
             o["price_per_case"] = None
             o["price_per_case_eur"] = None
             o["error_flags"] = [f for f in (o.get("error_flags") or [])
                                 if "price_per_case calculated" not in str(f).lower()]
+            # Recover the EXPLICIT per-piece amount the source states ("GBP 7.10
+            # each", "GBP 7.40 per candle") — the extractor sometimes stored a
+            # wrong/bled per-unit price (Samuel 2026-11-25: W06 Linen kept GBP 0.50
+            # instead of 7.10; D07 Linen 7.40). Take the amount adjacent to the
+            # per-piece word, overriding the stored value.
+            mp = re.search(
+                r"(USD|EUR|GBP|CHF|HKD|SGD|\$|€|£)\s*([\d][\d.,]*)\s*"
+                r"(?:each|per\s+(?:candle|piece|pc|bottle|unit))"
+                r"|([\d][\d.,]*)\s*(?:each|per\s+(?:candle|piece|pc))", ln, re.IGNORECASE)
+            if mp:
+                _amt = mp.group(2) or mp.group(3)
+                try:
+                    _val = round(float(str(_amt).replace(",", ".").replace(" ", "")), 4)
+                    if _val > 0:
+                        o["price_per_unit"] = _val
+                        o["price_per_unit_eur"] = None   # recomputed downstream
+                        _cw = mp.group(1)
+                        if _cw and not _clean(o.get("currency")):
+                            o["currency"] = _CUR_WORD.get(_cw.lower(), _cw.upper())
+                except ValueError:
+                    pass
         _mark(o)
         changed += 1
     return changed
@@ -834,6 +873,21 @@ def _quoted_from_source(ln: str, o: Dict[str, Any]) -> tuple:
     return (_f(o.get("price_per_case")) or _f(o.get("price_per_unit"))), _clean(o.get("currency"))
 
 
+def _basis_stated_near_price(ln: str) -> bool:
+    """True only when a price-basis word ('per case', '/btl', 'each') sits NEXT to
+    the price amount — not merely somewhere on the line. A pack spec earlier on the
+    line ('6 bottles per case') must NOT be read as the price basis for an un-based
+    amount later on it (Samuel 2026-11-25: Estuary D05 Cairn 'GBP 66' was taken as
+    per-case because 'per case' appeared in the pack column)."""
+    found = False
+    for m in _SRC_PRICE_RE.finditer(ln):
+        win = ln[max(0, m.start() - 6): m.end() + 22]
+        if _BASIS_STATED_RE.search(win):
+            found = True
+            break
+    return found
+
+
 def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:
     """Price basis ASSUMED from convention. When a text offer quotes a bare amount
     with NO per-unit/per-case word on the line ("at 121 Euro", "116 USD"), the
@@ -851,6 +905,8 @@ def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> i
     lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
     changed = 0
     for o in offers:
+        if o.get("_structured_row"):
+            continue                      # structured: basis is the column header, not the row text
         pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
         if not (pc or pu):
             continue                      # no price (or already cleared) to judge
@@ -866,8 +922,8 @@ def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> i
         ln = hits[0] if len(hits) == 1 else _source_line_for(o, lines)
         if not ln or not _AMOUNT_RE.search(ln):
             continue                      # can't see the amount on the line → don't touch
-        if _BASIS_STATED_RE.search(ln):
-            continue                      # basis IS stated → leave it green
+        if _basis_stated_near_price(ln):
+            continue                      # basis IS stated next to the price → green
         # Unique line → quote the amount the supplier WROTE (fixes a derived field,
         # e.g. Clase Azul 726 = 121×6). Non-unique → the row's own field is right.
         if len(hits) == 1:
@@ -1091,6 +1147,53 @@ def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> i
         o["_no_stock_flagged"] = True
         _mark(o)
         changed += 1
+    return changed
+
+
+# ── Lot total vs breakdown conflict (Samuel 2026-11-25): Estuary D12 Fern
+# "Declared total 102 cases … BBD lots: 44 + 60 = 104"; D08 Pale Ferry balance 96
+# vs manifest 60 + 40 = 100. A stated total that disagrees with its own breakdown
+# must not pass as a confirmed quantity. ──────────────────────────────────────────
+_BREAKDOWN_SCOPE_RE = re.compile(
+    r"(?:bbd\s+lots?|manifest|breakdown|lots?\s*:|split\s+as|comprising|made\s+up\s+of)(.*)",
+    re.IGNORECASE)
+_BREAKDOWN_QTY_RE = re.compile(r"(\d[\d,]*)\s*(?:cases?|cs|dated)\b", re.IGNORECASE)
+
+
+def flag_lot_total_conflict(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Flag a row whose stated total quantity disagrees with its own lot/manifest
+    breakdown — the quantity is not confirmed and must go to review."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        q = _f(o.get("quantity_case"))
+        if not q:
+            continue
+        ln = _row_line_by_amount(o, lines) or _unique_source_line(o, lines)
+        if not ln:
+            continue
+        ms = _BREAKDOWN_SCOPE_RE.search(ln)
+        if not ms:
+            continue
+        lots = []
+        for x in _BREAKDOWN_QTY_RE.findall(ms.group(1)):
+            try:
+                lots.append(int(x.replace(",", "")))
+            except ValueError:
+                pass
+        if len(lots) >= 2 and sum(lots) != int(q):
+            flags = list(o.get("error_flags") or [])
+            note = (f"declared total {int(q)} cases ≠ lot breakdown "
+                    f"{' + '.join(str(x) for x in lots)} = {sum(lots)} — "
+                    f"quantity conflict, confirm with supplier")
+            if note not in flags:
+                flags.append(note)
+            o["error_flags"] = flags
+            o["needs_manual_review"] = True
+            _mark(o)
+            changed += 1
     return changed
 
 
@@ -2125,7 +2228,8 @@ _WORDNUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
 _INNERBOX_OF_RE = re.compile(
     r"(\w+)\s+inner\s*(?:box(?:es)?|cartons?)\s+of\s+(\w+)", re.IGNORECASE)
 # "+ / plus / and one loose <piece>" (Fog Bell "and one loose piece").
-_LOOSE_PLUS_RE = re.compile(r"(?:plus|and|\+)\s+(\w+)\s+loose", re.IGNORECASE)
+_LOOSE_PLUS_RE = re.compile(
+    r"(?:plus|and|\+)\s+(\w+)\s+(?:loose|individual|single)", re.IGNORECASE)
 # "minimum one [sealed] inner" — tolerate an adjective before "inner".
 _MIN_INNER_RE = re.compile(r"minimum\s+(\w+)\s+(?:\w+\s+)?inner", re.IGNORECASE)
 

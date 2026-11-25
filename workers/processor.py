@@ -2979,6 +2979,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.honor_retail_unit_price(offers, src)         # per set/candle/piece, not a case
     changed += _rec.flag_unconfirmed_basis_unit(offers, src)     # explicit "basis/unit unconfirmed"
     changed += _rec.flag_no_available_stock(offers, src)         # reserved / sold out → excluded
+    changed += _rec.flag_lot_total_conflict(offers, src)         # declared total ≠ breakdown
     changed += _rec.flag_unstated_price_basis(offers, src)
     changed += _rec.flag_absent_price_basis(offers, src)
     changed += _rec.annotate_pack_format(offers, src)
@@ -3861,6 +3862,11 @@ async def process_offer(payload, job_id: str):
                     )
 
                     offer_dict = offer.model_dump(mode='json')
+                    # Carry the structured-row marker (dropped by model_dump) so the
+                    # absent-basis pass skips a row whose basis is the column header,
+                    # not the row text (Samuel 2026-11-25: hybrid Copper Fen EUR 78).
+                    if merged_data.get("_structured_row"):
+                        offer_dict["_structured_row"] = True
                     # Phase 3 M1: thread content-hash + source-row estimate
                     # so save_offer_to_db can persist them on the SourceFileDB.
                     offer_dict["_content_hash"] = getattr(payload, "content_hash", None)

@@ -884,18 +884,13 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             continue
         detected = _detect_header_row(ws)
         if not detected:
-            _prc = _sheet_product_row_count(ws)
-            if _prc >= 3:
-                # A product sheet we cannot read deterministically must NOT be
-                # dropped behind the sheets we can. Hand the whole workbook to the
-                # LLM fallback, which reads every sheet and runs the same review
-                # gate — nothing is lost, and the checker sees all source rows.
-                logger.warning(
-                    f"[xlsx_structured] sheet {ws.title!r}: unreadable header but "
-                    f"{_prc} priced rows — escalating the whole workbook to the "
-                    f"LLM fallback so the sheet is not silently dropped")
-                return None
-            logger.info(f"[xlsx_structured] sheet {ws.title!r}: no recognisable header — skipped")
+            # An unreadable PRODUCT sheet is NOT dropped silently here: the caller
+            # checks unreadable_product_sheet_names() and routes those sheets to the
+            # LLM fallback, then merges — so a recognised sheet keeps its clean
+            # deterministic extraction (Samuel 2026-11-25: Estuary N01 Copper Fen
+            # EUR 78 was LOST when the whole workbook was force-escalated).
+            logger.info(f"[xlsx_structured] sheet {ws.title!r}: no recognisable header — "
+                        f"left for the fallback (see unreadable_product_sheet_names)")
             continue
         header_row, colmap = detected
         recognised_sheets += 1
@@ -1763,6 +1758,58 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
 
     if recognised_sheets == 0 or not products:
         return None
+    # Tag every structured row: its price basis comes from the COLUMN HEADER
+    # ("Net EUR per case"), not the row text, so the text-based absent-basis pass
+    # must skip it (else it would flag a clean per-case price as unconfirmed).
+    for _p in products:
+        _p["_structured_row"] = True
     logger.info(f"[xlsx_structured] extracted {len(products)} product(s) from "
                 f"{recognised_sheets} structured sheet(s)")
     return products
+
+
+def unreadable_product_sheet_names(file_path: str) -> List[str]:
+    """Names of sheets that look like product tables (>=3 priced rows) but whose
+    header the structured reader cannot map — the caller routes these to the LLM
+    fallback and merges, so a recognised sheet keeps its clean extraction while an
+    unfamiliar sheet is still captured (Samuel 2026-11-25)."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=False)
+    except Exception:
+        return []
+    out = []
+    for ws in wb.worksheets:
+        if ws.max_row is None or ws.max_row < 2:
+            continue
+        if _detect_header_row(ws):
+            continue
+        if _sheet_product_row_count(ws) >= 3:
+            out.append(ws.title)
+    return out
+
+
+def write_sheets_subset(file_path: str, sheet_names: List[str]) -> Optional[str]:
+    """Write the named sheets to a new temp .xlsx (values only) and return its path,
+    so the fallback reader can process just the unreadable sheets."""
+    try:
+        import openpyxl, tempfile
+        src = openpyxl.load_workbook(file_path, data_only=True, read_only=False)
+        out = openpyxl.Workbook()
+        out.remove(out.active)
+        for name in sheet_names:
+            if name not in src.sheetnames:
+                continue
+            ws_src = src[name]
+            ws_new = out.create_sheet(title=name[:31])
+            for row in ws_src.iter_rows(values_only=True):
+                ws_new.append(list(row))
+        if not out.sheetnames:
+            return None
+        fd = tempfile.NamedTemporaryFile(prefix="unread_", suffix=".xlsx", delete=False)
+        fd.close()
+        out.save(fd.name)
+        return fd.name
+    except Exception as e:
+        logger.warning(f"[xlsx_structured] write_sheets_subset failed: {e}")
+        return None

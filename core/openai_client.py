@@ -2382,6 +2382,24 @@ async def extract_structured_image(base64_image: str, content_type: str) -> Dict
     return {"products": out, "source_text": _src, "source_row_estimate": len(rows)}
 
 
+def _flatten_workbook_text(file_path: str) -> str:
+    """Every sheet's rows joined to one text block — the source the reconcile /
+    review passes read, so EVERY row (structured or fallback) is validated against
+    the whole workbook, not just the sheet one reader saw (Samuel 2026-11-25)."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    except Exception:
+        return ""
+    lines = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) for c in row if c is not None and str(c).strip()]
+            if cells:
+                lines.append(" ".join(cells))
+    return "\n".join(lines)
+
+
 async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]:
     logger.info(f"[extract_from_file] ===== START =====")
     logger.info(f"[extract_from_file] file_path: {file_path!r}")
@@ -2459,15 +2477,58 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     for _p in _structured:
                         _p.pop('_structured_source', None)
                         try:
-                            _structured_clean.append(clean_product_data(_p))
+                            _c = clean_product_data(_p)
                         except Exception as _ce:
                             logger.warning(f"[extract_from_file] clean failed for a structured row: {_ce}")
-                            _structured_clean.append(_p)
-                    logger.info(f"[extract_from_file] ===== END EXCEL (structured) — returning {len(_structured_clean)} products =====")
+                            _c = _p
+                        _c['_structured_row'] = True   # basis is columnar — survive the clean
+                        _structured_clean.append(_c)
+                    # A workbook can mix a sheet we CAN read with one we cannot. Keep
+                    # the clean deterministic extraction for the recognised sheets and
+                    # route ONLY the unreadable product sheets to the LLM fallback, then
+                    # merge — so a recognised sheet is never degraded by the fallback
+                    # (Samuel 2026-11-25: N01 Copper Fen EUR 78 was lost when the whole
+                    # workbook was escalated), and an unfamiliar sheet is still captured.
+                    try:
+                        from core.xlsx_structured import (unreadable_product_sheet_names,
+                                                          write_sheets_subset)
+                        _unread = unreadable_product_sheet_names(file_path)
+                    except Exception as _ue:
+                        logger.warning(f"[extract_from_file] unreadable-sheet scan failed: {_ue}")
+                        _unread = []
+                    if not _unread:
+                        logger.info(f"[extract_from_file] ===== END EXCEL (structured) — {len(_structured_clean)} products =====")
+                        return {
+                            'products': _structured_clean,
+                            'total_products': len(_structured_clean),
+                            'source_type': 'excel_structured',
+                            'source_text': _flatten_workbook_text(file_path),
+                        }
+                    logger.warning(
+                        f"[extract_from_file] HYBRID — {len(_structured_clean)} structured row(s) "
+                        f"+ LLM fallback on unreadable sheet(s) {_unread}")
+                    _extra = []
+                    _tmp = write_sheets_subset(file_path, _unread)
+                    if _tmp:
+                        try:
+                            _sub = await extract_from_file(_tmp, content_type)
+                            if isinstance(_sub, dict):
+                                _extra = _sub.get('products') or []
+                        except Exception as _he:
+                            logger.warning(f"[extract_from_file] hybrid fallback failed: {_he}")
+                        finally:
+                            try:
+                                os.remove(_tmp)
+                            except Exception:
+                                pass
+                    _merged = _structured_clean + _extra
+                    logger.info(f"[extract_from_file] ===== END EXCEL (hybrid) — {len(_merged)} products "
+                                f"({len(_structured_clean)} structured + {len(_extra)} fallback) =====")
                     return {
-                        'products': _structured_clean,
-                        'total_products': len(_structured_clean),
-                        'source_type': 'excel_structured',
+                        'products': _merged,
+                        'total_products': len(_merged),
+                        'source_type': 'excel_hybrid',   # not 'excel_structured' → reconcile runs on the merged set
+                        'source_text': _flatten_workbook_text(file_path),
                     }
 
                 logger.info(f"[extract_from_file] Reading Excel with pandas...")

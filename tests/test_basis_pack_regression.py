@@ -449,6 +449,58 @@ def test_closed_parcel_no_balance_flagged_dup_safe():
     assert openp["needs_manual_review"] is False
 
 
+# ── recon52: Samuel 2026-11-25 second live-test round (new wording) ──────────────
+def test_basis_must_be_next_to_price_not_a_pack_spec():
+    # "GBP 70" with only a PACK 'per case' earlier on the line is NOT a per-case
+    # price — flag it (Estuary D05 Cairn 'GBP 66' was taken as per-case).
+    src = "Oakmoor Dry Gin 700 ml 40% 6 bottles per case 20 cases GBP 70 EXW NL ready next week"
+    o = {"brand": "Oakmoor", "product_name": "Dry Gin", "price_per_case": 70.0,
+         "price_per_unit": 11.67, "units_per_case": 6.0, "currency": "GBP",
+         "quantity_case": 20.0, "uid": "o"}
+    rec.flag_absent_price_basis([o], src)
+    assert o["price_per_case"] is None and o["needs_manual_review"] is True
+    # a real 'per case' next to the price stays green
+    ok = {"brand": "Birch", "product_name": "Ale", "price_per_case": 10.0,
+          "price_per_unit": 0.42, "units_per_case": 24.0, "currency": "EUR",
+          "quantity_case": 40.0, "uid": "ok"}
+    rec.flag_absent_price_basis([ok], "Birch Ale 24 x 330 ml 40 cases EUR 10.00 per case EXW NL")
+    assert ok["price_per_case"] == 10.0 and not ok.get("needs_manual_review")
+
+def test_structured_row_basis_is_not_flagged():
+    # a structured row's basis is its column header, not the row text — the
+    # absent-basis pass must leave it alone (hybrid Copper Fen EUR 78/case).
+    o = {"brand": "Copper", "product_name": "Fen Liqueur", "price_per_case": 78.0,
+         "price_per_unit": 13.0, "units_per_case": 6.0, "currency": "EUR",
+         "_structured_row": True, "uid": "s"}
+    rec.flag_absent_price_basis([o], "N01 Copper Fen Liqueur 700 ml 30% 6 44 78 EXW Rotterdam T2")
+    assert o["price_per_case"] == 78.0 and not o.get("needs_manual_review")
+
+def test_lot_total_vs_breakdown_conflict():
+    src = ("Harlow Pale Ale 24 cans per case Declared total 90 cases EUR 12 per case "
+           "EXW NL BBD lots: 40 cases 30 Jun 2027 + 55 cases 31 Jul 2027.")
+    o = {"brand": "Harlow", "product_name": "Pale Ale", "quantity_case": 90.0,
+         "price_per_case": 12.0, "currency": "EUR", "uid": "h"}
+    rec.flag_lot_total_conflict([o], src)
+    assert o["needs_manual_review"] is True
+    # a consistent total (40 + 50 = 90) is NOT flagged
+    ok = {"brand": "Ridge", "product_name": "Lager", "quantity_case": 90.0, "uid": "r"}
+    rec.flag_lot_total_conflict([ok], "Ridge Lager total 90 cases BBD lots: 40 cases + 50 cases")
+    assert not ok.get("needs_manual_review")
+
+def test_innerbox_qty_and_perpiece_price_recovered():
+    # "3 inner boxes of 8 + 5 individual candles. GBP 7.10 each" → 29 pieces @ 7.10,
+    # overriding a wrong stored per-unit price (W06 kept GBP 0.50).
+    src = "Marlow Candle 180g, 3 inner boxes of 8 + 5 individual candles. GBP 7.10 each, FCA NL."
+    o = {"brand": "Marlow", "product_name": "Candle", "price_per_unit": 0.5, "currency": "GBP", "uid": "m"}
+    rec.fix_inner_box_from_text([o], src)
+    assert o.get("quantity_bottles") == 29.0 and o.get("price_per_unit") == 7.1
+    # reversed phrasing "inner boxes of 8 … 3 inners + 2 single … 7.40 per candle" → 26 @ 7.40
+    src2 = "Harlow Candle 180 g Inner boxes of 8 candles 3 inners + 2 single candles GBP 7.40 per candle FCA NL"
+    o2 = {"brand": "Harlow", "product_name": "Candle", "price_per_unit": None, "currency": "GBP", "uid": "h2"}
+    rec.fix_inner_box_from_text([o2], src2)
+    assert o2.get("quantity_bottles") == 26.0 and o2.get("price_per_unit") == 7.4
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
