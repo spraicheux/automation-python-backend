@@ -326,6 +326,94 @@ def test_review_gate_is_reader_agnostic():
     assert 0 in rows_to_flag([nb], src_nb)
 
 
+# ── recon50: the 2026-11-25 live-test item-level rules (new wording each) ───────
+def test_superseded_current_price_wins():
+    # "the earlier 80 is withdrawn; current price EUR 92 per case" — stored the 80.
+    src = "L4 Harrow Dark Ale 6x500ml, 30 cases EXW NL. Current price EUR 92 per case; the earlier 80 is withdrawn."
+    o = {"brand": "Harrow", "product_name": "Dark Ale", "price_per_case": 80.0,
+         "price_per_unit": 13.33, "units_per_case": 6.0, "currency": "EUR",
+         "price_per_case_eur": 80.0, "price_per_unit_eur": 13.33}
+    rec.apply_superseded_price([o], src)
+    assert o["price_per_case"] == 92.0            # OLD: 80 (withdrawn) stayed
+
+def test_retail_unit_price_not_a_case():
+    # "EUR 18 per gift set … not a case price" — stored 3/case + EUR 54/case.
+    src = "G7 Larkhill Candle Trio, three candles per set. 20 sets, EUR 18 per gift set FCA NL. Not a case price."
+    o = {"brand": "Larkhill", "product_name": "Candle Trio", "price_per_unit": 18.0,
+         "price_per_case": 54.0, "units_per_case": 3.0, "currency": "EUR",
+         "error_flags": ["price ambiguous — assumed per case"]}
+    rec.honor_retail_unit_price([o], src)
+    assert o["price_per_case"] is None and o["units_per_case"] is None
+    assert o["quantity_unit"] == "sets"
+    assert not any("assumed per case" in str(f).lower() for f in o["error_flags"])
+
+def test_retail_piece_price_recovered_from_bare_decimal():
+    # price blanked by the extractor; a bare decimal among integer qty/weights is
+    # the per-piece amount ("… | 40 | 7.5 | …"), recovered only on a retail line.
+    src = "R2 | Dunmere Soap 120 g |  | 40 | 7.5 | FCA NL | Price is EUR per piece; stock is pieces."
+    o = {"brand": "Dunmere", "product_name": "Soap 120 g", "price_per_unit": None,
+         "price_per_case": None, "currency": "EUR"}
+    rec.honor_retail_unit_price([o], src)
+    assert o["price_per_unit"] == 7.5 and o["quantity_unit"] == "pieces"
+
+def test_no_available_stock_flagged():
+    # "all reserved, no stock available for new orders" → review + excluded.
+    src = "K9 Ferncross Lager 24x330, 15 cases EUR 11 per case EXW NL. All reserved, no stock available for new orders."
+    o = {"brand": "Ferncross", "product_name": "Lager", "price_per_case": 11.0,
+         "needs_manual_review": False}
+    rec.flag_no_available_stock([o], src)
+    assert o["needs_manual_review"] is True
+
+def test_supplier_read_from_supplier_line():
+    # supplier is the "Supplier:" line, not the title/"Not Found".
+    src = ("WESTMARCH CIRCULAR — offer dated 2 December 2026\n"
+           "Supplier: Westmarch Trading BV | Circular WM-12 | Subject to unsold\n"
+           "M1 Oakhill Gin 6x700, 10 cases EUR 60 per case EXW NL")
+    offs = [{"brand": "Oakhill", "product_name": "Gin", "supplier_name": "Not Found"},
+            {"brand": "Oakhill", "product_name": "Gin 2",
+             "supplier_name": "WESTMARCH CIRCULAR — offer dated 2 December 2026"}]
+    rec.fill_supplier_from_source(offs, src)
+    assert all(o["supplier_name"] == "Westmarch Trading BV" for o in offs)
+
+def test_unconfirmed_basis_and_unit_neutralised():
+    # source says the desk hasn't confirmed what the price covers and the warehouse
+    # hasn't identified what the balance counts → prices cleared, unit cleared, flag.
+    src = ("Q3 Thornbury Gin 700ml, 6 per case. Balance 210. Desk figure GBP 4.20. "
+           "The warehouse hasn't identified what the balance counts, and the desk "
+           "hasn't confirmed what the price covers.")
+    o = {"brand": "Thornbury", "product_name": "Gin", "price_per_unit": 4.2,
+         "price_per_case": 25.2, "price_per_unit_eur": 5.0, "price_per_case_eur": 30.0,
+         "currency": "GBP", "quantity_unit": "cases"}
+    rec.flag_unconfirmed_basis_unit([o], src)
+    assert o["price_per_case"] is None and o["price_per_unit"] is None
+    assert o["quantity_unit"] is None and o["needs_manual_review"] is True
+
+def test_customs_status_not_inherited_when_negated():
+    # a line that NAMES T2 only to forbid inheriting it must not keep T2.
+    src = "P5 Oakspan Bitter 12x500, 25 cases EUR 8 per case EXW NL. Customs pending; do not assume T2 from P1."
+    o = {"brand": "Oakspan", "product_name": "Bitter", "custom_status": "T2"}
+    rec.clear_unsourced_custom_status([o], src)
+    assert o["custom_status"] is None
+
+def test_buy_request_line_detected():
+    from core.inquiry import is_strong_buy_line
+    assert is_strong_buy_line("L9 BUY REQUEST: want Elm Ridge Rum, 40 cases around EUR 50/case. We do not have this stock.")
+    # a plain sell line stays an offer
+    assert not is_strong_buy_line("L8 Elm Ridge Rum 6x700, 40 cases EUR 50 per case EXW NL.")
+
+def test_amount_pass_skips_duplicate_named_lots():
+    # two same-named lots → the unique-token gate finds no single line, so an
+    # amount-changing pass must leave BOTH untouched (never cross-assign).
+    src = ("A1 Vale Pils 24x330, 30 cases EUR 9 per case EXW NL. Current price EUR 9.\n"
+           "A2 Vale Pils 24x330, 20 cases EUR 10 per case DAP FR. Current price EUR 10.")
+    offs = [{"brand": "Vale", "product_name": "Pils", "price_per_case": 9.0,
+             "units_per_case": 24.0, "currency": "EUR"},
+            {"brand": "Vale", "product_name": "Pils", "price_per_case": 10.0,
+             "units_per_case": 24.0, "currency": "EUR"}]
+    rec.apply_superseded_price(offs, src)
+    assert [o["price_per_case"] for o in offs] == [9.0, 10.0]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
