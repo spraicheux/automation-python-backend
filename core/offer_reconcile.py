@@ -760,6 +760,7 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
                             o["currency"] = _CUR_WORD.get(_cw.lower(), _cw.upper())
                 except ValueError:
                     pass
+            o["_unit_priced"] = True       # per-piece basis — absent-basis pass must not clear it
         _mark(o)
         changed += 1
     return changed
@@ -809,9 +810,10 @@ _BASIS_UNSTATED_RE = re.compile(
 # case", "/btl", "the case", "each". Shared by flag_absent_price_basis (below)
 # and the self-check (field_check.check_source_fidelity) so the two never drift.
 _BASIS_UNIT = (r"(?:cases?|cs|bottles?|btls?|bot|units?|pieces?|pcs?|pc|cans?|"
-               r"kegs?|sets?|litres?|liters?|ltr|l)")
+               r"kegs?|sets?|candles?|litres?|liters?|ltr|l)")
 _BASIS_STATED_RE = re.compile(
-    r"\bper\s+" + _BASIS_UNIT + r"\b"     # per case / per bottle / per can
+    # an optional modifier word allows "per gift set" / "per loose bottle"
+    r"\bper\s+(?:\w+\s+)?" + _BASIS_UNIT + r"\b"   # per case / per bottle / per gift set
     r"|/\s*" + _BASIS_UNIT + r"\b"        # /case  /cs  /btl  /can  /keg
     r"|\bthe\s+" + _BASIS_UNIT + r"\b"    # "the case" (Northbank "EUR 9,36 the case")
     r"|\ba\s+" + _BASIS_UNIT + r"\b"      # "a case" (Southglass "EUR 9.12 a case")
@@ -905,8 +907,8 @@ def flag_absent_price_basis(offers: List[Dict[str, Any]], source_text: str) -> i
     lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
     changed = 0
     for o in offers:
-        if o.get("_structured_row"):
-            continue                      # structured: basis is the column header, not the row text
+        if o.get("_structured_row") or o.get("_unit_priced"):
+            continue                      # structured (columnar basis) or already priced per unit
         pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
         if not (pc or pu):
             continue                      # no price (or already cleared) to judge
@@ -1269,6 +1271,7 @@ def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> i
         if note not in flags:
             flags.append(note)
         o["error_flags"] = flags
+        o["_unit_priced"] = True          # basis is per unit — absent-basis pass must not clear it
         _mark(o)
         changed += 1
     return changed

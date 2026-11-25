@@ -156,9 +156,21 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
     # if unavailable the source tests (D/E/F) simply don't run.
     try:
         from core.offer_reconcile import (
-            _BASIS_STATED_RE, _AMOUNT_RE, _LEAD_QTY_RE, _CAPACITY_RE)
+            _BASIS_STATED_RE, _AMOUNT_RE, _LEAD_QTY_RE, _CAPACITY_RE,
+            _basis_stated_near_price)
     except Exception:
         _BASIS_STATED_RE = _AMOUNT_RE = _LEAD_QTY_RE = _CAPACITY_RE = None
+        _basis_stated_near_price = None
+
+    # A workbook with a per-case / per-bottle PRICE COLUMN states the basis in the
+    # column header, not in each row's text — so the absent-basis test (D) must not
+    # fire against those rows (Samuel 2026-11-25: Estuary N01 Copper Fen EUR 78/case
+    # was flagged because "78" sits in a "Net EUR per case" column, not next to a
+    # "per case" word on the row).
+    _columnar_basis = bool(re.search(
+        r"(?:net\s+)?(?:eur|usd|gbp|chf|hkd|sgd|price|amount|desk\s+quote|quotation)"
+        r"\s*(?:/|per)\s*(?:case|bottle|btl|unit|piece|pc|candle|set|keg)",
+        src, re.IGNORECASE)) if have_src else False
 
     for r in rows:
         name = _name(r)
@@ -230,11 +242,15 @@ def check_source_fidelity(rows: List[Dict[str, Any]],
         # the condition against the source directly, so it catches an unfamiliar
         # supplier's wording even when the reconcile fixer's phrasing list misses
         # it. Skips rows already kept "as quoted" (the fixer handled those).
-        if (_BASIS_STATED_RE is not None and wins
+        if (_BASIS_STATED_RE is not None and wins and not _columnar_basis
                 and (_pos(r.get("price_per_unit")) or _pos(r.get("price_per_case")))
                 and "as quoted" not in cc_low):
+            # basis must sit NEXT TO the price, not anywhere in the window — a pack
+            # spec ("6 bottles per case") is not the basis for a bare "GBP 66".
+            _near = (_basis_stated_near_price if _basis_stated_near_price is not None
+                     else (lambda w: bool(_BASIS_STATED_RE.search(w))))
             if (any(_AMOUNT_RE.search(w) for w in wins)
-                    and not any(_BASIS_STATED_RE.search(w) for w in wins)):
+                    and not any(_near(w) for w in wins)):
                 issues.append(
                     f"{name}: the source states an amount but not the price basis "
                     f"(per bottle or per case) — the stored basis was assumed")

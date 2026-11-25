@@ -501,6 +501,36 @@ def test_innerbox_qty_and_perpiece_price_recovered():
     assert o2.get("quantity_bottles") == 26.0 and o2.get("price_per_unit") == 7.4
 
 
+# ── recon53: columnar basis + retail/inner-box price survives absent-basis ───────
+def test_columnar_price_header_is_not_basis_unconfirmed():
+    from core.field_check import check_source_fidelity
+    # a "Net EUR per case" column states the basis — a clean row must stay green.
+    src = ("Reference Product Bottles per case Available cases Net EUR per case Terms\n"
+           "N1 Harbour Stout 700 ml 6 44 78 EXW NL T2")
+    issues = check_source_fidelity(
+        [{"brand": "Harbour", "product_name": "Stout", "price_per_case": 78.0,
+          "price_per_unit": 13.0, "currency": "EUR", "units_per_case": 6.0}], src)
+    assert not any("price basis" in str(i).lower() for i in issues)
+
+def test_retail_unit_price_survives_absent_basis_pass():
+    # honor_retail sets a per-set price; the absent-basis pass must NOT clear it
+    # ("per gift set" is a real basis / the row is marked unit-priced).
+    src = "Larch Trio candle set, EUR 18 per gift set FCA NL. Not a case price."
+    o = {"brand": "Larch", "product_name": "Trio", "price_per_unit": 18.0,
+         "price_per_case": 54.0, "units_per_case": 3.0, "currency": "EUR", "uid": "l"}
+    rec.honor_retail_unit_price([o], src)
+    rec.flag_absent_price_basis([o], src)
+    assert o["price_per_unit"] == 18.0 and o["price_per_case"] is None
+
+def test_innerbox_price_survives_absent_basis_pass():
+    src = "Harbour Candle Inner boxes of 8 candles 3 inners + 2 single candles GBP 7.40 per candle FCA NL"
+    o = {"brand": "Harbour", "product_name": "Candle", "price_per_unit": None,
+         "currency": "GBP", "uid": "h"}
+    rec.fix_inner_box_from_text([o], src)
+    rec.flag_absent_price_basis([o], src)
+    assert o.get("quantity_bottles") == 26.0 and o.get("price_per_unit") == 7.4
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
