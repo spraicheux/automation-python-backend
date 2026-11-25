@@ -2472,16 +2472,40 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
 
                 logger.info(f"[extract_from_file] Reading Excel with pandas...")
 
+                _engine = ('xlrd' if file_path.lower().endswith('.xls')
+                           else 'openpyxl')
                 try:
-                    if file_path.lower().endswith('.xls'):
-                        logger.info(f"[extract_from_file] Using engine: xlrd")
-                        df = pd.read_excel(file_path, engine='xlrd')
-                    elif file_path.lower().endswith('.xlsm'):
-                        logger.info(f"[extract_from_file] Using engine: openpyxl (xlsm)")
-                        df = pd.read_excel(file_path, engine='openpyxl')
+                    # Read EVERY sheet, not just the first — a multi-sheet workbook
+                    # must never lose a sheet silently (Samuel 2026-11-25: Estuary
+                    # 'Desk parcels', 24 rows, was dropped because pd.read_excel
+                    # defaults to sheet 0). For a multi-sheet book we stack all
+                    # sheets with positional columns (header=None) so sheets with
+                    # different layouts concatenate; the LLM extraction reads each
+                    # row's text regardless of column names.
+                    _xl = pd.ExcelFile(file_path, engine=_engine)
+                    _snames = list(_xl.sheet_names)
+                    if len(_snames) > 1:
+                        _frames = []
+                        for _sn in _snames:
+                            try:
+                                _sdf = pd.read_excel(_xl, sheet_name=_sn, header=None)
+                            except Exception as _she:
+                                logger.warning(f"[extract_from_file] sheet {_sn!r} read failed: {_she}")
+                                continue
+                            if _sdf is None or _sdf.empty:
+                                continue
+                            _frames.append(_sdf)
+                        if _frames:
+                            df = pd.concat(_frames, ignore_index=True, sort=False)
+                            df.columns = [str(c) for c in df.columns]
+                            logger.info(
+                                f"[extract_from_file] multi-sheet workbook — read "
+                                f"{len(_snames)} sheet(s) {_snames}, {len(df)} total rows")
+                        else:
+                            df = pd.read_excel(file_path, engine=_engine)
                     else:
-                        logger.info(f"[extract_from_file] Using engine: openpyxl (xlsx)")
-                        df = pd.read_excel(file_path, engine='openpyxl')
+                        logger.info(f"[extract_from_file] Using engine: {_engine}")
+                        df = pd.read_excel(file_path, engine=_engine)
                 except Exception as read_error:
                     logger.warning(f"[extract_from_file] Primary read failed: {read_error}")
                     logger.info(f"[extract_from_file] Trying fallback pd.read_excel() without engine...")

@@ -832,10 +832,39 @@ def scan_workbook_offer_date(file_path: str) -> Optional[str]:
             pass
 
 
+_SHEET_PRICE_RE = re.compile(
+    r"(?:EUR|USD|GBP|CHF|HKD|SGD|CAD|AUD|\$|€|£)\s*\d"
+    r"|\d[\d.,]*\s*(?:per\s+(?:case|bottle|btl|can|piece|pc|set|pack|gift\s*set)"
+    r"|/\s*(?:case|btl|bottle|cs))",
+    re.IGNORECASE)
+
+
+def _sheet_product_row_count(ws, limit: int = 80) -> int:
+    """Count data rows that carry a price token. Used to tell a dropped PRODUCT
+    sheet (which must be rescued, not skipped) from a notes/legend/empty tab
+    (safe to skip): the former has several priced rows, the latter has none
+    (Samuel 2026-11-25: the Estuary 'Desk parcels' sheet, 24 priced rows with an
+    unfamiliar header, was silently dropped and the checker never noticed)."""
+    n = 0
+    try:
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i >= limit:
+                break
+            line = " ".join(str(c) for c in row if c is not None)
+            if _SHEET_PRICE_RE.search(line):
+                n += 1
+    except Exception:
+        return 0
+    return n
+
+
 def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]]:
     """Deterministically extract products from every well-structured sheet.
     Returns a list of raw product dicts (pre-clean), or None when no sheet has a
-    recognisable header (caller then uses the LLM path)."""
+    recognisable header, OR when a sheet whose header we cannot read still holds
+    several priced rows — in that case we escalate the WHOLE workbook to the LLM
+    fallback (which reads every sheet) rather than return a partial result that
+    silently loses the unreadable sheet (Samuel 2026-11-25)."""
     try:
         import openpyxl
     except Exception as e:  # pragma: no cover
@@ -855,6 +884,17 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
             continue
         detected = _detect_header_row(ws)
         if not detected:
+            _prc = _sheet_product_row_count(ws)
+            if _prc >= 3:
+                # A product sheet we cannot read deterministically must NOT be
+                # dropped behind the sheets we can. Hand the whole workbook to the
+                # LLM fallback, which reads every sheet and runs the same review
+                # gate — nothing is lost, and the checker sees all source rows.
+                logger.warning(
+                    f"[xlsx_structured] sheet {ws.title!r}: unreadable header but "
+                    f"{_prc} priced rows — escalating the whole workbook to the "
+                    f"LLM fallback so the sheet is not silently dropped")
+                return None
             logger.info(f"[xlsx_structured] sheet {ws.title!r}: no recognisable header — skipped")
             continue
         header_row, colmap = detected

@@ -261,8 +261,16 @@ def reconcile_source_vs_rows(source_text: str,
                 break
 
     missed = [s["line"] for s in (priced + noprice) if not s["matched"]]
-    phantom = [_row_label(rs["row"]) for rs in sigs
-               if not rs["matched"] and rs["prices"]]
+    # Keep phantom labels AND their row indices aligned — the enforcement gate
+    # needs the index to set needs_manual_review on the invented-value row, not
+    # just name it in the banner (Samuel 2026-11-25: Cairn/Linen were correctly
+    # listed phantom yet stayed green and quotable). sigs is one-per-row in input
+    # order, so enumerate(sigs) gives the stored-row index directly.
+    phantom, phantom_idx = [], []
+    for _i, rs in enumerate(sigs):
+        if not rs["matched"] and rs["prices"]:
+            phantom.append(_row_label(rs["row"]))
+            phantom_idx.append(_i)
     total_src = len(priced) + len(noprice)
 
     # ── Format completeness (price-INDEPENDENT) ──────────────────────────────
@@ -303,6 +311,7 @@ def reconcile_source_vs_rows(source_text: str,
     return {
         "missed": missed,
         "phantom": phantom,
+        "phantom_idx": phantom_idx,
         "source_lines": total_src,
         "matched": total_src - len(missed),
     }

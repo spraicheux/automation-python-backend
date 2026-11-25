@@ -2780,26 +2780,31 @@ def _apply_offer_defaults(data: dict) -> dict:
 
 
 def _enforce_review_gate(orm_rows: list, stored: list, source_text: str,
-                         job_id: str) -> int:
+                         job_id: str, phantom_idx: list = None) -> int:
     """Reader-agnostic enforcement (Samuel 2026-11-25): apply the stored-row
     validation to EVERY row — whichever reader produced it — so a value the
     source cannot confirm is flagged for review and kept out of Best Prices, the
     12-month view and alerts, instead of only showing in the banner. `orm_rows`
     and `stored` are the SAME rows in the same order (orm_rows are the live ORM
-    objects, stored their plain-dict view). Returns the number of rows flagged."""
+    objects, stored their plain-dict view). Returns the number of rows flagged.
+
+    phantom_idx (from reconcile_source_vs_rows) are rows whose stored price is NOT
+    found anywhere in the source — an invented commercial value. The reconciler
+    already named them in the banner; here they are also set needs_manual_review
+    so the invented value is identified AND kept out of comparisons, closing the
+    "yellow badge not sufficient" gap Samuel raised (Cairn GBP 21.6, Linen 0.5)."""
     try:
         from core.field_check import rows_to_flag
     except Exception as e:
         logger.warning(f"[enforce] rows_to_flag unavailable for {job_id}: {e}")
         return 0
     import json as _json
-    flagged = rows_to_flag(stored, source_text or "")
-    n = 0
-    for idx, info in flagged.items():
-        if idx >= len(orm_rows):
-            continue
+    handled = set()
+
+    def _apply(idx: int, reason: str, neutralize: bool = False) -> bool:
+        if idx >= len(orm_rows) or idx in handled:
+            return False
         o = orm_rows[idx]
-        reason = info.get("reason") or "source could not confirm a value"
         # Flag string + boolean: the pill, benchmark exclusion and the flag
         # classifier all key on these, so set both (defence in depth).
         try:
@@ -2816,7 +2821,7 @@ def _enforce_review_gate(orm_rows: list, stored: list, source_text: str,
         # as EUR (Arden class: "$24, currency to confirm, no EUR price"). Also
         # drop any stale "currency normalized to … from the source line" note an
         # upstream pass left, so the row's flags match its final state.
-        if info.get("neutralize_currency"):
+        if neutralize:
             o.price_per_unit_eur = None
             o.price_per_case_eur = None
             o.currency = None
@@ -2828,7 +2833,32 @@ def _enforce_review_gate(orm_rows: list, stored: list, source_text: str,
         o.error_flags = _json.dumps(flags)
         if not o.needs_manual_review:
             o.needs_manual_review = True
-        n += 1
+        handled.add(idx)
+        return True
+
+    n = 0
+    flagged = rows_to_flag(stored, source_text or "")
+    for idx, info in flagged.items():
+        if _apply(idx, info.get("reason") or "source could not confirm a value",
+                  bool(info.get("neutralize_currency"))):
+            n += 1
+    # Phantom rows: the stored price is not in the source for this product. Name
+    # the offending amount so the warning IDENTIFIES the invented value (Samuel:
+    # "a yellow badge is not sufficient if the warning does not identify them").
+    for idx in (phantom_idx or []):
+        if idx >= len(stored) or idx in handled:
+            continue
+        r = stored[idx]
+        _nm = (str(r.get("brand") or "").strip() + " "
+               + str(r.get("product_name") or "").strip()).strip() or "this row"
+        _cur = r.get("currency") or ""
+        _amt = r.get("price_per_case") or r.get("price_per_unit")
+        _amt_s = f" ({_cur} {_amt})".rstrip() if _amt else ""
+        reason = (f"{_nm}: the stored price{_amt_s} is not stated in the source "
+                  f"for this product — possible invented value; kept out of Best "
+                  f"Prices until confirmed")
+        if _apply(idx, reason):
+            n += 1
     if n:
         logger.warning(f"[enforce] job {job_id}: review-gate flagged {n} row(s) "
                        f"the source could not confirm")
@@ -2858,10 +2888,11 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
                 "size_weight_g": o.size_weight_g, "incoterm": o.incoterm,
                 "location": o.location, "commercial_conditions": o.commercial_conditions,
             } for o in orm_rows]
-            missed, phantom = [], []
+            missed, phantom, phantom_idx = [], [], []
             if source_text:
                 _rc = reconcile_source_vs_rows(source_text, stored)
                 missed, phantom = _rc.get("missed", []), _rc.get("phantom", [])
+                phantom_idx = _rc.get("phantom_idx", [])
             field_issues = check_field_accuracy(stored)
             try:
                 src_fid = check_source_fidelity(stored, source_text or "")
@@ -2873,7 +2904,8 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
             # Reader-agnostic ENFORCEMENT: flag every row the validation cannot
             # confirm and keep it out of Best Prices / history / alerts, not just
             # in the banner (Samuel 2026-11-25). orm_rows ↔ stored are aligned.
-            _enforced = _enforce_review_gate(orm_rows, stored, source_text, job_id)
+            _enforced = _enforce_review_gate(orm_rows, stored, source_text, job_id,
+                                             phantom_idx=phantom_idx)
             sf = db.query(SourceFileDB).filter(SourceFileDB.job_id == job_id).first()
             if sf is not None:
                 sf.reconciliation = _json.dumps(result) if any_issue else None
@@ -3941,10 +3973,11 @@ async def process_offer(payload, job_id: str):
                     # Tier-2 source↔row reconcile only for a pure text offer (needs
                     # the source lines); the field-accuracy check runs on EVERY
                     # ingest path — it inspects the stored rows alone.
-                    _missed, _phantom = [], []
+                    _missed, _phantom, _phantom_idx = [], [], []
                     if payload.text_body and not payload.attachments and not _is_request:
                         _rec = reconcile_source_vs_rows(payload.text_body, _stored)
                         _missed, _phantom = _rec.get("missed", []), _rec.get("phantom", [])
+                        _phantom_idx = _rec.get("phantom_idx", [])
                     _field_issues = check_field_accuracy(_stored)
                     # Source-fidelity: re-derive fields from the SOURCE and flag
                     # what it cannot confirm (inherited incoterm, grams-as-ml,
@@ -3968,7 +4001,8 @@ async def process_offer(payload, job_id: str):
                     # structured or LLM-fallback — out of Best Prices / history /
                     # alerts, not just in the banner.
                     _enf = _enforce_review_gate(
-                        _orm_rows, _stored, _cond_source_text or "", job_id)
+                        _orm_rows, _stored, _cond_source_text or "", job_id,
+                        phantom_idx=_phantom_idx)
                     _sf = _rdb.query(SourceFileDB).filter(
                         SourceFileDB.job_id == job_id).first()
                     if _sf is not None:
