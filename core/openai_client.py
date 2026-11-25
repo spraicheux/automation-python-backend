@@ -2565,8 +2565,29 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                         else:
                             df = pd.read_excel(file_path, engine=_engine)
                     else:
-                        logger.info(f"[extract_from_file] Using engine: {_engine}")
-                        df = pd.read_excel(file_path, engine=_engine)
+                        # A single sheet whose first row is a TITLE (not the column
+                        # header) — the hybrid temp for an unreadable sheet, or a
+                        # titled circular — loses rows when row 0 is taken as the
+                        # header. Read it positionally (header=None), the same way
+                        # the multi-sheet path does, so EVERY row reaches the LLM
+                        # (Samuel 2026-11-26: Estuary D09 Plover dropped intermittently).
+                        _h0 = pd.read_excel(file_path, engine=_engine, header=None)
+                        _use_none = False
+                        try:
+                            if len(_h0) >= 2:
+                                _r0 = int(_h0.iloc[0].notna().sum())
+                                _rmax = int(_h0.notna().sum(axis=1).max())
+                                _use_none = _r0 < max(2, _rmax * 0.6)
+                        except Exception:
+                            _use_none = False
+                        if _use_none:
+                            df = _h0
+                            df.columns = [str(c) for c in df.columns]
+                            logger.info(f"[extract_from_file] single sheet with a title row → "
+                                        f"header=None ({len(df)} rows)")
+                        else:
+                            logger.info(f"[extract_from_file] Using engine: {_engine}")
+                            df = pd.read_excel(file_path, engine=_engine)
                 except Exception as read_error:
                     logger.warning(f"[extract_from_file] Primary read failed: {read_error}")
                     logger.info(f"[extract_from_file] Trying fallback pd.read_excel() without engine...")
