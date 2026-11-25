@@ -1234,6 +1234,25 @@ def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> i
                      else "pieces")
         pu = _f(o.get("price_per_unit"))
         pc = _f(o.get("price_per_case"))
+        # An EXPLICIT per-unit amount on the line ("$24 each", "EUR 21 per gift set")
+        # is authoritative — override a wrong/bled stored value, not just fill a
+        # blank (Samuel 2026-11-25: Mere "$24 each" had been stored as 0.52).
+        _mex = re.search(
+            r"(USD|EUR|GBP|CHF|HKD|SGD|CAD|AUD|\$|€|£)\s*([\d][\d.,]*)\s*"
+            r"(?:each|apiece|per\s+(?:gift\s*set|set|candle|piece|pc|bottle|unit))",
+            ln, re.IGNORECASE)
+        if _mex:
+            try:
+                _ev = round(float(_mex.group(2).replace(",", "")), 4)
+                if _ev > 0 and _ev != pu:
+                    o["price_per_unit"] = _ev
+                    o["price_per_unit_eur"] = None   # recomputed downstream
+                    pu = _ev
+                    _cw = _mex.group(1)
+                    if _cw and not _clean(o.get("currency")):
+                        o["currency"] = _CUR_WORD.get(_cw.lower(), _cw.upper())
+            except ValueError:
+                pass
         # Recover the per-unit price from the source line when it was dropped
         # (Amber: price blanked). Prefer a price with a per-set/per-candle basis.
         if pu is None:

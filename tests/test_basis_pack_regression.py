@@ -551,6 +551,22 @@ def test_columnar_price_is_not_a_phantom():
     assert any("cairn" in p.lower() for p in rc2["phantom"])
 
 
+# ── recon55: an explicit per-unit amount overrides a wrong stored value ──────────
+def test_explicit_each_price_overrides_bled_value():
+    # the extractor stored 0.52 (bled); the source says "$24 each" → use 24.
+    src = "D4 Mere Lantern EDP 50 ml one retail bottle 12 pieces $24 each FCA NL dollar not agreed: CAD or USD."
+    o = {"brand": "Mere Lantern", "product_name": "EDP", "price_per_unit": 0.52,
+         "price_per_case": None, "currency": "USD", "quantity_bottles": 12.0,
+         "quantity_unit": "pieces", "uid": "m"}
+    rec.honor_retail_unit_price([o], src)
+    assert o["price_per_unit"] == 24.0
+    # a correct per-set price is left unchanged (no spurious override)
+    o2 = {"brand": "Larch", "product_name": "Trio", "price_per_unit": 18.0,
+          "price_per_case": 54.0, "units_per_case": 3.0, "currency": "EUR", "uid": "l"}
+    rec.honor_retail_unit_price([o2], "Larch Trio EUR 18 per gift set FCA NL. Not a case price.")
+    assert o2["price_per_unit"] == 18.0 and o2["price_per_case"] is None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
