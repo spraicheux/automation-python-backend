@@ -948,6 +948,306 @@ def fix_quantity_from_source(offers: List[Dict[str, Any]], source_text: str) -> 
     return changed
 
 
+# A line that NAMES a customs tier only to forbid inheriting it, or says the
+# status is pending / not supplied / not agreed — so the named tier is NOT this
+# line's own status (Samuel 2026-11-25: Fallow "do not assume T2 from W01").
+_CUSTOMS_NEGATED_RE = re.compile(
+    r"do\s*n(?:o|')t\s+assume|not\s+(?:to\s+be\s+)?(?:assumed?|inherit(?:ed)?)"
+    r"|customs\s+status\s+(?:still\s+)?pending|status\s+(?:still\s+)?pending"
+    r"|customs\s+status\s+not\s+(?:supplied|stated|agreed|confirmed|provided|given)"
+    r"|customs\s+status\s+not\s+supplied\s+for\s+this\s+item"
+    r"|no\s+(?:general\s+)?customs\s+status",
+    re.IGNORECASE)
+
+
+def _unique_source_line(o: Dict[str, Any], lines: List[str]) -> Optional[str]:
+    """The ONE source line that contains every identity token of this row, or None.
+    An amount-changing pass must use this, never the fuzzy best-overlap matcher,
+    which returns the same line for every duplicate-named lot and would corrupt it
+    (Samuel: _source_line_for put one price on all six Chivas lots)."""
+    toks = [t for t in re.findall(r"[a-z0-9]+", _ident(o).lower()) if len(t) > 2]
+    if not toks:
+        return None
+    hits = [l for l in lines if all(t in l.lower() for t in toks)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# ── Superseded / withdrawn price (Samuel 2026-11-25) ─────────────────────────
+# Estuary Birch "Superseded: current price EUR 60 per case; 54 was the previous
+# quote" was stored as 54. When the source states the CURRENT price and marks the
+# other withdrawn, the current figure wins and the row stays usable.
+_CURRENT_PRICE_RE = re.compile(
+    r"(?:current|new|correct|revised)\s+price\s*(?:is\s*)?"
+    r"(?P<cur>USD|EUR|GBP|CHF|HKD|SGD|\$|€|£)?\s*(?P<amt>\d[\d.,]*)",
+    re.IGNORECASE)
+_WITHDRAWN_RE = re.compile(
+    r"\bwithdrawn\b|\bsuperseded\b|must\s+not\s+be\s+used|no\s+longer\s+valid"
+    r"|previous\s+quote|earlier\b[^.]*\bquote",
+    re.IGNORECASE)
+
+
+def apply_superseded_price(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """When the source states a CURRENT price and marks an earlier one withdrawn /
+    superseded, the current figure wins. If the stored row kept the withdrawn
+    amount, correct every price field proportionally and note it; the row stays
+    usable because the source is explicit about which price applies."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _unique_source_line(o, lines)
+        if not ln:
+            continue
+        low = ln.lower()
+        if not (_WITHDRAWN_RE.search(low) and _CURRENT_PRICE_RE.search(ln)):
+            continue
+        m = _CURRENT_PRICE_RE.search(ln)
+        try:
+            cur_amt = round(float(m.group("amt").replace(",", "")), 2)
+        except (TypeError, ValueError):
+            continue
+        old = _f(o.get("price_per_case"))
+        if old is None or old <= 0 or abs(old - cur_amt) < 0.01:
+            continue                      # already current, or no case price to fix
+        ratio = cur_amt / old
+        o["price_per_case"] = cur_amt
+        for f in ("price_per_unit", "price_per_unit_eur", "price_per_case_eur"):
+            v = _f(o.get(f))
+            if v is not None:
+                o[f] = round(v * ratio, 4)
+        flags = list(o.get("error_flags") or [])
+        note = (f"used the stated current price "
+                f"{(m.group('cur') + ' ') if m.group('cur') else ''}{cur_amt:g} per case "
+                f"(the earlier {old:g} was withdrawn)")
+        if note not in flags:
+            flags.append(note)
+        o["error_flags"] = flags
+        _mark(o)
+        changed += 1
+    return changed
+
+
+# ── No available stock: reserved / sold out / nothing to offer (Samuel 2026-11-25:
+# Estuary Raven "Reserved in full; no stock available for new orders"). ──────────
+_NO_STOCK_RE = re.compile(
+    r"reserved\s+in\s+full|fully\s+reserved|reserved\b[^.]*\bno\s+stock"
+    r"|no\s+stock\s+(?:available|left|remaining)(?:\s+for\s+new\s+orders)?"
+    r"|nothing\s+(?:left|available)\s+to\s+(?:offer|sell)"
+    r"|not\s+available\s+for\s+new\s+orders|sold\s+out|all\s+sold\b",
+    re.IGNORECASE)
+
+
+def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """A line that says the stock is fully reserved / sold out / nothing left to
+    offer has NO quantity available for a new order — flag it for review so it is
+    kept out of Best Prices and active comparisons, with its price retained for
+    reference (exclusion = needs_manual_review)."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        if o.get("_no_stock_flagged"):
+            continue
+        ln = _unique_source_line(o, lines)
+        if not ln or not _NO_STOCK_RE.search(ln):
+            continue
+        flags = list(o.get("error_flags") or [])
+        note = ("no stock available for new orders (reserved / sold) — kept for "
+                "reference, excluded from active comparisons")
+        if note not in flags:
+            flags.append(note)
+        o["error_flags"] = flags
+        o["needs_manual_review"] = True
+        o["_no_stock_flagged"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
+
+# ── Retail unit price, not a case (Samuel 2026-11-25): Dune "EUR 21 per gift set
+# … This is not a case price" → 3/case, EUR 63/case; Mere "14 pieces at USD 23 per
+# bottle" → invented 14/case; Amber "EUR per candle; stock is pieces". The item is
+# sold as individual sets/candles/pieces; a case price here is invented. ─────────
+_RETAIL_UNIT_SIGNAL_RE = re.compile(
+    r"not\s+a\s+case\s+price|this\s+is\s+not\s+a\s+case"
+    r"|per\s+gift\s*set|per\s+set\b|per\s+candle\b|price\s+is\s+eur\s+per\s+candle"
+    r"|retail\s+box|retail\s+bottle|\d+\s+pieces?\b|stock\s+is\s+pieces",
+    re.IGNORECASE)
+_CASE_BASIS_SIGNAL_RE = re.compile(
+    r"per\s+case|/\s*case|\bthe\s+case\b|\bcases?\s+(?:of|@)\b"
+    r"|per\s+six-?pack|per\s+pack\b",
+    re.IGNORECASE)
+
+
+def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Honour an item sold per individual set / candle / piece, dropping an invented
+    case price + pack and recovering the per-unit amount from the source when the
+    extractor blanked it. Only fires when the line signals a retail unit AND states
+    no case basis — so normal 'per case' lines are untouched."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _unique_source_line(o, lines)
+        if not ln:
+            continue
+        low = ln.lower()
+        if not _RETAIL_UNIT_SIGNAL_RE.search(low) or _CASE_BASIS_SIGNAL_RE.search(low):
+            continue
+        unit_word = ("sets" if re.search(r"gift\s*set|\bset\b", low)
+                     else "pieces")
+        pu = _f(o.get("price_per_unit"))
+        pc = _f(o.get("price_per_case"))
+        # Recover the per-unit price from the source line when it was dropped
+        # (Amber: price blanked). Prefer a price with a per-set/per-candle basis.
+        if pu is None:
+            amt, cur = _quoted_from_source(ln, o)
+            if not amt:
+                # A retail price is often a bare decimal sitting among integer
+                # quantities / weights ("… | 25 | 9.8 | …", Amber per-candle). Pick
+                # a decimal that is NOT a weight / volume / ABV, so 9.8 is read as
+                # the price while 200 g / 25 cases / 4.5% are not.
+                for _mm in re.finditer(
+                        r"(?<![\d.])(\d+\.\d+)(?!\s*(?:g|kg|mg|ml|cl|l|%|cm|yo))",
+                        ln, re.IGNORECASE):
+                    try:
+                        amt = round(float(_mm.group(1)), 4)
+                        break
+                    except ValueError:
+                        continue
+            if amt:
+                pu = amt
+                o["price_per_unit"] = amt
+                if cur and not _clean(o.get("currency")):
+                    o["currency"] = cur
+        # An invented case price (per-unit × pack) is wrong for a retail unit.
+        if pc is not None:
+            o["price_per_case"] = None
+            o["price_per_case_eur"] = None
+        o["units_per_case"] = None
+        o["quantity_unit"] = unit_word
+        flags = [f for f in (o.get("error_flags") or [])
+                 if "assumed per case" not in str(f).lower()
+                 and "price ambiguous" not in str(f).lower()
+                 and "price_per_case calculated" not in str(f).lower()]
+        _u = unit_word[:-1] if unit_word.endswith("s") else unit_word
+        note = f"priced per {_u}; sold as individual {unit_word}, not a case"
+        if note not in flags:
+            flags.append(note)
+        o["error_flags"] = flags
+        _mark(o)
+        changed += 1
+    return changed
+
+
+# ── Supplier from an explicit 'Supplier:' line (Samuel 2026-11-25): Estuary rows
+# took the sheet TITLE as supplier, then 'Not Found'; the circular states
+# "Supplier: Estuary Ledger Merchants BV". ──────────────────────────────────────
+_SUPPLIER_LINE_RE = re.compile(r"\bsupplier\s*[:\-]\s*(.+)", re.IGNORECASE)
+_SUPPLIER_JUNK_RE = re.compile(
+    r"—|–|\d{4}|additional\s+stock|desk\s+parcels|circular|stock\s+(?:note|list)"
+    r"|price\s+list|offer\s+circular", re.IGNORECASE)
+
+
+def fill_supplier_from_source(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Read an explicit 'Supplier: X' line from the document and apply it to rows
+    that have no real supplier (missing, 'Not Found', or a title-derived junk value
+    carrying a dash / date / sheet name)."""
+    if not source_text:
+        return 0
+    sup = None
+    for raw in str(source_text).splitlines():
+        m = _SUPPLIER_LINE_RE.search(raw.strip())
+        if not m:
+            continue
+        cand = m.group(1).split("|")[0].strip()
+        cand = re.split(r"\s+(?:circular|ref\b|offer\b|stock\b|price\b|subject\b)",
+                        cand, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        if len(cand) >= 3 and re.search(r"[A-Za-z]", cand):
+            sup = cand
+            break
+    if not sup:
+        return 0
+    changed = 0
+    for o in offers:
+        cur = _clean(o.get("supplier_name"))
+        if cur and cur.lower() not in ("not found", "unknown", ""):
+            if not _SUPPLIER_JUNK_RE.search(cur):
+                continue                  # already a real supplier
+        o["supplier_name"] = sup
+        _mark(o)
+        changed += 1
+    return changed
+
+
+# ── Price basis / stock unit the source explicitly leaves UNCONFIRMED (Samuel
+# 2026-11-25: Cairn W05 "Desk figure GBP 3.60 … the desk hasn't confirmed what the
+# price covers … the warehouse hasn't identified what the balance counts"). The
+# extractor assumed per-bottle + per-case + 315 cases + EUR; all unsupported. ────
+_PRICE_UNCONFIRMED_RE = re.compile(
+    r"(?:has\s*n(?:o|')t|have\s*n(?:o|')t|not)\s+confirmed\s+what\s+the\s+"
+    r"(?:price|figure|amount)\s+(?:covers|is\s+for|applies\s+to)"
+    r"|what\s+the\s+(?:price|figure)\s+covers\b"
+    r"|price\s+basis\s+(?:unconfirmed|not\s+confirmed)",
+    re.IGNORECASE)
+_UNIT_UNCONFIRMED_RE = re.compile(
+    r"(?:has\s*n(?:o|')t|have\s*n(?:o|')t|not)\s+(?:identified|confirmed)\s+what\s+"
+    r"the\s+(?:balance|quantity|figure|stock)\s+(?:counts|is|means)"
+    r"|what\s+the\s+balance\s+counts\b"
+    r"|(?:quantity|stock)\s+unit\s+(?:unconfirmed|not\s+confirmed)",
+    re.IGNORECASE)
+
+
+def flag_unconfirmed_basis_unit(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """When the source EXPLICITLY says the price basis and/or the stock unit is
+    unconfirmed, the extractor's per-bottle/per-case/quantity assumptions are
+    unsupported: keep the amount as quoted, clear the comparables, drop the guessed
+    quantity unit, flag for review (kept out of Best Prices)."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _unique_source_line(o, lines)
+        if not ln:
+            continue
+        price_unconf = bool(_PRICE_UNCONFIRMED_RE.search(ln))
+        unit_unconf = bool(_UNIT_UNCONFIRMED_RE.search(ln))
+        if not (price_unconf or unit_unconf):
+            continue
+        flags = [f for f in (o.get("error_flags") or [])
+                 if "calculated from" not in str(f).lower()]
+        if price_unconf:
+            amt = _f(o.get("price_per_unit")) or _f(o.get("price_per_case"))
+            cur = _clean(o.get("currency"))
+            for f in ("price_per_unit", "price_per_case",
+                      "price_per_unit_eur", "price_per_case_eur"):
+                o[f] = None
+            quoted = f"{cur} {amt:g}".strip() if amt else "amount"
+            note = (f"{quoted} quoted — the source does not confirm what the price "
+                    f"covers (per bottle or per case); excluded from comparison")
+            if note not in flags:
+                flags.append(note)
+            cc = _clean(o.get("commercial_conditions"))
+            if "as quoted" not in cc.lower():
+                o["commercial_conditions"] = ((cc + " | " if cc else "")
+                                              + f"as quoted: {quoted} (price basis unconfirmed)")
+        if unit_unconf:
+            o["quantity_unit"] = None
+            note = ("stock unit unconfirmed — the source does not state what the "
+                    "balance counts (cases or bottles)")
+            if note not in flags:
+                flags.append(note)
+        o["error_flags"] = flags
+        o["needs_manual_review"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
+
 def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str) -> int:
     """Drop a T1/T2 customs status the source never states for a line. The LLM
     stamped T2 on nine Sabina rows (Chivas, Hennessy, Veuve, Havana, Baileys, JD
@@ -965,12 +1265,22 @@ def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str
             continue
         tier = m.group(1)
         ln = _source_line_for(o, lines)
-        if not ln or re.search(rf"\bT\s*{tier}\b", ln, re.IGNORECASE):
-            continue                      # line not found, or it DOES state T{tier}
+        if not ln:
+            continue                      # line not found → leave as-is
+        # The line can NAME T{tier} only to forbid inheriting it ("do not assume T2
+        # from W01"), or declare the status pending/not-supplied. That is NOT the
+        # line stating its own status — clear it (Samuel 2026-11-25: Fallow W16
+        # "Customs status still pending; do not assume T2 from W01" kept T2).
+        _negated = bool(_CUSTOMS_NEGATED_RE.search(ln))
+        if re.search(rf"\bT\s*{tier}\b", ln, re.IGNORECASE) and not _negated:
+            continue                      # line genuinely states T{tier}
         o["custom_status"] = None
         flags = list(o.get("error_flags") or [])
-        fnote = (f"customs status T{tier} not stated in the source for this line "
-                 f"(inherited from another line)")
+        fnote = ((f"customs status pending / not to be inherited — cleared per the "
+                  f"source for this line")
+                 if _negated else
+                 (f"customs status T{tier} not stated in the source for this line "
+                  f"(inherited from another line)"))
         if fnote not in flags:
             flags.append(fnote)
         o["error_flags"] = flags

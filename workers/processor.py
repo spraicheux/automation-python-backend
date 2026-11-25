@@ -2574,7 +2574,17 @@ def _extract_commercial_conditions(text: str, anchor: Optional[datetime]):
     if mv:
         raw_validity = mv.group(1).strip()
         found.append(f"Validity: valid until {raw_validity}")
-        resolved, basis, uncertain = _resolve_relative_validity(raw_validity, anchor)
+        # Resolve the DATE, not the qualifier. "30 November 2026 unless stated
+        # otherwise below" / "… subject to prior sale" is a real, parseable date
+        # followed by a scope clause; strip the clause before resolving so the
+        # date is set instead of being reported "not resolved; no expiry computed"
+        # while a valid_until is stored elsewhere — the contradiction Samuel flagged
+        # (2026-11-25: every North Fen row). The clause stays captured verbatim above.
+        _vdate = re.split(
+            r"\s+(?:unless|subject\s+to|except|provided|save\s+as|or\s+until|"
+            r"but\s+see|per\s+item|terms\s+are)\b",
+            raw_validity, maxsplit=1, flags=re.IGNORECASE)[0].strip().rstrip('.,;')
+        resolved, basis, uncertain = _resolve_relative_validity(_vdate or raw_validity, anchor)
         if resolved is not None:
             resolved_valid_until = resolved
             flags.append(f"validity '{raw_validity}' resolved to {resolved} ({basis})")
@@ -2962,6 +2972,13 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.capture_ftl_quantity(offers, src)
     changed += _rec.clear_unsourced_incoterm(offers, src)
     changed += _rec.clear_unsourced_custom_status(offers, src)
+    # Samuel 2026-11-25 item-level fixes (keyed on the source line, so they apply on
+    # BOTH the text path and the Excel LLM-fallback path for parity):
+    changed += _rec.fill_supplier_from_source(offers, src)       # supplier from "Supplier:" line
+    changed += _rec.apply_superseded_price(offers, src)          # current price wins over withdrawn
+    changed += _rec.honor_retail_unit_price(offers, src)         # per set/candle/piece, not a case
+    changed += _rec.flag_unconfirmed_basis_unit(offers, src)     # explicit "basis/unit unconfirmed"
+    changed += _rec.flag_no_available_stock(offers, src)         # reserved / sold out → excluded
     changed += _rec.flag_unstated_price_basis(offers, src)
     changed += _rec.flag_absent_price_basis(offers, src)
     changed += _rec.annotate_pack_format(offers, src)

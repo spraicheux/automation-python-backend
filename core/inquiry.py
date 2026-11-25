@@ -94,8 +94,15 @@ _WANTED = re.compile(r"""(?ix)
 _STRONG_BUY = re.compile(r"""(?ix)
     \b(
         buying \s+ (?: enquiry | inquiry )                        |
-        buy \s+ (?: enquiry | inquiry )                           |
-        purchase \s+ (?: enquiry | inquiry )                      |
+        buy \s+ (?: enquiry | inquiry | request )                 |
+        purchase \s+ (?: enquiry | inquiry | request )            |
+        # "We do not have this stock" / "we don't stock it" — a line that
+        # explicitly says the sender is NOT the seller is a buy request, not an
+        # offer (Samuel 2026-11-25: North Fen W13 / Estuary D15 Firth Oak Whisky,
+        # "BUY REQUEST … we do not have this stock").
+        we \s+ (?: do \s+ not | don't | dont ) \s+ (?: have | stock | carry )
+            \s+ (?: this | the | that | it | any | such ) |
+        we \s+ (?: do \s+ not | don't | dont ) \s+ stock \s+ (?: this | it | that ) |
         can \s+ anyone \s+ (?: supply | source | offer | help )   |
         can \s+ (?: you | we ) \s+ source                         |
         could \s+ you \s+ source                                  |
