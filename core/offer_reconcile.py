@@ -109,10 +109,13 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
                 bool(_f(o.get("price_per_case"))),
                 bool(_clean(o.get("lead_time"))),
                 not bool(o.get("needs_manual_review"))), reverse=True)[0]
+            # Two distinct delivery terms at two prices → two comparable siblings
+            # sharing one pool, not a fold (Samuel 2026-11-26 Moss). Same-term or
+            # same-price alternates still fold into a note below.
+            others = [o for o in lot if o is not keep and not o.get("_pool_linked")]
+            lot_tofold = _split_or_fold_siblings(keep, others, None)
             alts = []
-            for o in lot:
-                if o is keep:
-                    continue
+            for o in lot_tofold:
                 dropped.add(o.get("uid"))
                 term = " ".join(x for x in (_clean(o.get("incoterm")), _clean(o.get("location"))) if x)
                 if term:
@@ -1453,6 +1456,82 @@ def clear_unsourced_custom_status(offers: List[Dict[str, Any]], source_text: str
     return changed
 
 
+_PARCEL_RE = re.compile(r"\bparcel\s+([A-Z]{1,4}[-\s]?\d{1,6}[A-Z]?)\b", re.IGNORECASE)
+
+
+def _parcel_label(o: Dict[str, Any], lines: Optional[List[str]]) -> Optional[str]:
+    """The parcel/lot id the source names for a row ("Parcel MB71"), used to tell
+    the reviewer the two delivery options are literally one stock."""
+    if not lines:
+        return None
+    ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines)
+    if not ln:
+        return None
+    m = _PARCEL_RE.search(ln)
+    return m.group(1).upper().replace(" ", "") if m else None
+
+
+def _blank_quantity(o: Dict[str, Any]) -> None:
+    for k in ("quantity_case", "quantity_bottles", "quantity_pallets",
+              "quantity_ftl", "quantity_unit"):
+        o[k] = None
+
+
+def _link_shared_pool(keep: Dict[str, Any], alt: Dict[str, Any],
+                      lines: Optional[List[str]]) -> None:
+    """One physical stock offered under TWO DISTINCT delivery terms, each with its
+    own price, is TWO independently comparable offers — not one row with the other
+    buried in a note (Samuel 2026-11-26: Moss Bridge Whisky, EXW Ghent EUR 120 vs
+    DAP Lille EUR 126, same parcel MB71). Keep both rows so each competes in its
+    own incoterm peer group; count the stock ONCE by leaving the quantity on
+    `keep` only and blanking the alternate's. Cross-link both, and clear the
+    dual-delivery review markers — both terms are explicitly offered, so neither
+    row is an ambiguity (the enforcement gate re-flags either independently if it
+    has a real problem)."""
+    _blank_quantity(alt)
+    parcel = _parcel_label(keep, lines) or _parcel_label(alt, lines)
+    pc = f"parcel {parcel} " if parcel else ""
+    kterm = " ".join(x for x in (_clean(keep.get("incoterm")), _clean(keep.get("location"))) if x) or "the primary"
+    aterm = " ".join(x for x in (_clean(alt.get("incoterm")), _clean(alt.get("location"))) if x) or "the alternative"
+    knote = (f"One stock pool ({pc}counted once): this is the {kterm} option; "
+             f"also offered {aterm}.")
+    anote = (f"One stock pool ({pc}counted once): this is the {aterm} option; "
+             f"the {kterm} option carries the shared quantity.")
+    for o, note in ((keep, knote), (alt, anote)):
+        cc = _clean(o.get("commercial_conditions"))
+        if "one stock pool" not in cc.lower():
+            o["commercial_conditions"] = (cc + " | " if cc else "") + note
+        ef = o.get("error_flags")
+        if isinstance(ef, list):
+            o["error_flags"] = [f for f in ef if not (isinstance(f, str) and (
+                "multiple incoterms detected" in f
+                or "alternative delivery term" in f
+                or "confirm which applies" in f
+                or "recover alternatives" in f))]
+        # a split-by-incoterm pair is intentional; let the gate decide review
+        o["needs_manual_review"] = False
+        o["_pool_linked"] = True
+        _mark(o)
+
+
+def _split_or_fold_siblings(keep: Dict[str, Any], others: List[Dict[str, Any]],
+                            lines: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """Partition the non-kept rows of a same-stock group into those that SPLIT off
+    as their own comparable sibling (distinct incoterm AND distinct case price)
+    and those that FOLD into `keep` as a note. Returns the still-to-fold rows."""
+    kinc = _norm(keep.get("incoterm")); kpc = _f(keep.get("price_per_case"))
+    to_fold: List[Dict[str, Any]] = []
+    for o in others:
+        oinc = _norm(o.get("incoterm")); opc = _f(o.get("price_per_case"))
+        if (oinc and kinc and oinc != kinc
+                and opc is not None and kpc is not None
+                and round(opc, 2) != round(kpc, 2)):
+            _link_shared_pool(keep, o, lines)
+        else:
+            to_fold.append(o)
+    return to_fold
+
+
 _SAME_STOCK_RE = re.compile(
     r"same\s+stock\s+(?:either\s+way|both\s+ways|regardless)"
     r"|same\s+stock\b|same\s+(?:physical\s+)?lot\s+either|one\s+(?:and\s+the\s+same|single)\s+lot"
@@ -1498,10 +1577,12 @@ def merge_same_stock_restatement(offers: List[Dict[str, Any]], source_text: str)
             bool(_f(o.get("price_per_case"))),
             bool(_clean(o.get("lead_time"))),
             not bool(o.get("needs_manual_review"))), reverse=True)[0]
+        # Distinct delivery terms at distinct prices become their own comparable
+        # siblings (Samuel 2026-11-26 Moss); same-term restatements still fold.
+        others = [o for o in g if o is not keep and not o.get("_pool_linked")]
+        to_fold = _split_or_fold_siblings(keep, others, lines)
         alts = []
-        for o in g:
-            if o is keep:
-                continue
+        for o in to_fold:
             dropped.add(o.get("uid"))
             term = " ".join(x for x in (_clean(o.get("incoterm")), _clean(o.get("location"))) if x)
             apc = _f(o.get("price_per_case")); acur = _clean(o.get("currency"))
@@ -1638,6 +1719,137 @@ def drop_buy_inquiry_rows(offers: List[Dict[str, Any]], source_text: str) -> Set
         if len(offers) != before:
             dropped.add("_marker")
     return dropped
+
+
+_HEADER_NAME_RE = re.compile(
+    r"^(?:supplier(?:\s+offer)?|offer|circular|price\s*list|pricelist|"
+    r"subject\s+to\s+unsold|not\s+found|n/?a|unknown)$", re.IGNORECASE)
+_CIRCULAR_REF_RE = re.compile(r"^[A-Z]{1,4}[-\s]?\d{2,6}[A-Z]?$", re.IGNORECASE)
+
+
+def drop_nonproduct_header_rows(offers: List[Dict[str, Any]],
+                               source_text: str = "") -> Set[str]:
+    """Drop a row the extractor fabricated from a circular's HEADER / supplier
+    line, not a product (Samuel 2026-11-26: "Supplier Offer / EL-925", currency
+    EUR, no price, no quantity — the "Supplier: Estuary Ledger Merchants BV |
+    Circular EL-925 | Subject to unsold" banner read as an item). It inflated the
+    row count by one with no sellable content. Conservative: only a row with NO
+    price AND NO quantity whose own identity is a header token (or an empty name
+    carrying only a circular reference). A real price-on-request product (Sedge,
+    15 cases) keeps its quantity and name, so it is never touched."""
+    dropped: Set[str] = set()
+    before = len(offers)
+    keep: List[Dict[str, Any]] = []
+    for o in offers:
+        has_price = _f(o.get("price_per_unit")) or _f(o.get("price_per_case"))
+        has_qty = any(_f(o.get(k)) for k in (
+            "quantity_case", "quantity_bottles", "quantity_pallets", "quantity_ftl"))
+        nm = _clean(o.get("product_name"))
+        ref = _clean(o.get("product_reference")) or _clean(o.get("supplier_reference"))
+        is_header_name = bool(nm) and bool(_HEADER_NAME_RE.match(nm))
+        is_bare_ref = (not nm or nm.lower() in ("not found", "unknown")) and \
+            bool(ref) and bool(_CIRCULAR_REF_RE.match(ref))
+        if (not has_price) and (not has_qty) and (is_header_name or is_bare_ref):
+            uid = o.get("uid")
+            if uid is not None:
+                dropped.add(uid)
+            continue
+        keep.append(o)
+    if len(keep) != before:
+        offers[:] = keep
+        if not dropped:
+            dropped.add("_marker")
+    return dropped
+
+
+_NO_UNIT_LABEL_RE = re.compile(
+    r"no\s+unit\s+label"
+    r"|has\s+no\s+unit\b"
+    r"|without\s+a\s+unit\s+label"
+    r"|hasn'?t\s+identified\s+what\s+the\s+balance"
+    r"|has\s+not\s+identified\s+what\s+the\s+balance"
+    r"|balance[^.]*?\bno\s+unit\b"
+    r"|balance[^.]*?(?:unit\s+(?:is\s+)?(?:unknown|not\s+(?:stated|given|labelled|labeled)|unconfirmed))"
+    r"|what\s+the\s+balance\s+counts",
+    re.IGNORECASE)
+_BAL_NUM_RE = re.compile(r"\bbalance\s+(?:is\s+)?([\d][\d,]*)\b", re.IGNORECASE)
+
+
+def flag_unlabeled_quantity_balance(offers: List[Dict[str, Any]],
+                                    source_text: str) -> int:
+    """A stock balance the SOURCE itself says carries no unit label must not be
+    stored as a confident quantity in a fabricated unit (Samuel 2026-11-26: Plover
+    Lane Soap "360 … Warehouse balance has no unit label" was stored as 30 cases /
+    360 pieces; North Fen Cairn "Balance 315 … hasn't identified what the balance
+    counts"). The PRICE basis may still be explicit (USD 1.25 per piece) and is
+    kept as quoted; but the quantity unit is genuinely unconfirmed, so clear the
+    invented quantity fields, keep the figure in a note, and flag for review —
+    consistent with the rule that an unconfirmed stock unit triggers review."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines) \
+            or _source_line_for(o, lines)
+        if not ln or not _NO_UNIT_LABEL_RE.search(ln):
+            continue
+        # already handled (idempotent re-run / twin)
+        cc_low = _clean(o.get("commercial_conditions")).lower()
+        if "unit label" in cc_low or "unit unconfirmed" in cc_low:
+            continue
+        bal = None
+        m = _BAL_NUM_RE.search(ln)
+        if m:
+            bal = m.group(1).replace(",", "")
+        else:
+            for k in ("quantity_bottles", "quantity_case"):
+                v = _f(o.get(k))
+                if v:
+                    bal = f"{v:g}"; break
+        _blank_quantity(o)
+        where = f"Warehouse balance {bal}" if bal else "The warehouse balance"
+        note = (f"{where} — no unit label in the source; stock quantity/unit "
+                f"unconfirmed (price kept as quoted).")
+        cc = _clean(o.get("commercial_conditions"))
+        o["commercial_conditions"] = (cc + " | " if cc else "") + note
+        ef = o.get("error_flags")
+        if not isinstance(ef, list):
+            ef = []
+        _msg = (f"stock quantity unit unconfirmed — the source states a balance "
+                f"with no unit label; quantity left blank, flagged for review")
+        if _msg not in ef:
+            ef.append(_msg)
+        o["error_flags"] = ef
+        o["needs_manual_review"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
+
+def clear_contradictory_currency_flag(offers: List[Dict[str, Any]],
+                                      source_text: str = "") -> int:
+    """Remove a stale "currency normalized/normalised to EUR" note from a row whose
+    stored currency is NOT EUR (Samuel 2026-11-26: Plover shown USD 1.25 still
+    carried a "normalized to EUR from the source line" flag — a contradiction that
+    reads as if the row were converted). The gate strips this only when it
+    neutralises a currency; a confirmed non-EUR row needs the same cleanup."""
+    changed = 0
+    for o in offers:
+        cur = _clean(o.get("currency")).upper()
+        if not cur or cur == "EUR":
+            continue
+        ef = o.get("error_flags")
+        if not isinstance(ef, list):
+            continue
+        new = [f for f in ef if not (isinstance(f, str)
+               and ("normalized to eur" in f.lower()
+                    or "normalised to eur" in f.lower()))]
+        if len(new) != len(ef):
+            o["error_flags"] = new
+            _mark(o)
+            changed += 1
+    return changed
 
 
 def flag_unstated_price_basis(offers: List[Dict[str, Any]], source_text: str) -> int:

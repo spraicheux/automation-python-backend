@@ -2980,6 +2980,8 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.flag_unconfirmed_basis_unit(offers, src)     # explicit "basis/unit unconfirmed"
     changed += _rec.flag_no_available_stock(offers, src)         # reserved / sold out → excluded
     changed += _rec.flag_lot_total_conflict(offers, src)         # declared total ≠ breakdown
+    changed += _rec.flag_unlabeled_quantity_balance(offers, src) # balance with no unit label → review
+    changed += _rec.clear_contradictory_currency_flag(offers, src)  # drop stale "normalized to EUR" on non-EUR
     changed += _rec.flag_unstated_price_basis(offers, src)
     changed += _rec.flag_absent_price_basis(offers, src)
     changed += _rec.annotate_pack_format(offers, src)
@@ -2991,6 +2993,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.separate_load_capacity(offers, src)
     dropped = set()
     dropped |= _rec.drop_buy_inquiry_rows(offers, src)
+    dropped |= _rec.drop_nonproduct_header_rows(offers, src)
     dropped |= _rec.merge_same_stock_restatement(offers, src)
     dropped |= _rec.merge_alt_delivery_lots(offers)
     dropped |= _rec.collapse_identical_commercial_lines(offers)

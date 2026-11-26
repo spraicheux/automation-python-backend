@@ -601,6 +601,116 @@ def test_derived_case_price_is_not_a_phantom():
     assert rc["phantom"] == []
 
 
+# ── recon58: Samuel 2026-11-26 round 4 ──────────────────────────────────────────
+def _moss_pair(exw_pc, dap_pc, parcel, extra=""):
+    src = (f"D10 Moss Bridge Whisky 700ml 40% 6 bottles/case Parcel {parcel}: 19 cases "
+           f"+ 5 loose bottles EUR {exw_pc} per case; EUR 20 per loose bottle EXW Ghent.\n"
+           f"D10-L Moss Bridge Whisky same {parcel} parcel EUR {dap_pc} per case; EUR 21 "
+           f"per loose bottle DAP Lille. Alternative delivery for the SAME stock. {extra}")
+    offs = [
+        {"brand": "Moss", "product_name": "Moss Bridge Whisky", "currency": "EUR",
+         "price_per_case": exw_pc, "price_per_unit": 20.0, "quantity_case": 19.0,
+         "quantity_bottles": 5.0, "units_per_case": 6.0, "incoterm": "EXW",
+         "location": "Ghent", "uid": "exw", "error_flags": []},
+        {"brand": "Moss", "product_name": "Moss Bridge Whisky", "currency": "EUR",
+         "price_per_case": dap_pc, "price_per_unit": 21.0, "quantity_case": 19.0,
+         "quantity_bottles": 5.0, "units_per_case": 6.0, "incoterm": "DAP",
+         "location": "Lille", "uid": "dap",
+         "error_flags": ["multiple incoterms detected — row duplicated"]},
+    ]
+    return offs, src
+
+def test_dual_incoterm_same_stock_splits_into_two_comparable_rows():
+    # Moss: EUR 120 EXW Ghent vs EUR 126 DAP Lille, same parcel MB71 → TWO rows,
+    # each comparable in its own incoterm bucket, both green, stock counted once.
+    offs, src = _moss_pair(120.0, 126.0, "MB71")
+    rec.merge_same_stock_restatement(offs, src)
+    rec.merge_alt_delivery_lots(offs)
+    assert len(offs) == 2
+    by_inc = {o["incoterm"]: o for o in offs}
+    assert set(by_inc) == {"EXW", "DAP"}
+    assert by_inc["EXW"]["price_per_case"] == 120.0
+    assert by_inc["DAP"]["price_per_case"] == 126.0
+    # stock counted once: only the EXW (kept) row carries quantity
+    assert by_inc["EXW"]["quantity_case"] == 19.0
+    assert by_inc["DAP"]["quantity_case"] is None
+    # both green; the dual-delivery review marker is cleared
+    assert by_inc["EXW"]["needs_manual_review"] is False
+    assert by_inc["DAP"]["needs_manual_review"] is False
+    assert all("multiple incoterms detected" not in f
+               for f in by_inc["DAP"]["error_flags"])
+    assert all("one stock pool" in (o.get("commercial_conditions") or "").lower()
+               for o in offs)
+
+def test_dual_incoterm_same_price_still_folds():
+    # same stock, two incoterms, SAME price → one row + note (no spurious split).
+    offs, src = _moss_pair(120.0, 120.0, "MB71")
+    rec.merge_same_stock_restatement(offs, src)
+    rec.merge_alt_delivery_lots(offs)
+    assert len(offs) == 1
+
+def test_whatsapp_one_stock_pool_splits():
+    # North Fen W07: EUR 114 EXW vs EUR 120 DAP, "One stock pool, not two".
+    src = ("W07 Moss Bridge Whisky 700ml 40%, six bottles/case. Parcel NF71: 11 cases "
+           "and 2 loose bottles. EUR 114/case and EUR 19 per loose bottle EXW Ghent. "
+           "Alternatively the SAME parcel delivered DAP Lille at EUR 120/case and EUR 20 "
+           "per loose bottle. One stock pool, not two.")
+    offs = [
+        {"brand": "Moss", "product_name": "Moss Bridge Whisky", "currency": "EUR",
+         "price_per_case": 114.0, "quantity_case": 11.0, "units_per_case": 6.0,
+         "incoterm": "EXW", "location": "Ghent", "uid": "e", "error_flags": []},
+        {"brand": "Moss", "product_name": "Moss Bridge Whisky", "currency": "EUR",
+         "price_per_case": 120.0, "quantity_case": 11.0, "units_per_case": 6.0,
+         "incoterm": "DAP", "location": "Lille", "uid": "d", "error_flags": []},
+    ]
+    rec.merge_same_stock_restatement(offs, src)
+    rec.merge_alt_delivery_lots(offs)
+    assert len(offs) == 2
+    assert {o["incoterm"] for o in offs} == {"EXW", "DAP"}
+    assert sum(1 for o in offs if o["quantity_case"]) == 1  # counted once
+
+def test_unlabeled_balance_flags_and_blanks_quantity():
+    # Plover: "360 … Warehouse balance has no unit label" + "USD 1.25 per piece".
+    src = ("D09 Plover Lane Soap 100 g 12 pieces per carton 360 USD 1.25 per piece "
+           "FCA Hull Warehouse balance has no unit label.")
+    o = {"brand": "Plover", "product_name": "Plover Lane Soap", "currency": "USD",
+         "price_per_unit": 1.25, "quantity_case": 30.0, "quantity_bottles": 360.0,
+         "quantity_unit": "pieces", "incoterm": "FCA", "location": "Hull",
+         "error_flags": ["currency normalized to EUR from the source line"]}
+    offs = [o]
+    rec.flag_unlabeled_quantity_balance(offs, src)
+    rec.clear_contradictory_currency_flag(offs, src)
+    assert o["price_per_unit"] == 1.25 and o["currency"] == "USD"  # price kept
+    assert o["quantity_case"] is None and o["quantity_bottles"] is None
+    assert o["needs_manual_review"] is True
+    assert "no unit label" in (o["commercial_conditions"] or "").lower()
+    # the contradictory "normalized to EUR" note is gone
+    assert all("normalized to eur" not in f.lower() for f in o["error_flags"])
+
+def test_clearly_labelled_quantity_not_flagged():
+    # a line that states its unit ("17 cases") must NOT trip the unlabeled rule.
+    src = "D05 Cairn Thread Gin 6 bottles per case 17 cases GBP 66 EXW Antwerp."
+    o = {"brand": "Cairn", "product_name": "Cairn Thread Gin", "currency": "GBP",
+         "quantity_case": 17.0, "incoterm": "EXW", "location": "Antwerp",
+         "error_flags": []}
+    offs = [o]
+    n = rec.flag_unlabeled_quantity_balance(offs, src)
+    assert n == 0 and o["quantity_case"] == 17.0
+
+def test_nonproduct_header_row_dropped():
+    # the circular banner read as a product (no price, no qty) is dropped; a real
+    # price-on-request product (with a quantity) is kept.
+    offs = [
+        {"brand": "Not Found", "product_name": "Supplier Offer", "currency": "EUR",
+         "product_reference": "EL-925", "uid": "hdr"},
+        {"brand": "Sedge", "product_name": "Sedge Point Gin", "quantity_case": 15.0,
+         "incoterm": "EXW", "location": "Antwerp", "uid": "sedge"},
+    ]
+    rec.drop_nonproduct_header_rows(offs, "")
+    names = [o["product_name"] for o in offs]
+    assert names == ["Sedge Point Gin"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0
