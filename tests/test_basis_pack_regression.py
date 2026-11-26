@@ -774,6 +774,51 @@ def test_reconciler_matches_by_ticket_ref_not_only_price():
     assert any("A99" in m for m in r2["missed"])
 
 
+def test_northwick_field_fixes():
+    # Samuel 2026-11-26 Northwick NF1126 — the same bug classes on a new file.
+    src = open(__file__).read()  # placeholder; passes use explicit src below
+    def run(o, text):
+        offs = [o]
+        for fn in ("honor_retail_unit_price", "recover_loose_pieces_qty",
+                   "recover_loose_bottles_addon", "flag_unlabeled_quantity_balance",
+                   "fix_wrapped_pack_unit_price"):
+            getattr(rec, fn)(offs, text)
+        return o
+    # W02 wrapped six-pack: per-can price, no false conflict
+    o = run({"brand": "", "product_name": "Same Kestrel pils", "currency": "EUR",
+             "price_per_unit": 2.7, "price_per_case": 10.8, "quantity_case": 27,
+             "units_per_case": 24, "error_flags": ["case price 10.8 does not match unit 2.7 x pack 24"]},
+            "W02 Same Kestrel pils as W01, wrapped in sixes: FOUR six-packs in a case. 27 cases, EUR 2.70 per six-pack EXW Breda.")
+    assert o["price_per_unit"] == 0.45 and not o["needs_manual_review"]
+    # W07 gift set priced per set (EUR 23/set), not per case
+    o = run({"brand": "Mica", "product_name": "Garden Discovery Set", "currency": "EUR",
+             "price_per_case": 23.0, "quantity_case": 13, "units_per_case": 0},
+            "W07 Mica Garden Discovery Set: two 50ml sprays plus one 15ml spray in each intact set. 13 sets at EUR 23/set FCA Ghent. No outer cases.")
+    assert o["price_per_unit"] == 23.0 and o["price_per_case"] is None and o["units_per_case"] is None
+    # W04 / W20 per-bottle retail quantity
+    o = run({"brand": "Linden", "product_name": "Vault EDP retail boxed", "currency": "USD", "price_per_unit": 26.0},
+            "W04 Linden Vault EDP 50ml retail boxed: 15 individual bottles at USD 26 per bottle, FCA Hull.")
+    assert o["quantity_bottles"] == 15.0
+    # W05 unlabeled balance + basis kept as quoted
+    o = run({"brand": "Slate", "product_name": "Orchard Gin", "currency": "GBP",
+             "quantity_case": 275, "units_per_case": 6, "error_flags": ["Price on request — no price stated in source"]},
+            "W05 Slate Orchard Gin 700ml 42%, packing 6 bottles/case. Balance 275. GBP 4.20. Neither the balance unit nor the price unit has been confirmed.")
+    assert o["quantity_case"] is None and o["needs_manual_review"]
+    assert "as quoted: gbp 4.20" in (o["commercial_conditions"] or "").lower()
+    assert all("no price stated" not in f.lower() for f in o["error_flags"])
+    # Rowan 9 cases + 5 loose (not the 54 = 9×6 double-count)
+    o = run({"brand": "Rowan", "product_name": "Ferry Whisky", "currency": "EUR",
+             "price_per_case": 126.0, "quantity_case": 9, "quantity_bottles": 54, "units_per_case": 6},
+            "W08 Rowan Ferry Whisky 6/case. Parcel NF83: 9 cases plus 5 loose bottles. EUR 126/case EXW Ghent.")
+    assert o["quantity_bottles"] == 5.0
+
+def test_pack_spec_not_read_as_retail_quantity():
+    # "6 bottles/case" is a pack spec, never the available quantity
+    o = {"brand": "Slate", "product_name": "Gin", "currency": "GBP", "units_per_case": 6}
+    rec.recover_loose_pieces_qty([o], "Slate Gin 700ml, packing 6 bottles/case. Balance unclear.")
+    assert o.get("quantity_bottles") is None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

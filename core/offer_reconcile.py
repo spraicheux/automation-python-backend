@@ -771,6 +771,16 @@ def fix_inner_box_from_text(offers: List[Dict[str, Any]], source_text: str) -> i
 
 # ─────────────────────────────────────────────────────────────────────────────
 _LOOSE_PIECES_RE = re.compile(r"(\d[\d,]*)\s*(?:pieces?|pcs?|pc)\s+available", re.IGNORECASE)
+# A retail line sells individual units and states the count directly: "15
+# individual bottles at USD 26 per bottle", "8 bottles USD 28/bottle", "21
+# individual candles" (Samuel 2026-11-26: Northwick W04 Linden, W20 Cedar, W17
+# Silk). Only when a RETAIL signal is present, so "6 bottles per case" (a pack
+# spec) is never read as the quantity.
+_RETAIL_QTY_RE = re.compile(
+    r"(\d[\d,]*)\s+(?:individual\s+)?(?:bottles?|pieces?|candles?|sprays?|sets?)\b"
+    r"(?=.*(?:per\s+(?:bottle|piece|candle|set|spray|unit)"
+    r"|/\s*(?:bottle|piece|candle|set|spray)|each\b|retail|individual|tester|unboxed|intact))",
+    re.IGNORECASE)
 
 
 def recover_loose_pieces_qty(offers: List[Dict[str, Any]], source_text: str) -> int:
@@ -787,7 +797,7 @@ def recover_loose_pieces_qty(offers: List[Dict[str, Any]], source_text: str) -> 
         ln = _source_line_for(o, lines)
         if not ln or "inner box" in ln.lower():
             continue
-        m = _LOOSE_PIECES_RE.search(ln)
+        m = _LOOSE_PIECES_RE.search(ln) or _RETAIL_QTY_RE.search(ln)
         if not m:
             continue
         n = _int(m.group(1))
@@ -1219,7 +1229,13 @@ def flag_lot_total_conflict(offers: List[Dict[str, Any]], source_text: str) -> i
 _RETAIL_UNIT_SIGNAL_RE = re.compile(
     r"not\s+a\s+case\s+price|this\s+is\s+not\s+a\s+case"
     r"|per\s+gift\s*set|per\s+set\b|per\s+candle\b|price\s+is\s+eur\s+per\s+candle"
-    r"|retail\s+box|retail\s+bottle|\d+\s+pieces?\b|stock\s+is\s+pieces",
+    # slash / plural forms the "per <unit>" branch missed: "EUR 23/set", "GBP
+    # 6.50 each", "13 sets at EUR 23/set", "8 individual bottles" (Samuel
+    # 2026-11-26: Northwick W07 Mica, W04 Linden, W20 Cedar).
+    r"|/\s*(?:gift\s*)?set\b|/\s*candle\b|/\s*spray\b"
+    r"|\d+\s+(?:intact\s+)?sets?\b|\bsets?\s+at\b|intact\s+set"
+    r"|\d+\s+individual\s+(?:bottles?|candles?|pieces?)"
+    r"|retail\s+box|retail\s+bottle|retail\s+boxed|\d+\s+pieces?\b|stock\s+is\s+pieces",
     re.IGNORECASE)
 _CASE_BASIS_SIGNAL_RE = re.compile(
     r"per\s+case|/\s*case|\bthe\s+case\b|\bcases?\s+(?:of|@)\b"
@@ -1252,7 +1268,9 @@ def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> i
         # blank (Samuel 2026-11-25: Mere "$24 each" had been stored as 0.52).
         _mex = re.search(
             r"(USD|EUR|GBP|CHF|HKD|SGD|CAD|AUD|\$|€|£)\s*([\d][\d.,]*)\s*"
-            r"(?:each|apiece|per\s+(?:gift\s*set|set|candle|piece|pc|bottle|unit))",
+            r"(?:each|apiece"
+            r"|per\s+(?:gift\s*set|set|candle|piece|pc|bottle|unit)"
+            r"|/\s*(?:gift\s*set|set|candle|piece|pc|bottle|unit))",   # "EUR 23/set"
             ln, re.IGNORECASE)
         if _mex:
             try:
@@ -1288,6 +1306,13 @@ def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> i
                 o["price_per_unit"] = amt
                 if cur and not _clean(o.get("currency")):
                     o["currency"] = cur
+        # A per-set / retail item whose ONLY amount the extractor stored as a
+        # "case" price (Samuel 2026-11-26: Mica Garden Set — "EUR 23/set" landed
+        # in price_per_case, shown as EUR 23/case) must move to the unit price.
+        if pu is None and pc is not None:
+            o["price_per_unit"] = pc
+            o["price_per_unit_eur"] = None
+            pu = pc
         # An invented case price (per-unit × pack) is wrong for a retail unit.
         if pc is not None:
             o["price_per_case"] = None
@@ -1773,7 +1798,11 @@ _NO_UNIT_LABEL_RE = re.compile(
     r"|has\s+not\s+identified\s+what\s+the\s+balance"
     r"|balance[^.]*?\bno\s+unit\b"
     r"|balance[^.]*?(?:unit\s+(?:is\s+)?(?:unknown|not\s+(?:stated|given|labelled|labeled)|unconfirmed))"
-    r"|what\s+the\s+balance\s+counts",
+    r"|what\s+the\s+balance\s+counts"
+    # "Neither the balance unit nor the price unit has been confirmed" (Samuel
+    # 2026-11-26: Northwick W05 Slate) — the unit of the 275 balance is unknown.
+    r"|neither\s+the\s+balance\s+unit"
+    r"|balance\s+unit[^.]*?(?:nor|not\s+(?:been\s+)?confirmed|unconfirmed)",
     re.IGNORECASE)
 _BAL_NUM_RE = re.compile(r"\bbalance\s+(?:is\s+)?([\d][\d,]*)\b", re.IGNORECASE)
 
@@ -1816,6 +1845,25 @@ def flag_unlabeled_quantity_balance(offers: List[Dict[str, Any]],
                 f"unconfirmed (price kept as quoted).")
         cc = _clean(o.get("commercial_conditions"))
         o["commercial_conditions"] = (cc + " | " if cc else "") + note
+        # The same line may also leave the price BASIS unconfirmed and the
+        # extractor may have dropped the amount entirely, so the row reads "no
+        # price" although one is stated (Samuel 2026-11-26: Northwick W05 Slate —
+        # "GBP 4.20. Neither the balance unit nor the price unit confirmed").
+        # Keep the quoted amount so it is neither lost nor reported as missing.
+        if not (_f(o.get("price_per_unit")) or _f(o.get("price_per_case"))):
+            _pm = re.search(r"\b(GBP|EUR|USD|CHF|HKD|SGD|CAD|AUD)\s*([\d][\d.,]*)", ln)
+            if _pm and "as quoted:" not in o["commercial_conditions"].lower():
+                _cw = _pm.group(1).upper(); _amt = _pm.group(2).replace(",", "").rstrip(".")
+                o["commercial_conditions"] += (
+                    f" | as quoted: {_cw} {_amt} (price basis unconfirmed — "
+                    f"per bottle or per case not stated)")
+                if not _clean(o.get("currency")):
+                    o["currency"] = _cw
+                o["error_flags"] = [f for f in (o.get("error_flags") or [])
+                    if not (isinstance(f, str) and (
+                        "no price stated" in f.lower()
+                        or "price on request" in f.lower()
+                        or "but no price in the row" in f.lower()))]
         ef = o.get("error_flags")
         if not isinstance(ef, list):
             ef = []
@@ -1926,7 +1974,14 @@ def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) 
     changed = 0
     for o in offers:
         qc = _f(o.get("quantity_case"))
-        if not qc or _f(o.get("quantity_bottles")):
+        _qb = _f(o.get("quantity_bottles")); _upc = _f(o.get("units_per_case"))
+        if not qc:
+            continue
+        # A real bottle count stays; but a FABRICATED one that is exactly
+        # cases × pack is the double-count the extractor made for "9 cases plus 5
+        # loose bottles" (Samuel 2026-11-26 Rowan: 54 = 9×6, the +5 loose lost) —
+        # override it with the stated loose count.
+        if _qb and not (_upc and abs(_qb - qc * _upc) < 0.5):
             continue
         ln = _source_line_for(o, lines)
         if not ln:
@@ -1943,6 +1998,51 @@ def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) 
                     + f"+ {loose} loose bottle" + ("s" if loose != 1 else ""))
             _mark(o)
             changed += 1
+    return changed
+
+
+_PACK_BASIS_RE = re.compile(
+    r"per\s+(?:a\s+)?(?:six[\s-]?pack|\d+[\s-]?pack|tray)"
+    r"|wrapped\s+in\s+sixes|in\s+sixes\b|six[\s-]?packs?\s+in\s+a\s+case"
+    r"|\d+\s+six[\s-]?packs?\s+(?:in|per)\s+a?\s*case",
+    re.IGNORECASE)
+
+
+def fix_wrapped_pack_unit_price(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """A wrapped multipack priced PER PACK (Samuel 2026-11-26: Northwick W02 /
+    Estuary D02 — "EUR 2.70 per six-pack, FOUR six-packs in a case") stores the
+    case price correctly (4 × 2.70 = 10.80) but leaves price_per_unit as the
+    per-PACK figure (2.70), so the self-check raises a FALSE conflict (2.70 × 24
+    cans ≠ 10.80). When the line states a pack basis and the row has a case price
+    over a larger can pack, set the per-unit price to case ÷ pack (per can) — the
+    real per-can price — which clears the false conflict."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ppc = _f(o.get("price_per_case")); upc = _f(o.get("units_per_case"))
+        ppu = _f(o.get("price_per_unit"))
+        if not (ppc and upc and upc > 1):
+            continue
+        per_can = round(ppc / upc, 4)
+        if ppu is not None and abs(ppu - per_can) <= 0.01:
+            continue  # already per-can
+        ln = (_unique_source_line(o, lines) or _row_line_by_amount(o, lines)
+              or _source_line_for(o, lines))
+        if not ln or not _PACK_BASIS_RE.search(ln):
+            continue
+        o["price_per_unit"] = per_can
+        o["price_per_unit_eur"] = None
+        cc = _clean(o.get("commercial_conditions"))
+        if "per pack" not in cc.lower() and "per six-pack" not in cc.lower():
+            o["commercial_conditions"] = (cc + " | " if cc else "") + (
+                f"price quoted per pack; per-can price = case ÷ pack ({per_can:g})")
+        o["error_flags"] = [f for f in (o.get("error_flags") or [])
+            if not (isinstance(f, str) and "does not match unit" in f.lower())]
+        o["needs_manual_review"] = False   # no real conflict; gate re-decides
+        _mark(o)
+        changed += 1
     return changed
 
 
