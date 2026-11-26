@@ -1141,6 +1141,12 @@ _NO_STOCK_RE = re.compile(
     r"|no\s+stock\s+(?:available|left|remaining)(?:\s+for\s+new\s+orders)?"
     r"|nothing\s+(?:left|available)\s+to\s+(?:offer|sell)"
     r"|not\s+available\s+for\s+new\s+orders|sold\s+out|all\s+sold\b"
+    # "All 70 cases SOLD", "Nothing available", "0 available", "no stock offered"
+    # (Samuel 2026-11-26: Northwick W12 Quartz — all 70 sold, previous EUR 36 —
+    # stayed green with 70 "available"; mirror Ashmere A14 Quartz).
+    r"|all\s+[\d,]+\s+(?:cases?|cs|bottles?|btls?|units?|pcs?|pieces?)\s+sold"
+    r"|\bnothing\s+available\b|\b0\s+available\b|\bzero\s+available\b"
+    r"|no\s+stock\s+offered\b|all\s+\d[\d,]*\s+sold\b"
     # "Prior parcel closed, no balance; retained for accounts" — a closed parcel
     # with no sellable balance (Samuel 2026-11-25: Grey Inlet C-84 Eider Rock,
     # stored green at a USD 2/case accounts placeholder).

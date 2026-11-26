@@ -858,6 +858,22 @@ def test_bare_figure_price_not_a_phantom_but_invented_still_flagged():
     bad = {"brand": "Ghost", "product_name": "Gin", "currency": "EUR", "price_per_case": 999.99}
     assert reconcile_source_vs_rows(src, [bad])["phantom"]  # invented → flagged
 
+def test_sold_out_detected_when_priced():
+    # Samuel 2026-11-26 W12 Quartz: "All 70 cases SOLD; previous EUR 36/case.
+    # Nothing available." — a sold-out line that KEPT its price stayed green; it
+    # must be flagged out of active comparisons. A normal "N cases available" line
+    # is untouched.
+    src = ("W12 Quartz Meadow Vodka 1L 40%, 12/case. All 70 cases SOLD; previous "
+           "EUR 36/case EXW Breda. Nothing available.\n"
+           "W09 Osprey Rail Lager 24 cans/case, 35 cases available EUR 12/case EXW Breda.\n")
+    q = {"brand": "Quartz", "product_name": "Meadow Vodka", "currency": "EUR",
+         "price_per_case": 36.0, "quantity_case": 70.0, "units_per_case": 12.0, "error_flags": []}
+    o9 = {"brand": "Osprey", "product_name": "Rail Lager", "currency": "EUR",
+          "price_per_case": 12.0, "quantity_case": 35.0, "units_per_case": 24.0, "error_flags": []}
+    rec.flag_no_available_stock([q, o9], src)
+    assert q["needs_manual_review"] is True
+    assert not o9.get("needs_manual_review")
+
 def test_pack_spec_not_read_as_retail_quantity():
     # "6 bottles/case" is a pack spec, never the available quantity
     o = {"brand": "Slate", "product_name": "Gin", "currency": "GBP", "units_per_case": 6}
