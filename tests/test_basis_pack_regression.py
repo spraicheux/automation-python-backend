@@ -631,9 +631,11 @@ def test_dual_incoterm_same_stock_splits_into_two_comparable_rows():
     assert set(by_inc) == {"EXW", "DAP"}
     assert by_inc["EXW"]["price_per_case"] == 120.0
     assert by_inc["DAP"]["price_per_case"] == 126.0
-    # stock counted once: only the EXW (kept) row carries quantity
+    # co-equal comparable offers: BOTH legs carry the shared quantity, linked by
+    # one pool (nothing sums quantity across rows, so this never double-counts)
     assert by_inc["EXW"]["quantity_case"] == 19.0
-    assert by_inc["DAP"]["quantity_case"] is None
+    assert by_inc["DAP"]["quantity_case"] == 19.0
+    assert by_inc["EXW"].get("_stock_pool") == by_inc["DAP"].get("_stock_pool") == "MB71"
     # both green; the dual-delivery review marker is cleared
     assert by_inc["EXW"]["needs_manual_review"] is False
     assert by_inc["DAP"]["needs_manual_review"] is False
@@ -664,10 +666,12 @@ def test_whatsapp_one_stock_pool_splits():
          "incoterm": "DAP", "location": "Lille", "uid": "d", "error_flags": []},
     ]
     rec.merge_same_stock_restatement(offs, src)
-    rec.merge_alt_delivery_lots(offs)
+    rec.merge_alt_delivery_lots(offs, src)
     assert len(offs) == 2
     assert {o["incoterm"] for o in offs} == {"EXW", "DAP"}
-    assert sum(1 for o in offs if o["quantity_case"]) == 1  # counted once
+    # co-equal: both legs carry the shared quantity, linked by one pool id
+    assert all(o["quantity_case"] == 11.0 for o in offs)
+    assert offs[0].get("_stock_pool") and offs[0]["_stock_pool"] == offs[1].get("_stock_pool")
 
 def test_unlabeled_balance_flags_and_blanks_quantity():
     # Plover: "360 … Warehouse balance has no unit label" + "USD 1.25 per piece".

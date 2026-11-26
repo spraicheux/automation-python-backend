@@ -73,13 +73,15 @@ def _mark(o): o["_dirty"] = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
+def merge_alt_delivery_lots(offers: List[Dict[str, Any]], source_text: str = "") -> Set[str]:
     """One physical lot quoted under two delivery terms (same product, same
     quantity, same — or one missing — case price) is ONE offer, not two. Keep the
     richest row, fold the alternative incoterm/location into its conditions, drop
     the rest. Two genuinely different SKUs (Tanqueray 1L vs 70cl: different
     quantity AND price) are left as two rows."""
     dropped: Set[str] = set()
+    _alt_lines = ([l.strip() for l in str(source_text).splitlines() if l.strip()]
+                  if source_text else None)
     groups: Dict[tuple, list] = defaultdict(list)
     for o in offers:
         groups[(_norm(o.get("brand")), _norm(o.get("product_name")))].append(o)
@@ -113,7 +115,7 @@ def merge_alt_delivery_lots(offers: List[Dict[str, Any]]) -> Set[str]:
             # sharing one pool, not a fold (Samuel 2026-11-26 Moss). Same-term or
             # same-price alternates still fold into a note below.
             others = [o for o in lot if o is not keep and not o.get("_pool_linked")]
-            lot_tofold = _split_or_fold_siblings(keep, others, None)
+            lot_tofold = _split_or_fold_siblings(keep, others, _alt_lines)
             alts = []
             for o in lot_tofold:
                 dropped.add(o.get("uid"))
@@ -1502,26 +1504,39 @@ def _blank_quantity(o: Dict[str, Any]) -> None:
         o[k] = None
 
 
+_POOL_QTY_FIELDS = ("quantity_case", "quantity_bottles", "quantity_pallets",
+                    "quantity_ftl", "quantity_unit", "units_per_case")
+
+
 def _link_shared_pool(keep: Dict[str, Any], alt: Dict[str, Any],
                       lines: Optional[List[str]]) -> None:
     """One physical stock offered under TWO DISTINCT delivery terms, each with its
-    own price, is TWO independently comparable offers — not one row with the other
-    buried in a note (Samuel 2026-11-26: Moss Bridge Whisky, EXW Ghent EUR 120 vs
-    DAP Lille EUR 126, same parcel MB71). Keep both rows so each competes in its
-    own incoterm peer group; count the stock ONCE by leaving the quantity on
-    `keep` only and blanking the alternate's. Cross-link both, and clear the
-    dual-delivery review markers — both terms are explicitly offered, so neither
-    row is an ambiguity (the enforcement gate re-flags either independently if it
-    has a real problem)."""
-    _blank_quantity(alt)
+    own price, is TWO INDEPENDENTLY COMPARABLE offers sharing ONE stock pool
+    (Samuel 2026-11-26: Moss Bridge Whisky EXW Ghent EUR 120 vs DAP Lille EUR 126,
+    parcel MB71; Rowan Ferry Whisky). Both legs are full, co-equal offers — each
+    carries the SAME shared quantity and competes in its own incoterm peer group —
+    linked by the parcel id and marked "counted once". This is safe because nothing
+    sums quantity across rows (Best Prices / benchmarks / alerts rank price only),
+    so a buyer sees availability on either leg without the pool being double-counted.
+    Clears the dual-delivery review markers — both terms are explicitly offered, so
+    neither row is an ambiguity (the gate re-flags either independently if needed)."""
+    # Share the ONE pool's stock onto BOTH legs (the source says it is the same
+    # stock), taking the non-empty value from either — so each leg is a full
+    # comparable offer showing the same availability (incl. "9 cases + 5 loose"),
+    # regardless of which leg was chosen as the richer "keep".
+    for k in _POOL_QTY_FIELDS:
+        v = keep.get(k) if keep.get(k) not in (None, "", 0) else alt.get(k)
+        if v not in (None, "", 0):
+            keep[k] = v
+            alt[k] = v
     parcel = _parcel_label(keep, lines) or _parcel_label(alt, lines)
     pc = f"parcel {parcel} " if parcel else ""
     kterm = " ".join(x for x in (_clean(keep.get("incoterm")), _clean(keep.get("location"))) if x) or "the primary"
     aterm = " ".join(x for x in (_clean(alt.get("incoterm")), _clean(alt.get("location"))) if x) or "the alternative"
-    knote = (f"One stock pool ({pc}counted once): this is the {kterm} option; "
-             f"also offered {aterm}.")
-    anote = (f"One stock pool ({pc}counted once): this is the {aterm} option; "
-             f"the {kterm} option carries the shared quantity.")
+    knote = (f"One stock pool ({pc}counted once): this {kterm} offer and the "
+             f"{aterm} offer are the SAME stock — take from either, not both.")
+    anote = (f"One stock pool ({pc}counted once): this {aterm} offer and the "
+             f"{kterm} offer are the SAME stock — take from either, not both.")
     for o, note in ((keep, knote), (alt, anote)):
         cc = _clean(o.get("commercial_conditions"))
         if "one stock pool" not in cc.lower():
@@ -1536,6 +1551,8 @@ def _link_shared_pool(keep: Dict[str, Any], alt: Dict[str, Any],
         # a split-by-incoterm pair is intentional; let the gate decide review
         o["needs_manual_review"] = False
         o["_pool_linked"] = True
+        if parcel:
+            o["_stock_pool"] = parcel   # machine link between the co-equal legs
         _mark(o)
 
 

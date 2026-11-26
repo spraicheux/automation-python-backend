@@ -3003,7 +3003,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     dropped |= _rec.drop_buy_inquiry_rows(offers, src)
     dropped |= _rec.drop_nonproduct_header_rows(offers, src)
     dropped |= _rec.merge_same_stock_restatement(offers, src)
-    dropped |= _rec.merge_alt_delivery_lots(offers)
+    dropped |= _rec.merge_alt_delivery_lots(offers, src)
     dropped |= _rec.collapse_identical_commercial_lines(offers)
     dropped |= _rec.drop_summary_rows(offers)
     changed += _rec.annotate_whole_lot(offers, src)
