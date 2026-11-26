@@ -2897,6 +2897,12 @@ def _refresh_selfcheck(job_id: str, source_text: str) -> None:
                 "units_per_case": o.units_per_case, "unit_volume_ml": o.unit_volume_ml,
                 "size_weight_g": o.size_weight_g, "incoterm": o.incoterm,
                 "location": o.location, "commercial_conditions": o.commercial_conditions,
+                # the supplier's ticket reference lets the reconciler join a source
+                # line to its row directly — without it the ref-match (Pass 0) has
+                # nothing to match and a present row is still falsely "missed"
+                # (Samuel 2026-11-26: A02/A14, W02/W05 reported not-imported).
+                "product_reference": o.product_reference,
+                "supplier_reference": o.supplier_reference,
             } for o in orm_rows]
             missed, phantom, phantom_idx = [], [], []
             if source_text:

@@ -812,6 +812,19 @@ def test_northwick_field_fixes():
             "W08 Rowan Ferry Whisky 6/case. Parcel NF83: 9 cases plus 5 loose bottles. EUR 126/case EXW Ghent.")
     assert o["quantity_bottles"] == 5.0
 
+def test_basis_unconfirmed_row_matched_by_as_quoted_amount():
+    # Samuel 2026-11-26 W05 Slate: a basis-unconfirmed row carries its amount only
+    # in "as quoted: GBP 4.20", and the source line's balance (275) is read as the
+    # price — so the row must still join on the LITERAL quoted amount, not be
+    # reported "not imported".
+    from core.reconcile import reconcile_source_vs_rows
+    src = ("W05 Slate Orchard Gin 700ml 42%, 6 bottles/case. Balance 275. GBP 4.20. "
+           "Neither the balance unit nor the price unit has been confirmed.\n")
+    row = {"brand": "Slate", "product_name": "Orchard Gin", "currency": "GBP",
+           "price_per_unit": None, "price_per_case": None,
+           "commercial_conditions": "as quoted: GBP 4.20 (price basis unconfirmed)"}
+    assert reconcile_source_vs_rows(src, [row])["missed"] == []
+
 def test_pack_spec_not_read_as_retail_quantity():
     # "6 bottles/case" is a pack spec, never the available quantity
     o = {"brand": "Slate", "product_name": "Gin", "currency": "GBP", "units_per_case": 6}

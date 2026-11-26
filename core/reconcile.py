@@ -270,6 +270,27 @@ def reconcile_source_vs_rows(source_text: str,
                 s["matched"] = rs["matched"] = True
                 break
 
+    # ── Pass 2b: basis-unconfirmed "as quoted" amount ────────────────────────
+    # A basis-unconfirmed row carries its amount only in "as quoted: GBP 4.20".
+    # The source line often also states a quantity the price parser grabs instead
+    # (Samuel 2026-11-26: W05 Slate — "Balance 275. GBP 4.20" was read as a GBP
+    # 275 price, so the 4.20 row never joined and showed "not imported"). Join the
+    # row to an unmatched line that LITERALLY contains the quoted amount.
+    for rs in sigs:
+        if rs["matched"]:
+            continue
+        mq = re.search(r"as quoted:\s*\S*\s*([\d][\d.,]*)",
+                       str(rs["row"].get("commercial_conditions") or ""), re.IGNORECASE)
+        if not mq:
+            continue
+        amt = mq.group(1).rstrip(".")
+        for s in (priced + noprice):
+            if s["matched"]:
+                continue
+            if re.search(rf"(?<![\d.]){re.escape(amt)}(?![\d])", s["line"]):
+                rs["matched"] = s["matched"] = True
+                break
+
     # ── Twin pack formats at ONE price ───────────────────────────────────────
     # Two formats of a product quoted at the same price consume one priced line
     # each in Pass 1, leaving the second row looking like a phantom. It is real
