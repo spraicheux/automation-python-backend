@@ -836,6 +836,19 @@ def test_circular_id_mislabeled_as_product_reference_is_rederived():
     rec.fix_mislabeled_product_reference([o], src)
     assert o["product_reference"] == "W02"
 
+def test_bare_figure_price_not_a_phantom_but_invented_still_flagged():
+    # Samuel 2026-11-26 W16 Tidal: "Desk figure 6.24. This figure is EUR per case"
+    # — a correct price stated as a bare number must NOT be called a phantom; but a
+    # price that appears nowhere in the source still must be.
+    from core.reconcile import reconcile_source_vs_rows
+    src = ("W16 Tidal Orchard Tonic 200ml, 12/case T2: 47 cases EXW Breda. "
+           "Desk figure 6.24. This figure is EUR PER CASE, not per bottle.\n")
+    good = {"brand": "Tidal", "product_name": "Orchard Tonic", "currency": "EUR",
+            "price_per_case": 6.24, "price_per_unit": 0.52, "units_per_case": 12}
+    assert reconcile_source_vs_rows(src, [good])["phantom"] == []
+    bad = {"brand": "Ghost", "product_name": "Gin", "currency": "EUR", "price_per_case": 999.99}
+    assert reconcile_source_vs_rows(src, [bad])["phantom"]  # invented → flagged
+
 def test_pack_spec_not_read_as_retail_quantity():
     # "6 bottles/case" is a pack spec, never the available quantity
     o = {"brand": "Slate", "product_name": "Gin", "currency": "GBP", "units_per_case": 6}

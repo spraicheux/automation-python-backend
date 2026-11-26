@@ -291,6 +291,39 @@ def reconcile_source_vs_rows(source_text: str,
                 rs["matched"] = s["matched"] = True
                 break
 
+    # ── Pass 2c: identity + bare amount ───────────────────────────────────────
+    # A price stated as a BARE number — no currency adjacent, the basis in a note
+    # ("Desk figure 6.24. This figure is EUR per case") — is not picked up by the
+    # currency-anchored price parser, so a correct row was called a phantom
+    # "invented value" (Samuel 2026-11-26: W16 Tidal 6.24). Join a still-unmatched
+    # priced row to an unmatched source line that shares the product identity AND
+    # contains the row's amount as a number.
+    for rs in sigs:
+        if rs["matched"] or not rs["prices"]:
+            continue
+        r = rs["row"]
+        toks = [t for t in re.findall(r"[a-z0-9]+",
+                ((r.get("brand") or "") + " " + (r.get("product_name") or "")).lower())
+                if len(t) > 2]
+        if len(toks) < 2:
+            continue
+        amts = {f"{p[0]:g}" for p in rs["prices"]}
+        # Search ALL source lines (not just the price-parsed ones): a bare "Desk
+        # figure 6.24" line has no currency, so it never entered priced/noprice.
+        for raw in source_text.split("\n"):
+            s_line = re.sub(r"^[>\s]+", "", raw).strip()
+            if not s_line:
+                continue
+            low = s_line.lower()
+            if (sum(1 for t in toks if t in low) >= 2
+                    and any(re.search(rf"(?<![\d.]){re.escape(a)}(?![\d])", s_line) for a in amts)):
+                rs["matched"] = True
+                # also mark the matching priced/noprice entry if present
+                for s in (priced + noprice):
+                    if not s["matched"] and s["line"] == s_line:
+                        s["matched"] = True
+                break
+
     # ── Twin pack formats at ONE price ───────────────────────────────────────
     # Two formats of a product quoted at the same price consume one priced line
     # each in Pass 1, leaving the second row looking like a phantom. It is real
