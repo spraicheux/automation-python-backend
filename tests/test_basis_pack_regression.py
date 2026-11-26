@@ -754,6 +754,26 @@ def test_backstop_dialect_reads_desk_sheet_refs():
     assert _match_header("commercial figure") is None
 
 
+def test_reconciler_matches_by_ticket_ref_not_only_price():
+    # Samuel 2026-11-26: a present row reported "not imported" because its price
+    # does not read literally in the source — a DERIVED case price (A02 wrapped:
+    # EUR 2.82/six-pack × 4) and a SOLD-OUT price-less row (A14). Match by the
+    # supplier's own ticket reference so neither is a false "missed".
+    from core.reconcile import reconcile_source_vs_rows
+    src = ("A02 Kestrel Strand Pils 4 wrapped six-packs / case 31 cases EUR 2.82 per six-pack EXW Breda\n"
+           "A14 Quartz Meadow Vodka 12 bottles per case 0 available Former quote EUR 42/case All 62 cases SOLD\n")
+    rows = [
+        {"product_reference": "A02", "brand": "Kestrel", "product_name": "Strand Pils",
+         "currency": "EUR", "price_per_case": 11.28, "price_per_unit": 0.47, "units_per_case": 24.0},
+        {"product_reference": "A14", "brand": "Quartz", "product_name": "Meadow Vodka", "currency": "EUR"},
+    ]
+    r = reconcile_source_vs_rows(src, rows)
+    assert r["missed"] == [], f"unexpected missed: {r['missed']}"
+    # a genuinely dropped ref still shows missed (no row carries it)
+    r2 = reconcile_source_vs_rows(src + "A99 Gone Product 10 cases EUR 5 per case\n", rows)
+    assert any("A99" in m for m in r2["missed"])
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

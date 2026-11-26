@@ -2325,6 +2325,22 @@
     'compound location',
     'alternative-location row backfilled',
     'alternative locations',
+    // A validity/expiry date the parser SUCCESSFULLY resolved is a success note,
+    // not a review item — without this it hit the "default to material" branch and
+    // a correctly-understood "4 December 2026" raised a REVIEW pill (Samuel
+    // 2026-11-26: Ashmere AQ1126, every row badged review for the resolved date).
+    'resolved to',
+    'explicit date stated',
+    // Informational basis / stock notes the reconcile passes attach to a row that
+    // is otherwise clean: a per-piece/set/candle sale, a dual-delivery stock pool,
+    // a superseded price, a source-stated MOQ, a deterministically-recovered line.
+    'priced per ',
+    'sold as individual',
+    'one stock pool',
+    'stock counted once',
+    'used the stated current price',
+    '(from source)',
+    'recovered deterministically',
     // A barcode that fails the GS1 check digit: the raw code is kept (shown as a
     // read-only identifier) and blanked from the matching EAN field. A handled
     // exclusion, not a review item (Samuel 2026-11-13). Mirrors api.admin

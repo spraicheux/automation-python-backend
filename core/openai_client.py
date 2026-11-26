@@ -2533,38 +2533,46 @@ async def extract_from_file(file_path: str, content_type: str) -> Dict[str, Any]
                     except Exception as _be:
                         logger.warning(f"[extract_from_file] backstop read failed: {_be}")
                         _bk_raw = []
+                    # The backstop must NEVER reduce the result: wrap it whole, so a
+                    # bug here can't discard a good LLM/structured extraction (it did
+                    # — _extra items are not always plain dicts, and _sig(...).get()
+                    # threw, zeroing EL925 to 0 rows, Samuel 2026-11-26).
                     if _bk_raw:
-                        def _sig(p):
-                            ref = re.sub(r"[^a-z0-9]", "", str(p.get("product_reference") or "").lower())
-                            nm = re.sub(r"[^a-z0-9]", "", ((str(p.get("brand") or "") + str(p.get("product_name") or "")).lower()))
-                            return ref, nm
-                        # Refs from LLM rows that HAVE a ref; names only from LLM rows
-                        # that LACK one — so a duplicate-named lot (three Bracken Pils)
-                        # is matched by its ticket ref, never collapsed by name.
-                        _have_refs = {_sig(_e)[0] for _e in _extra if _sig(_e)[0]}
-                        _have_names_noref = {_sig(_e)[1] for _e in _extra
-                                             if not _sig(_e)[0] and _sig(_e)[1]}
-                        _recovered = 0
-                        for _b in _bk_raw:
-                            _r, _n = _sig(_b)
-                            if (_r and _r in _have_refs) or (_n and _n in _have_names_noref):
-                                continue  # LLM already has this line — keep its richer parse
-                            _b.pop('_structured_source', None)
-                            try:
-                                _bc = clean_product_data(_b)
-                            except Exception:
-                                _bc = _b
-                            # NOT tagged _structured_row: the price basis is free-text,
-                            # so the reconcile passes must still refine/flag it.
-                            _bc['error_flags'] = (_bc.get('error_flags') or []) + [
-                                "row recovered deterministically — the LLM pass dropped "
-                                "this source line; re-read from the sheet"]
-                            _extra.append(_bc)
-                            _recovered += 1
-                        if _recovered:
-                            logger.warning(f"[extract_from_file] backstop recovered "
-                                           f"{_recovered} LLM-dropped line(s): "
-                                           f"{[_sig(b)[0] for b in _bk_raw]}")
+                        try:
+                            def _g(p, k):
+                                return p.get(k) if isinstance(p, dict) else getattr(p, k, None)
+                            def _sig(p):
+                                ref = re.sub(r"[^a-z0-9]", "", str(_g(p, "product_reference") or "").lower())
+                                nm = re.sub(r"[^a-z0-9]", "", ((str(_g(p, "brand") or "") + str(_g(p, "product_name") or "")).lower()))
+                                return ref, nm
+                            # Refs from LLM rows that HAVE a ref; names only from LLM
+                            # rows that LACK one — so a duplicate-named lot (three
+                            # Bracken Pils) is matched by its ticket ref, not by name.
+                            _have_refs = {_sig(_e)[0] for _e in _extra if _sig(_e)[0]}
+                            _have_names_noref = {_sig(_e)[1] for _e in _extra
+                                                 if not _sig(_e)[0] and _sig(_e)[1]}
+                            _recovered = 0
+                            for _b in _bk_raw:
+                                _r, _n = _sig(_b)
+                                if (_r and _r in _have_refs) or (_n and _n in _have_names_noref):
+                                    continue  # LLM already has this line — keep its parse
+                                _b.pop('_structured_source', None)
+                                try:
+                                    _bc = clean_product_data(_b)
+                                except Exception:
+                                    _bc = _b
+                                # NOT tagged _structured_row: the price basis is
+                                # free-text, so reconcile must still refine/flag it.
+                                _bc['error_flags'] = (_bc.get('error_flags') or []) + [
+                                    "row recovered deterministically — the LLM pass "
+                                    "dropped this source line; re-read from the sheet"]
+                                _extra.append(_bc)
+                                _recovered += 1
+                            if _recovered:
+                                logger.warning(f"[extract_from_file] backstop recovered "
+                                               f"{_recovered} LLM-dropped line(s)")
+                        except Exception as _bme:
+                            logger.warning(f"[extract_from_file] backstop merge skipped: {_bme}")
                     _merged = _structured_clean + _extra
                     logger.info(f"[extract_from_file] ===== END EXCEL (hybrid) — {len(_merged)} products "
                                 f"({len(_structured_clean)} structured + {len(_extra)} fallback) =====")

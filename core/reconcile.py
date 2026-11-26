@@ -211,8 +211,39 @@ def reconcile_source_vs_rows(source_text: str,
                      "brand": (r.get("brand") or "").strip().lower(),
                      "qty": r.get("quantity_case") or r.get("quantity_bottles")})
 
+    # ── Pass 0: ticket-reference match (Samuel 2026-11-26) ───────────────────
+    # An Excel circular ("A02 …") and a WhatsApp list ("W05 …") each lead a line
+    # with the supplier's own reference, and the stored row carries it. This is
+    # the most reliable join and is independent of how the PRICE reads — a derived
+    # case price (A02 wrapped: EUR 2.82/six-pack × 4 = 11.28/case), a sold-out
+    # HISTORICAL price (A14 Quartz), or a basis-unconfirmed amount — all of which
+    # the price matcher misses, wrongly reporting a present row as "not imported".
+    def _norm_ref(x):
+        return re.sub(r"[^a-z0-9]", "", str(x or "").lower())
+    _row_by_ref: Dict[str, list] = {}
+    for rs in sigs:
+        for _rf in (rs["row"].get("product_reference"),
+                    rs["row"].get("supplier_reference")):
+            nr = _norm_ref(_rf)
+            if nr:
+                _row_by_ref.setdefault(nr, []).append(rs)
+    _LEAD_REF_RE = re.compile(r"^([A-Za-z]{1,4}\d{1,4}(?:-[A-Za-z0-9]{1,3})?)\b")
+    if _row_by_ref:
+        for s in (priced + noprice):
+            if s["matched"]:
+                continue
+            m = _LEAD_REF_RE.match(s["line"])
+            if not m:
+                continue
+            for rs in _row_by_ref.get(_norm_ref(m.group(1)), []):
+                if not rs["matched"]:
+                    s["matched"] = rs["matched"] = True
+                    break
+
     # ── Pass 1: priced lines match on price (consume each stored row once) ───
     for s in priced:
+        if s["matched"]:
+            continue
         for rs in sigs:
             if rs["matched"] or not rs["prices"]:
                 continue
