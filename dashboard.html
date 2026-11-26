@@ -2219,6 +2219,13 @@
       const src = btls ? ` <span class="qty-source" title="source quantity">(${btls} btls)</span>` : '';
       return `<span>${qc} cs${src}</span>`;
     }
+    // A balance the source stated but whose unit it did NOT (Samuel 2026-11-26:
+    // Northwick W05 Slate "Balance 275. Neither the balance unit nor the price
+    // unit confirmed"): show the number as an unconfirmed balance — never "cs".
+    if (raw === 'unconfirmed' || raw === 'unknown') {
+      if (qc == null) return nullCell();
+      return `<span class="qty-loose" title="The source states this balance but not its unit — unconfirmed; excluded from confirmed stock">${qc} <span style="color:var(--muted)">(unit unconfirmed)</span></span>`;
+    }
     if (qc == null) return nullCell();
     const label = _QTY_UNIT_LABEL[raw] || 'cs';
     return `<span>${qc} ${label}</span>`;

@@ -1856,10 +1856,25 @@ def flag_unlabeled_quantity_balance(offers: List[Dict[str, Any]],
                 v = _f(o.get(k))
                 if v:
                     bal = f"{v:g}"; break
-        _blank_quantity(o)
+        # Keep the balance VISIBLE but with its unit marked UNCONFIRMED — the
+        # number stays (275), it is NOT presented as cases, and needs_manual_review
+        # keeps it out of usable/confirmed stock (Samuel 2026-11-26: "the number
+        # must remain visible as an unconfirmed balance, not blanked, not cases").
+        o["quantity_bottles"] = None
+        o["quantity_pallets"] = None
+        o["quantity_ftl"] = None
+        if bal:
+            try:
+                o["quantity_case"] = float(bal)
+            except (TypeError, ValueError):
+                o["quantity_case"] = None
+            o["quantity_unit"] = "unconfirmed"
+        else:
+            o["quantity_case"] = None
+            o["quantity_unit"] = None
         where = f"Warehouse balance {bal}" if bal else "The warehouse balance"
-        note = (f"{where} — no unit label in the source; stock quantity/unit "
-                f"unconfirmed (price kept as quoted).")
+        note = (f"{where} — stock unit unconfirmed (no unit label in the source); "
+                f"shown as an unconfirmed balance, not confirmed cases.")
         cc = _clean(o.get("commercial_conditions"))
         o["commercial_conditions"] = (cc + " | " if cc else "") + note
         # The same line may also leave the price BASIS unconfirmed and the

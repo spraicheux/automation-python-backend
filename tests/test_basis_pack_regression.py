@@ -673,8 +673,10 @@ def test_whatsapp_one_stock_pool_splits():
     assert all(o["quantity_case"] == 11.0 for o in offs)
     assert offs[0].get("_stock_pool") and offs[0]["_stock_pool"] == offs[1].get("_stock_pool")
 
-def test_unlabeled_balance_flags_and_blanks_quantity():
+def test_unlabeled_balance_kept_visible_as_unconfirmed():
     # Plover: "360 … Warehouse balance has no unit label" + "USD 1.25 per piece".
+    # The 360 stays VISIBLE as an unconfirmed balance (not blanked, not pieces/
+    # cases), the per-piece price is kept, and the row is flagged.
     src = ("D09 Plover Lane Soap 100 g 12 pieces per carton 360 USD 1.25 per piece "
            "FCA Hull Warehouse balance has no unit label.")
     o = {"brand": "Plover", "product_name": "Plover Lane Soap", "currency": "USD",
@@ -685,9 +687,10 @@ def test_unlabeled_balance_flags_and_blanks_quantity():
     rec.flag_unlabeled_quantity_balance(offs, src)
     rec.clear_contradictory_currency_flag(offs, src)
     assert o["price_per_unit"] == 1.25 and o["currency"] == "USD"  # price kept
-    assert o["quantity_case"] is None and o["quantity_bottles"] is None
+    assert o["quantity_case"] == 360.0 and o["quantity_unit"] == "unconfirmed"
+    assert o["quantity_bottles"] is None   # no invented piece/case unit
     assert o["needs_manual_review"] is True
-    assert "no unit label" in (o["commercial_conditions"] or "").lower()
+    assert "unit unconfirmed" in (o["commercial_conditions"] or "").lower()
     # the contradictory "normalized to EUR" note is gone
     assert all("normalized to eur" not in f.lower() for f in o["error_flags"])
 
@@ -807,7 +810,9 @@ def test_northwick_field_fixes():
     o = run({"brand": "Slate", "product_name": "Orchard Gin", "currency": "GBP",
              "quantity_case": 275, "units_per_case": 6, "error_flags": ["Price on request — no price stated in source"]},
             "W05 Slate Orchard Gin 700ml 42%, packing 6 bottles/case. Balance 275. GBP 4.20. Neither the balance unit nor the price unit has been confirmed.")
-    assert o["quantity_case"] is None and o["needs_manual_review"]
+    # 275 stays VISIBLE as an unconfirmed balance (not blanked, not cases)
+    assert o["quantity_case"] == 275.0 and o["quantity_unit"] == "unconfirmed"
+    assert o["needs_manual_review"]
     assert "as quoted: gbp 4.20" in (o["commercial_conditions"] or "").lower()
     assert all("no price stated" not in f.lower() for f in o["error_flags"])
     # Rowan 9 cases + 5 loose (not the 54 = 9×6 double-count)
