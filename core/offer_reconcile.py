@@ -1966,6 +1966,13 @@ def apply_basis_from_twin(offers: List[Dict[str, Any]], twin_map: Dict[tuple, se
         # made a duplicate resend / a stale earlier copy wrongly blank Dune & Linen.
         if o.get("_unit_priced") or o.get("_structured_row"):
             continue
+        # Cross-source sync is for the SAME NAMED supplier only. Two rows that both
+        # lack a supplier name must never be treated as twins — otherwise North
+        # Fen could reach into Estuary (Samuel 2026-11-26: "North Fen's explicit USD
+        # must not resolve Estuary's ambiguous dollar"). An empty supplier key is
+        # unmatchable here and unregistered on the lookup side.
+        if not _norm(o.get("supplier_name")):
+            continue
         pc = _f(o.get("price_per_case")); pu = _f(o.get("price_per_unit"))
         upc = _f(o.get("units_per_case"))
         if not (pc or pu):

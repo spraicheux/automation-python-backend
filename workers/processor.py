@@ -3051,6 +3051,12 @@ def _sync_basis_from_twin(offers: list, job_id: str) -> None:
                 OfferItemDB.price_per_unit.is_(None),
                 OfferItemDB.job_id != job_id).all()
             for t in twins:
+                # Only a NAMED supplier can seed a cross-source twin — never an
+                # unknown-supplier row, which would otherwise collide with another
+                # file's unknown-supplier row (Samuel 2026-11-26 cross-source
+                # isolation: keep Estuary and North Fen independent).
+                if not (t.supplier_name or "").strip():
+                    continue
                 cc = t.commercial_conditions or ""
                 m = _re.search(r"as quoted:\s*\S*\s*([\d][\d.,]*)", cc, _re.I)
                 if not m:

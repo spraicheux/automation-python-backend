@@ -697,6 +697,26 @@ def test_clearly_labelled_quantity_not_flagged():
     n = rec.flag_unlabeled_quantity_balance(offs, src)
     assert n == 0 and o["quantity_case"] == 17.0
 
+def test_cross_source_twin_needs_a_named_supplier():
+    # Two different suppliers that both failed supplier attribution must NOT be
+    # treated as twins (Samuel 2026-11-26: North Fen's quote must not reach into
+    # Estuary). A price-less, basis-unstated "twin" with an EMPTY supplier is
+    # ignored; the other file's derived price is left untouched.
+    twin_map = {rec._twin_key_fields("", "Mere", 50.0): {24.0}}
+    offs = [{"brand": "Mere", "product_name": "Mere Lantern EDP", "currency": "USD",
+             "price_per_unit": 24.0, "unit_volume_ml": 50.0, "supplier_name": "",
+             "needs_manual_review": False}]
+    changed = rec.apply_basis_from_twin(offs, twin_map)
+    assert changed == 0
+    assert offs[0]["price_per_unit"] == 24.0 and offs[0]["currency"] == "USD"
+    # the SAME named supplier still syncs (regression guard stays effective)
+    twin_named = {rec._twin_key_fields("Acme BV", "Rae", 700.0): {120.0}}
+    o2 = [{"brand": "Rae", "product_name": "Rae Gin", "currency": "EUR",
+           "price_per_case": 120.0, "price_per_unit": 20.0, "units_per_case": 6.0,
+           "unit_volume_ml": 700.0, "supplier_name": "Acme BV"}]
+    assert rec.apply_basis_from_twin(o2, twin_named) == 1
+    assert o2[0]["price_per_case"] is None
+
 def test_nonproduct_header_row_dropped():
     # the circular banner read as a product (no price, no qty) is dropped; a real
     # price-on-request product (with a quantity) is kept.
