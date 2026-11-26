@@ -170,9 +170,28 @@ _INCOTERM_LITERALS = {"exw", "fca", "fob", "cif", "cfr", "cpt", "cip",
 _PRICE_FIELDS = {"price_per_unit", "price_per_case", "_price_value"}
 
 
-def _match_header(norm: str) -> Optional[str]:
+# A free-text "stock circular" dialect (Samuel 2026-11-26 Estuary EL-925 "Desk
+# parcels": Ticket · What is on the floor · Presentation · Warehouse tally ·
+# Commercial figure · Handover · Desk remarks). These names are distinctive enough
+# not to collide with a normal columnar sheet, so they are OFF by default and only
+# enabled as a deterministic COMPLETENESS BACKSTOP for a sheet the LLM read (used
+# to recover a row the LLM dropped — never to replace a good LLM row).
+_FREETEXT_SYNONYMS = {
+    "ticket": "product_reference",
+    "what is on the floor": "product_name",
+    "presentation": "_size",
+    "warehouse tally": "_quantity",
+    "commercial figure": "_price_value",
+    "handover": "incoterm",
+    "desk remarks": "notes",
+}
+
+
+def _match_header(norm: str, extra: Optional[Dict[str, str]] = None) -> Optional[str]:
     if not norm:
         return None
+    if extra and norm in extra:
+        return extra[norm]
     if norm in _IGNORE_HEADERS:
         return "_ignore"
     if norm in _INCOTERM_LITERALS:
@@ -186,7 +205,9 @@ def _match_header(norm: str) -> Optional[str]:
     return None
 
 
-def _detect_header_row(ws, scan: int = 12) -> Optional[Tuple[int, Dict[int, str]]]:
+def _detect_header_row(ws, scan: int = 12,
+                       extra_synonyms: Optional[Dict[str, str]] = None
+                       ) -> Optional[Tuple[int, Dict[int, str]]]:
     """Find the header row (most recognised columns) and its column→field map.
     Returns None when no row recognises enough labelled columns."""
     best: Optional[Tuple[int, Dict[int, str]]] = None
@@ -195,7 +216,7 @@ def _detect_header_row(ws, scan: int = 12) -> Optional[Tuple[int, Dict[int, str]
         colmap: Dict[int, str] = {}
         seen_fields = set()
         for c in range(1, ws.max_column + 1):
-            field = _match_header(_norm(ws.cell(row=r, column=c).value))
+            field = _match_header(_norm(ws.cell(row=r, column=c).value), extra_synonyms)
             if field and field not in ("_ignore",):
                 # First column wins a given field (avoid a stray later dup).
                 if field not in seen_fields:
@@ -858,13 +879,20 @@ def _sheet_product_row_count(ws, limit: int = 80) -> int:
     return n
 
 
-def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]]:
+def extract_structured_products(file_path: str,
+                                extra_synonyms: Optional[Dict[str, str]] = None,
+                                only_sheets: Optional[set] = None
+                                ) -> Optional[List[Dict[str, Any]]]:
     """Deterministically extract products from every well-structured sheet.
     Returns a list of raw product dicts (pre-clean), or None when no sheet has a
     recognisable header, OR when a sheet whose header we cannot read still holds
     several priced rows — in that case we escalate the WHOLE workbook to the LLM
     fallback (which reads every sheet) rather than return a partial result that
-    silently loses the unreadable sheet (Samuel 2026-11-25)."""
+    silently loses the unreadable sheet (Samuel 2026-11-25).
+
+    extra_synonyms enables an extra header dialect (e.g. the free-text stock
+    circular) for the completeness backstop; only_sheets restricts to named sheets.
+    Both default off, so the normal structured path is unchanged."""
     try:
         import openpyxl
     except Exception as e:  # pragma: no cover
@@ -882,7 +910,9 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
     for ws in wb.worksheets:
         if ws.max_row is None or ws.max_row < 2:
             continue
-        detected = _detect_header_row(ws)
+        if only_sheets is not None and ws.title not in only_sheets:
+            continue
+        detected = _detect_header_row(ws, extra_synonyms=extra_synonyms)
         if not detected:
             # An unreadable PRODUCT sheet is NOT dropped silently here: the caller
             # checks unreadable_product_sheet_names() and routes those sheets to the
@@ -1766,6 +1796,25 @@ def extract_structured_products(file_path: str) -> Optional[List[Dict[str, Any]]
     logger.info(f"[xlsx_structured] extracted {len(products)} product(s) from "
                 f"{recognised_sheets} structured sheet(s)")
     return products
+
+
+def extract_freetext_sheets(file_path: str,
+                            sheet_names: List[str]) -> List[Dict[str, Any]]:
+    """Deterministic read of named free-text 'stock circular' sheets, using the
+    extra dialect (Ticket / What is on the floor / Commercial figure / …). This is
+    the COMPLETENESS BACKSTOP (Samuel 2026-11-26): the LLM parses the embedded
+    free-text prices better, but it non-deterministically drops a whole line
+    (Dune/Plover vanished between runs). The caller keeps the LLM rows and only
+    ADDS a backstop row for a ticket the LLM missed — so a line is never silently
+    lost, and a good LLM row is never replaced. Returns raw dicts (pre-clean)."""
+    try:
+        rows = extract_structured_products(
+            file_path, extra_synonyms=_FREETEXT_SYNONYMS,
+            only_sheets=set(sheet_names)) or []
+    except Exception as e:
+        logger.warning(f"[xlsx_structured] free-text backstop read failed: {e}")
+        return []
+    return rows
 
 
 def unreadable_product_sheet_names(file_path: str) -> List[str]:

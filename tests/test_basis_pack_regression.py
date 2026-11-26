@@ -730,6 +730,29 @@ def test_nonproduct_header_row_dropped():
     names = [o["product_name"] for o in offs]
     assert names == ["Sedge Point Gin"]
 
+def test_header_row_dropped_when_named_after_supplier_company():
+    # the LLM sometimes names the banner "Supplier <company>" (not "Supplier
+    # Offer") — still a no-price, no-qty banner line and must be dropped.
+    offs = [
+        {"brand": "Not Found", "product_name": "Supplier Estuary Ledger Merchants BV",
+         "currency": "EUR", "product_reference": "EL-925", "uid": "h1"},
+        {"brand": None, "product_name": "Circular EL-925", "uid": "h2"},
+        {"brand": "Copper", "product_name": "Fen Liqueur", "price_per_case": 78.0,
+         "quantity_case": 44.0, "incoterm": "EXW", "uid": "real"},
+    ]
+    rec.drop_nonproduct_header_rows(offs, "")
+    assert [o["product_name"] for o in offs] == ["Fen Liqueur"]
+
+def test_backstop_dialect_reads_desk_sheet_refs():
+    # the free-text 'stock circular' dialect must map the Desk columns so a
+    # dropped line can be recovered deterministically.
+    from core.xlsx_structured import _match_header, _FREETEXT_SYNONYMS
+    assert _match_header("commercial figure", _FREETEXT_SYNONYMS) == "_price_value"
+    assert _match_header("what is on the floor", _FREETEXT_SYNONYMS) == "product_name"
+    assert _match_header("handover", _FREETEXT_SYNONYMS) == "incoterm"
+    # OFF by default: a normal sheet never picks up this dialect
+    assert _match_header("commercial figure") is None
+
 
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

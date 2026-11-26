@@ -1721,9 +1721,12 @@ def drop_buy_inquiry_rows(offers: List[Dict[str, Any]], source_text: str) -> Set
     return dropped
 
 
+# A name that is really the circular's banner, not a product: "Supplier Offer",
+# "Supplier Estuary Ledger Merchants BV", "Circular EL-925", "Subject to unsold".
+# "supplier"/"circular" may be followed by the company/ref text the LLM swept in.
 _HEADER_NAME_RE = re.compile(
-    r"^(?:supplier(?:\s+offer)?|offer|circular|price\s*list|pricelist|"
-    r"subject\s+to\s+unsold|not\s+found|n/?a|unknown)$", re.IGNORECASE)
+    r"^(?:supplier\b.*|offer|circular\b.*|price\s*list|pricelist|"
+    r"subject\s+to\s+unsold.*|not\s+found|n/?a|unknown)$", re.IGNORECASE)
 _CIRCULAR_REF_RE = re.compile(r"^[A-Z]{1,4}[-\s]?\d{2,6}[A-Z]?$", re.IGNORECASE)
 
 
