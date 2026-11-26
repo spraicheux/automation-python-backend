@@ -2046,6 +2046,39 @@ def fix_wrapped_pack_unit_price(offers: List[Dict[str, Any]], source_text: str) 
     return changed
 
 
+_LEAD_TICKET_RE = re.compile(r"^([A-Za-z]{1,4}\d{1,4}(?:-[A-Za-z0-9]{1,3})?)\b")
+
+
+def fix_mislabeled_product_reference(offers: List[Dict[str, Any]],
+                                     source_text: str) -> int:
+    """The extractor sometimes stores the CIRCULAR's own number (NF1126, EL-925,
+    AQ1126) as a row's product_reference instead of the line's own ticket (W02),
+    so the reconciler cannot join the row and reports it "not imported" although it
+    is present (Samuel 2026-11-26: Northwick W02). Re-derive the ticket from the
+    row's source line when the stored reference is really the document id."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    header = " ".join(lines[:4])
+    circ = {m.upper() for m in re.findall(r"\b([A-Z]{1,4}-?\d{3,6})\b", header)}
+    if not circ:
+        return 0
+    changed = 0
+    for o in offers:
+        ref = str(o.get("product_reference") or "").strip().upper()
+        if not ref or ref.replace("-", "") not in {c.replace("-", "") for c in circ}:
+            continue
+        ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines)
+        if not ln:
+            continue
+        m = _LEAD_TICKET_RE.match(ln)
+        if m and m.group(1).upper().replace("-", "") != ref.replace("-", ""):
+            o["product_reference"] = m.group(1)
+            _mark(o)
+            changed += 1
+    return changed
+
+
 def _twin_key_fields(supplier, brand, vol) -> tuple:
     v = _f(vol)
     return (_norm(supplier), _norm(brand), round(v) if v else 0)

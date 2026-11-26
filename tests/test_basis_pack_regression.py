@@ -825,6 +825,17 @@ def test_basis_unconfirmed_row_matched_by_as_quoted_amount():
            "commercial_conditions": "as quoted: GBP 4.20 (price basis unconfirmed)"}
     assert reconcile_source_vs_rows(src, [row])["missed"] == []
 
+def test_circular_id_mislabeled_as_product_reference_is_rederived():
+    # Samuel 2026-11-26 W02: the LLM stored the circular number "NF1126" as the
+    # row's reference instead of the ticket "W02", so the reconciler could not join
+    # it. Re-derive the ticket from the row's source line.
+    src = ("Northwick Fen Drinks BV — NF1126\nOffer issued 26 November 2026.\n"
+           "W02 — Same Kestrel pils as W01, wrapped in sixes, 27 cases EUR 2.70 per six-pack.\n")
+    o = {"brand": "", "product_name": "Same Kestrel pils", "price_per_case": 10.8,
+         "quantity_case": 27, "product_reference": "NF1126"}
+    rec.fix_mislabeled_product_reference([o], src)
+    assert o["product_reference"] == "W02"
+
 def test_pack_spec_not_read_as_retail_quantity():
     # "6 bottles/case" is a pack spec, never the available quantity
     o = {"brand": "Slate", "product_name": "Gin", "currency": "GBP", "units_per_case": 6}

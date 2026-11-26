@@ -2988,6 +2988,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     changed += _rec.flag_lot_total_conflict(offers, src)         # declared total ≠ breakdown
     changed += _rec.flag_unlabeled_quantity_balance(offers, src) # balance with no unit label → review
     changed += _rec.fix_wrapped_pack_unit_price(offers, src)     # wrapped six-pack → per-can price (no false conflict)
+    changed += _rec.fix_mislabeled_product_reference(offers, src)  # circular id stored as a row's ref → re-derive ticket
     changed += _rec.clear_contradictory_currency_flag(offers, src)  # drop stale "normalized to EUR" on non-EUR
     changed += _rec.flag_unstated_price_basis(offers, src)
     changed += _rec.flag_absent_price_basis(offers, src)
