@@ -179,6 +179,31 @@ _IGNORE_HEADERS = {"test id", "id", "no", "line no", "line number", "line id",
 _INCOTERM_LITERALS = {"exw", "fca", "fob", "cif", "cfr", "cpt", "cip",
                       "dap", "dpu", "ddp", "dat", "fas", "exworks"}
 
+# Known multi-word delivery places. A location read out of a flattened row is ONE
+# token UNLESS it is one of these pairs, so a capitalised NOTE word that follows
+# the place ("EXW Antwerp Superseded price…", Ashmere B04; "EXW Ghent Entire
+# parcel…", B05; "EXW Ghent Stock: 7 pallets…", B08) is never swallowed into the
+# location (Samuel 2026-11-27).
+_MULTIWORD_PLACES = {
+    ("hong", "kong"), ("new", "york"), ("le", "havre"), ("los", "angeles"),
+    ("san", "francisco"), ("cape", "town"), ("abu", "dhabi"), ("kuala", "lumpur"),
+    ("port", "said"), ("ho", "chi"), ("rio", "de"),
+}
+
+
+def _trim_location(value: str) -> str:
+    """Clean a location: the first place token, plus a second only when the pair is
+    a known multi-word city. Stops a capitalised NOTE word that follows the place in
+    a flattened row from reading as part of the location (Samuel 2026-11-27 Ashmere
+    B04/B05/B08/B09/B10 — "Antwerp Superseded", "Ghent Entire", "Ghent Stock",
+    "Breda This", "Antwerp Price")."""
+    toks = str(value or "").strip(" .,-").split()
+    if not toks:
+        return ""
+    if len(toks) >= 2 and (toks[0].lower(), toks[1].lower()) in _MULTIWORD_PLACES:
+        return f"{toks[0]} {toks[1]}"
+    return toks[0]
+
 # Fields that make a row a real product line (need at least one). "_price_value"
 # is the bare "Price" column resolved later against its "Price basis".
 _PRICE_FIELDS = {"price_per_unit", "price_per_case", "_price_value"}
@@ -1108,11 +1133,15 @@ def extract_structured_products(file_path: str,
                     # "N pieces per inner [box/carton]" — read the count directly
                     # (_parse_pack returns None for a pieces-only pack). Also the
                     # "inner box × N pieces" form (Alder S01 "8 pieces per inner").
+                    # "N pieces per inner box" AND the reversed "inner box(es) of N
+                    # candles/pieces" (Ashmere A07 "Inner boxes of 9 candles"), which
+                    # the per/slash form missed — the 9 is the box size.
                     _ibm = re.search(
-                        r"(\d[\d,]*)\s*(?:pieces?|pcs?|candles?|units?)\s*(?:/|per)\s*inner",
+                        r"(\d[\d,]*)\s*(?:pieces?|pcs?|candles?|units?)\s*(?:/|per)\s*inner"
+                        r"|inner\s*box(?:es)?\s*of\s*(\d[\d,]*)",
                         str(val), re.IGNORECASE)
                     if _ibm:
-                        innerbox_pieces = _num_thousands(_ibm.group(1))
+                        innerbox_pieces = _num_thousands(_ibm.group(1) or _ibm.group(2))
                         if not prod.get("packaging_raw"):
                             prod["packaging_raw"] = str(val).strip()
                     elif re.search(r"per\s*inner\s*box|inner\s*box(?:es)?\s*[x×]",
@@ -1501,7 +1530,29 @@ def extract_structured_products(file_path: str,
                 prod["incoterm"] = _ism.group(1).upper()
                 _loc = _ism.group(2).strip(" .-")
                 if _loc and not prod.get("location"):
-                    prod["location"] = " ".join(_loc.split()[:2])
+                    prod["location"] = _trim_location(_loc)
+
+            # ── An incoterm cell that is a bare PLACE, not a term ─────────────
+            # "Antwerp" with no EXW/FCA/… literal (Ashmere C06 "Place and terms"
+            # column) is the warehouse LOCATION, not the incoterm. Move it; when the
+            # row says the delivery term is unsettled, leave the incoterm blank and
+            # flag (Samuel 2026-11-27 C06 Sable "Warehouse location only. Incoterm
+            # has not been agreed").
+            _inc_bare = str(prod.get("incoterm") or "").strip()
+            if _inc_bare and not _ism and _inc_bare.lower() not in _INCOTERM_LITERALS:
+                if not prod.get("location"):
+                    prod["location"] = _trim_location(_inc_bare)
+                prod["incoterm"] = None
+                if re.search(r"incoterm[^.]*?(?:not|has\s*n.?t|have\s*n.?t)\s+"
+                             r"(?:been\s+)?agreed|incoterm\s+to\s+be\s+agreed"
+                             r"|location\s+only|warehouse\s+location",
+                             row_text, re.IGNORECASE):
+                    _flb = prod.setdefault("error_flags", [])
+                    _mlb = ("delivery term not agreed in the source — incoterm "
+                            "unconfirmed; the stored place is the warehouse location only")
+                    if _mlb not in _flb:
+                        _flb.append(_mlb)
+                    prod["needs_manual_review"] = True
 
             # ── Currency explicitly left UNCONFIRMED in the row text ─────────
             # A note like "Settlement currency awaiting treasury confirmation"
@@ -1545,7 +1596,7 @@ def extract_structured_products(file_path: str,
                     r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)", row_text)
                 if _il:
                     prod.setdefault("incoterm", _il.group(1).upper())
-                    prod.setdefault("location", _il.group(2).strip())
+                    prod.setdefault("location", _trim_location(_il.group(2)))
 
             # ── Inner-box, per-piece item: "7 inner boxes" of "8 pieces per
             # inner box" = 56 pieces. Store the piece total, NOT 7 cases, and let
@@ -1558,8 +1609,10 @@ def extract_structured_products(file_path: str,
                 if qty_innerbox_count:
                     _pieces = qty_innerbox_count * innerbox_pieces
                     # Add a "+ N single/loose [candles/pieces]" remainder (Alder S01
-                    # "3 inners + 2 single candles" = 24 + 2 = 26).
-                    _lm = re.search(r"\+\s*(\d[\d,]*)\s*(?:single|loose)",
+                    # "3 inners + 2 single candles" = 24 + 2 = 26; Ashmere A07 "4
+                    # inners plus 7 single candles" = 36 + 7 = 43 — "plus" as well as
+                    # "+", Samuel 2026-11-27).
+                    _lm = re.search(r"(?:\+|plus)\s*(\d[\d,]*)\s*(?:single|loose|individual)",
                                     qty_raw or "", re.IGNORECASE)
                     if _lm and _num_thousands(_lm.group(1)):
                         _pieces += _num_thousands(_lm.group(1))
@@ -1768,6 +1821,53 @@ def extract_structured_products(file_path: str,
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
 
+            # (a2) Retail SET sold intact with no outer case (Ashmere A08 Mica "16
+            #      intact sets … EUR 24 per set … Sell intact only. No outer case
+            #      offered"; mirrors Northwick W07). The SET is the sellable unit:
+            #      price per set, stock in sets, and NO case is invented from the
+            #      set's component sprays (units_per_case "2" came from "2 × 50 ml").
+            if (re.search(r"\bper\s+set\b|\bsets?\s+at\b|\bintact\s+sets?\b",
+                          row_text, re.IGNORECASE)
+                    and re.search(r"no\s+outer\s+cases?|sell\s+intact|sold\s+intact"
+                                  r"|intact\s+only", row_text, re.IGNORECASE)):
+                _setp = prod.get("price_per_unit")
+                if _setp is None:
+                    _setp = prod.get("price_per_case")
+                prod["units_per_case"] = None
+                prod["price_per_case"] = None
+                prod["price_per_case_eur"] = None
+                if _setp is not None:
+                    prod["price_per_unit"] = _setp
+                if prod.get("quantity_case") is not None and prod.get("quantity_bottles") is None:
+                    prod["quantity_bottles"] = prod.pop("quantity_case")
+                prod["quantity_unit"] = "sets"
+                _ccs = prod.get("commercial_conditions") or ""
+                if "per set" not in _ccs.lower():
+                    prod["commercial_conditions"] = (_ccs + " | " if _ccs else "") + (
+                        "sold as intact sets — priced per set, no outer case")
+
+            # (a3) The row states its OWN units, overriding the case-based column
+            #      headers: the tally is INDIVIDUAL pieces and the price is PER piece
+            #      (Ashmere B03 Silk "tally is individual candles; price is EUR per
+            #      candle. These units replace both column headings"; mirrors
+            #      Northwick W17). Keep the piece count and the per-piece price —
+            #      never read the count as cases or blank the confirmed price.
+            if re.search(r"individual\s+candles?|individual\s+pieces?|per\s+candle\b"
+                         r"|units\s+replace\s+both", row_text, re.IGNORECASE):
+                _icq = prod.get("quantity_case") or prod.get("quantity_bottles")
+                _icp = prod.get("price_per_unit")
+                if _icp is None:
+                    _icp = prod.get("price_per_case")
+                if _icq is not None:
+                    prod["quantity_bottles"] = _icq
+                    prod.pop("quantity_case", None)
+                    prod["quantity_unit"] = "pieces"
+                prod["units_per_case"] = None
+                if _icp is not None:
+                    prod["price_per_unit"] = _icp
+                prod["price_per_case"] = None
+                prod["price_per_case_eur"] = None
+
             # (a) Sold out / reserved / closed parcel → not sellable stock. Catch
             #     the circular dialects too (Samuel 2026-11-27: Ashmere A14 "All 62
             #     cases SOLD … 0 available … no stock offered"; B05 Raven "parcel
@@ -1870,6 +1970,73 @@ def extract_structured_products(file_path: str,
                 _flag(f"offer expired{(' ' + _edate) if _edate else ''} and not "
                       f"renewed — stale; excluded from active comparisons, "
                       f"retained for reference")
+
+            # (f) Superseded / withdrawn price: the row states a CURRENT price and
+            #     marks an earlier one withdrawn (Ashmere B04 Birch "CURRENT price
+            #     EUR 63/case; EUR 57/case withdrawn"); the current figure wins
+            #     (mirrors Northwick W18 and offer_reconcile.apply_superseded_price).
+            #     NOT fired when the row says both prices stand (A13 Flint "neither
+            #     supersedes the other").
+            if (re.search(r"\bwithdrawn\b|\bsuperseded\b|no\s+longer\s+valid"
+                          r"|previous\s+quote|earlier[^.]*\bquote", row_text, re.IGNORECASE)
+                    and not re.search(r"neither\s+supersedes|both\s+prices?\s+"
+                                      r"(?:remain|stand|current|are\s+current)",
+                                      row_text, re.IGNORECASE)):
+                _cm = re.search(r"(?:current|new|correct|revised)\s+price\s*(?:is\s*)?"
+                                r"(?:USD|EUR|GBP|CHF|HKD|SGD|\$|€|£)?\s*(\d[\d.,]*)",
+                                row_text, re.IGNORECASE)
+                if _cm:
+                    try:
+                        _newp = round(float(_cm.group(1).replace(",", "")), 2)
+                        _oldp = prod.get("price_per_case")
+                        if _oldp and abs(float(_oldp) - _newp) > 0.01:
+                            _ratio = _newp / float(_oldp)
+                            prod["price_per_case"] = _newp
+                            for _pf in ("price_per_unit", "price_per_unit_eur",
+                                        "price_per_case_eur"):
+                                _v = prod.get(_pf)
+                                if _v is not None:
+                                    prod[_pf] = round(float(_v) * _ratio, 4)
+                            _ff = prod.setdefault("error_flags", [])
+                            _fm = (f"used the stated current price {_newp:g} per case "
+                                   f"(the earlier {float(_oldp):g} was withdrawn)")
+                            if _fm not in _ff:
+                                _ff.append(_fm)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+
+            # (b2) Available stock stated ONLY in the note as "N pallets × M cases"
+            #      with an empty quantity column (Ashmere B08 Thistle "Stock: 7
+            #      pallets x 48 cases", quantity cell blank → 336 cases, 48/pallet).
+            if not any(prod.get(k) for k in ("quantity_case", "quantity_bottles",
+                                             "quantity_pallets", "quantity_ftl")):
+                _pm = re.search(r"(\d[\d,]*)\s*pallets?\s*(?:of|[x×*])\s*(\d[\d,]*)\s*cases?",
+                                row_text, re.IGNORECASE)
+                if _pm:
+                    try:
+                        _npal = int(_pm.group(1).replace(",", ""))
+                        _mc = int(_pm.group(2).replace(",", ""))
+                        prod["quantity_case"] = float(_npal * _mc)
+                        prod["quantity_unit"] = "cases"
+                        prod["cases_per_pallet"] = float(_mc)
+                    except ValueError:
+                        pass
+
+            # (g) Customs tier stated in the row note (Ashmere "T2. Ready stock").
+            #     The structured reader has no customs column, so read a clearly
+            #     stated T1/T2 off the row text — EXCEPT where the row forbids
+            #     inheriting it or says it does not apply (A16 "The T2 on Kestrel
+            #     does not apply"). Gives the Excel rows the same customs status
+            #     their Northwick twins carry (Samuel 2026-11-27 parity).
+            if not prod.get("custom_status"):
+                _negc = re.search(
+                    r"do\s*n(?:o|')t\s+(?:assume|copy)"
+                    r"|not\s+(?:to\s+be\s+)?(?:assumed?|inherit(?:ed)?|copied)"
+                    r"|does\s+not\s+apply|not\s+supplied|unconfirmed|not\s+agreed"
+                    r"|pending", row_text, re.IGNORECASE)
+                _ct = re.search(r"\bT([12])\b", row_text)
+                if _ct and not _negc:
+                    prod["custom_status"] = f"T{_ct.group(1)}"
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,

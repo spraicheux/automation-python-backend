@@ -1170,7 +1170,23 @@ def _block_for_ref(text: str, ref: str) -> str:
     tail = text[i + len(ref):]
     m = re.search(r'(OF-\d{3,}-\d{3,}|ELIXEMARKET\s+REF|\bREF\b\s*[·:])',
                   tail, re.IGNORECASE)
-    return ref + (tail[:m.start()] if m else tail[:600])
+    cut = m.start() if m else None
+    # Also stop at the NEXT short alphanumeric reference token (A04, B08, C06,
+    # W09 — Ashmere / Northwick circular rows), so a row's block is its OWN line
+    # and does not absorb a neighbour's MOQ / deposit / pallet figures. Without
+    # this, a file-level ref shared by every row fell back to a 600-char window
+    # and B08 "MOQ 2 pallets" bled onto B04–B07 (Samuel 2026-11-27).
+    if re.fullmatch(r'[A-Za-z]{1,3}\d{1,4}', ref):
+        for nxt in re.finditer(r'\b([A-Za-z]{1,3}\d{1,4})\b', tail):
+            # Skip a LOT / PARCEL id ("Lot TP96", "Parcel RF81", "Lot J1") — those
+            # belong to the row's OWN body, not the start of the next row.
+            pre = tail[max(0, nxt.start() - 8):nxt.start()].lower()
+            if 'lot' in pre or 'parcel' in pre:
+                continue
+            if cut is None or nxt.start() < cut:
+                cut = nxt.start()
+            break
+    return ref + (tail[:cut] if cut is not None else tail[:600])
 
 
 # ── Multi-currency retail reconciliation (CHELSEA HK, Samuel 2026-11-11) ──────

@@ -1035,10 +1035,15 @@ def fix_quantity_from_source(offers: List[Dict[str, Any]], source_text: str) -> 
 # status is pending / not supplied / not agreed — so the named tier is NOT this
 # line's own status (Samuel 2026-11-25: Fallow "do not assume T2 from W01").
 _CUSTOMS_NEGATED_RE = re.compile(
-    r"do\s*n(?:o|')t\s+assume|not\s+(?:to\s+be\s+)?(?:assumed?|inherit(?:ed)?)"
+    # "do not assume" AND "do not copy" (Samuel 2026-11-27: Northwick W14 Willow
+    # "Customs unconfirmed: do not copy T2 from the Kestrel offers").
+    r"do\s*n(?:o|')t\s+(?:assume|copy)"
+    r"|not\s+(?:to\s+be\s+)?(?:assumed?|inherit(?:ed)?|copied)"
     r"|customs\s+status\s+(?:still\s+)?pending|status\s+(?:still\s+)?pending"
     r"|customs\s+status\s+not\s+(?:supplied|stated|agreed|confirmed|provided|given)"
     r"|customs\s+status\s+not\s+supplied\s+for\s+this\s+item"
+    r"|customs\s+(?:status\s+)?unconfirmed"
+    r"|t\s*[12]\b[^.]{0,40}does\s+not\s+apply"
     r"|no\s+(?:general\s+)?customs\s+status",
     re.IGNORECASE)
 
@@ -1378,6 +1383,12 @@ def honor_retail_unit_price(offers: List[Dict[str, Any]], source_text: str) -> i
             o["price_per_case_eur"] = None
         o["units_per_case"] = None
         o["quantity_unit"] = unit_word
+        # A per-piece item has no case quantity. When the real count is already in
+        # quantity_bottles, a leftover quantity_case (the LLM read "8 bottles" as
+        # "1 case") would show a phantom "1 case" beside the pieces — drop it
+        # (Samuel 2026-11-27: Northwick W20 Cedar, quantity_case=1 + 8 bottles).
+        if _f(o.get("quantity_bottles")) is not None:
+            o["quantity_case"] = None
         flags = [f for f in (o.get("error_flags") or [])
                  if "assumed per case" not in str(f).lower()
                  and "price ambiguous" not in str(f).lower()
@@ -2494,7 +2505,13 @@ def fix_multipack_units(offers: List[Dict[str, Any]], source_text: str) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-_PER_LOAD_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*per\s*load", re.IGNORECASE)
+_PER_LOAD_RE = re.compile(
+    r"(\d[\d.,]*)\s*cases?\s*per\s*(?:full\s+)?(?:load|truck)"
+    # "A full truck holds 2700 cases. This is capacity only" (Samuel 2026-11-27:
+    # Northwick W09 Osprey stayed GREEN with no stock, while its Ashmere twin A11
+    # — "2800 cases per full truck" — was correctly flagged REVIEW).
+    r"|(?:a\s+)?(?:full\s+)?truck\s+holds?\s+(\d[\d.,]*)\s*cases?",
+    re.IGNORECASE)
 _AVAIL_QTY_RE = re.compile(r"(\d[\d.,]*)\s*cases?\s*(?:available|in\s*stock|offered)", re.IGNORECASE)
 _PACK_SIG_RE = re.compile(r"(\d+)\s*[x×*]\s*(\d+)(?:\s*[x×*]\s*(\d+))?\s*cl", re.IGNORECASE)
 
@@ -2524,7 +2541,7 @@ def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> in
         ml = _PER_LOAD_RE.search(b)
         if not ml or _AVAIL_QTY_RE.search(b):
             continue
-        load_n = _int(ml.group(1))
+        load_n = _int(ml.group(1) or ml.group(2))
         if not load_n:
             continue
         btoks = set(re.findall(r"[a-z0-9]+", b.lower()))
@@ -2540,11 +2557,18 @@ def separate_load_capacity(offers: List[Dict[str, Any]], source_text: str) -> in
                 continue
             osig = _pack_sig(o.get("packaging_raw")) or _pack_sig(o.get("product_name"))
             qty_is_cap = _f(o.get("quantity_case")) == float(load_n)
+            # A capacity-only block whose brand matches a row that has NO confirmed
+            # quantity at all: that row IS the capacity-only offer (its stock count
+            # was never supplied), so flag it even when the pack signatures differ
+            # (Samuel 2026-11-27: Northwick W09 Osprey).
+            _no_qty = not any(_f(o.get(_qk)) for _qk in
+                              ("quantity_case", "quantity_bottles",
+                               "quantity_pallets", "quantity_ftl"))
             # Within the matched brand, tie the block to its row by the per-load
             # figure OR the exact pack format, so BOTH twins of a "per load"
             # product get the capacity note + review — even the twin the extractor
             # left quantity-less (Samuel 2026-11-23: the 24×33 Carlsberg twin).
-            if not (qty_is_cap or (bsig and osig and bsig == osig)):
+            if not (qty_is_cap or (bsig and osig and bsig == osig) or _no_qty):
                 continue
             if qty_is_cap:
                 o["quantity_case"] = None
