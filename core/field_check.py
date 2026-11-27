@@ -103,8 +103,20 @@ def _windows(source: str, name: str, radius: int = 200) -> List[str]:
     risk a false "not in source" flag."""
     import re
     src = source or ""
-    # Anchor on the longest alphabetic token in the name (brand/product word).
-    toks = [t for t in re.split(r"[^A-Za-z0-9]+", name) if len(t) >= 4]
+    # Anchor on the longest DISTINCTIVE token in the name (brand/product word).
+    # Generic packaging / retail-state / unit words (RETAIL, TESTER, BOXED, BOTTLE,
+    # CASE, …) are NOT distinctive: anchoring on them pulls in an unrelated line
+    # that merely shares the word, so a neighbour's currency ambiguity or incoterm
+    # bleeds into this row's window (Samuel 2026-11-27: Ashmere C03 Cedar "RETAIL"
+    # matched A05 Linden's "retail boxed / retail bottles … CAD or USD", neutralising
+    # C03's explicit USD). Skip them so the anchor is the brand/product identity.
+    _GENERIC = {"retail", "tester", "testers", "boxed", "sealed", "unboxed", "loose",
+                "individual", "bottle", "bottles", "case", "cases", "piece", "pieces",
+                "carton", "cartons", "pack", "packs", "sixpack", "stock", "candle",
+                "candles", "spray", "sprays", "inner", "inners", "box", "boxes",
+                "tester", "retailer", "returnable", "deposit"}
+    _all = [t for t in re.split(r"[^A-Za-z0-9]+", name) if len(t) >= 4]
+    toks = [t for t in _all if t.lower() not in _GENERIC] or _all
     toks.sort(key=len, reverse=True)
     for tok in toks[:2]:
         t = tok.lower()

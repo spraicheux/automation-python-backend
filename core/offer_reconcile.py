@@ -2194,18 +2194,31 @@ def assign_reference_from_source(offers: List[Dict[str, Any]],
     header = " ".join(lines[:4])
     circ = {m.upper().replace("-", "")
             for m in re.findall(r"\b([A-Z]{1,4}-?\d{3,6})\b", header)}
+    _LEAD = r"^([A-Za-z]{1,3}\d{1,4})\b[\s)\].:—-]"
+    # The row tickets this circular actually uses (W01…W22 / A01…A16) — the set a
+    # stored reference must belong to. Anything else (a parcel id NF83, the
+    # circular id NF1126) is not a row ticket and should be replaced by the row's
+    # own leading ticket (Samuel 2026-11-27: Rowan W08 stored the parcel "NF83").
+    lead_set = set()
+    for ln in lines:
+        mm = re.match(_LEAD, ln)
+        if mm:
+            lead_set.add(mm.group(1).upper())
     changed = 0
     for o in offers:
-        if str(o.get("product_reference") or "").strip():
-            continue
+        cur = str(o.get("product_reference") or "").strip().upper()
+        if cur and cur in lead_set:
+            continue  # already a valid row ticket — leave it
         ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines)
         if not ln:
             continue
-        m = re.match(r"^([A-Za-z]{1,3}\d{1,4})\b[\s)\].:—-]", ln)
+        m = re.match(_LEAD, ln)
         if not m:
             continue
         tok = m.group(1)
         if tok.upper().replace("-", "") in circ:
+            continue
+        if tok.upper() == cur:
             continue
         o["product_reference"] = tok
         _mark(o)
