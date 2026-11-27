@@ -1183,6 +1183,51 @@ def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> i
     return changed
 
 
+# ── Row-level expiry overrides the circular's general validity (Samuel
+# 2026-11-27): Northwick W22 Moor "This particular offer expired 25 November 2026
+# and has not been renewed"; Ashmere B09 Hearth "This quote expired 25 November
+# 2026. No renewal." An offer whose own line says it has expired is stale and must
+# not read as live, even though the header validity is 4 Dec. ────────────────────
+_EXPIRED_RE = re.compile(
+    r"\bexpired\b[^.]*?(\d{1,2}\s+[A-Za-z]+\s+20\d\d|\d{4}-\d\d-\d\d)"
+    r"|has\s+not\s+been\s+renewed|\bno\s+renewal\b", re.IGNORECASE)
+
+
+def flag_expired_offer(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Flag a row whose own source line states it has expired and not been renewed
+    — kept visible for reference, excluded from active comparisons (its price is
+    stale)."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        if o.get("_expired_flagged"):
+            continue
+        ln = _row_line_by_amount(o, lines) or _unique_source_line(o, lines)
+        if not ln:
+            continue
+        m = _EXPIRED_RE.search(ln)
+        if not m:
+            continue
+        _edate = ""
+        try:
+            _edate = (m.group(1) or "").strip()
+        except (IndexError, AttributeError):
+            _edate = ""
+        flags = list(o.get("error_flags") or [])
+        note = (f"offer expired{(' ' + _edate) if _edate else ''} and not renewed "
+                f"— stale; excluded from active comparisons, retained for reference")
+        if note not in flags:
+            flags.append(note)
+        o["error_flags"] = flags
+        o["needs_manual_review"] = True
+        o["_expired_flagged"] = True
+        _mark(o)
+        changed += 1
+    return changed
+
+
 # ── Lot total vs breakdown conflict (Samuel 2026-11-25): Estuary D12 Fern
 # "Declared total 102 cases … BBD lots: 44 + 60 = 104"; D08 Pale Ferry balance 96
 # vs manifest 60 + 40 = 100. A stated total that disagrees with its own breakdown
@@ -1207,15 +1252,21 @@ def flag_lot_total_conflict(offers: List[Dict[str, Any]], source_text: str) -> i
         ln = _row_line_by_amount(o, lines) or _unique_source_line(o, lines)
         if not ln:
             continue
-        ms = _BREAKDOWN_SCOPE_RE.search(ln)
-        if not ms:
-            continue
         lots = []
-        for x in _BREAKDOWN_QTY_RE.findall(ms.group(1)):
-            try:
-                lots.append(int(x.replace(",", "")))
-            except ValueError:
-                pass
+        ms = _BREAKDOWN_SCOPE_RE.search(ln)
+        if ms:
+            for x in _BREAKDOWN_QTY_RE.findall(ms.group(1)):
+                try:
+                    lots.append(int(x.replace(",", "")))
+                except ValueError:
+                    pass
+        # Enumerated per-lot form the scope regex misses: "Lot J1: 49 cases. Lot
+        # J2: 71 cases" (Ashmere A12) / "Lot N1=38 cases, N2=61 cases" (Northwick
+        # W10). Each lot is a label (letter+digits) then : or = then N cases.
+        if len(lots) < 2:
+            lots = [int(x.replace(",", "")) for x in re.findall(
+                r"(?:lot\s+)?[A-Za-z]{1,3}\d+\s*[:=]\s*(\d[\d,]*)\s*cases?\b",
+                ln, re.IGNORECASE)]
         if len(lots) >= 2 and sum(lots) != int(q):
             flags = list(o.get("error_flags") or [])
             note = (f"declared total {int(q)} cases ≠ lot breakdown "
@@ -2015,12 +2066,6 @@ def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) 
         _qb = _f(o.get("quantity_bottles")); _upc = _f(o.get("units_per_case"))
         if not qc:
             continue
-        # A real bottle count stays; but a FABRICATED one that is exactly
-        # cases × pack is the double-count the extractor made for "9 cases plus 5
-        # loose bottles" (Samuel 2026-11-26 Rowan: 54 = 9×6, the +5 loose lost) —
-        # override it with the stated loose count.
-        if _qb and not (_upc and abs(_qb - qc * _upc) < 0.5):
-            continue
         ln = _source_line_for(o, lines)
         if not ln:
             continue
@@ -2028,12 +2073,30 @@ def recover_loose_bottles_addon(offers: List[Dict[str, Any]], source_text: str) 
         if not m:
             continue
         cases = _int(m.group(1)); loose = _int(m.group(2))
-        if cases and loose and float(cases) == qc:
-            o["quantity_bottles"] = float(loose)
-            cc = _clean(o.get("commercial_conditions"))
-            if "loose" not in cc.lower():
-                o["commercial_conditions"] = ((cc + " | " if cc else "")
-                    + f"+ {loose} loose bottle" + ("s" if loose != 1 else ""))
+        if not (cases and loose and float(cases) == qc):
+            continue
+        _did = False
+        # The primary count is CASES ("9 cases plus 5 loose bottles"); the
+        # extractor sometimes mislabels it "bottles" off the "… loose bottles" /
+        # "SAME 59 bottles" tail (Samuel 2026-11-27: Rowan W08 showed "9 bottles").
+        # Correct the unit so it reads "9 cases + 5 loose bottles". Always runs,
+        # even when the loose count is already right.
+        if str(o.get("quantity_unit") or "").lower() in ("bottles", "bottle", "", "none"):
+            o["quantity_unit"] = "cases"
+            _did = True
+        # A real bottle count stays; but a FABRICATED one that is exactly
+        # cases × pack is the double-count the extractor made (54 = 9×6, the +5
+        # loose lost) — override it with the stated loose count.
+        if not _qb or (_upc and abs(_qb - qc * _upc) < 0.5):
+            if o.get("quantity_bottles") != float(loose):
+                o["quantity_bottles"] = float(loose)
+                _did = True
+        cc = _clean(o.get("commercial_conditions"))
+        if "loose" not in cc.lower():
+            o["commercial_conditions"] = ((cc + " | " if cc else "")
+                + f"+ {loose} loose bottle" + ("s" if loose != 1 else ""))
+            _did = True
+        if _did:
             _mark(o)
             changed += 1
     return changed
@@ -2114,6 +2177,39 @@ def fix_mislabeled_product_reference(offers: List[Dict[str, Any]],
             o["product_reference"] = m.group(1)
             _mark(o)
             changed += 1
+    return changed
+
+
+def assign_reference_from_source(offers: List[Dict[str, Any]],
+                                 source_text: str) -> int:
+    """Give a row its own ticket when the extractor dropped it (Samuel 2026-11-27:
+    Northwick W01/W07/W08/W12/W15/W20/W22 came back with no reference, so the
+    reconciliation could not key them). Match the row to its unique source line and
+    read the leading 'Wxx —' ticket. Only fills an EMPTY reference — never
+    overwrites one the extractor already captured. The leading token must look like
+    a line reference (letter+digits) and NOT be the circular id."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    header = " ".join(lines[:4])
+    circ = {m.upper().replace("-", "")
+            for m in re.findall(r"\b([A-Z]{1,4}-?\d{3,6})\b", header)}
+    changed = 0
+    for o in offers:
+        if str(o.get("product_reference") or "").strip():
+            continue
+        ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines)
+        if not ln:
+            continue
+        m = re.match(r"^([A-Za-z]{1,3}\d{1,4})\b[\s)\].:—-]", ln)
+        if not m:
+            continue
+        tok = m.group(1)
+        if tok.upper().replace("-", "") in circ:
+            continue
+        o["product_reference"] = tok
+        _mark(o)
+        changed += 1
     return changed
 
 

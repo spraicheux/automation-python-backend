@@ -91,6 +91,20 @@ _FIELD_SYNONYMS: Dict[str, str] = {
     "net eur per bottle": "price_per_unit", "eur per bottle": "price_per_unit",
     "supplier ref": "product_reference", "desk / warehouse remarks": "notes",
     "warehouse remarks": "notes",
+    # Ashmere Quay "Quayside slips" + "Late circular" dialect (Samuel 2026-11-27):
+    # clean columnar tables with prose headers — Slip · Article on the quay · How
+    # it is assembled · What the warehouse says · Desk figure · Handover ·
+    # Annotations  /  Ticket · Description · Presentation · Balance · Quotation ·
+    # Place and terms · Commercial notes. Recognising these routes ALL Ashmere
+    # sheets to the deterministic structured path (no LLM), so the lot-conflict,
+    # expiry, co-equal-split and reference rules apply uniformly. "Slip"/"Ticket"
+    # are the row's own reference.
+    "slip": "product_reference", "ticket": "product_reference",
+    "article on the quay": "product_name",
+    "how it is assembled": "units_per_case",
+    "what the warehouse says": "_quantity", "desk figure": "_price_value",
+    "handover": "incoterm", "annotations": "notes",
+    "place and terms": "incoterm", "commercial notes": "notes",
     # Stock stated in BOTTLES ("Q in btls" = available bottles, not cases).
     "q in btls": "_qty_bottles", "qty in btls": "_qty_bottles",
     "quantity in btls": "_qty_bottles", "q btls": "_qty_bottles",
@@ -1706,7 +1720,11 @@ def extract_structured_products(file_path: str,
             #      "Balance: 360 … Warehouse did not label quantity unit").
             if re.search(r"did\s+not\s+label|unit\s+not\s+(?:labelled|labeled|stated|given)"
                          r"|quantity\s+unit\s+(?:unknown|unclear|not\s+stated|missing)"
-                         r"|no\s+quantity\s+unit|unlabel", row_text, re.IGNORECASE):
+                         r"|no\s+quantity\s+unit|unlabel"
+                         # "Count supplied without a unit. Warehouse cannot confirm
+                         # whether 480 refers to bars or cartons" (Ashmere A09).
+                         r"|without\s+a\s+unit|cannot\s+confirm\s+whether\s+\d",
+                         row_text, re.IGNORECASE):
                 _n = (prod.get("quantity_case") or prod.get("quantity_bottles")
                       or prod.get("quantity_pallets"))
                 if _n:
@@ -1718,9 +1736,25 @@ def extract_structured_products(file_path: str,
             #      "4 wrapped sixes" — EUR 2.16 is per 6-pack, EUR 0.36 per can).
             # The per-unit price now reads per CAN (units_per_case is total cans).
             # Surface the six-pack price too, so both are explicit (Samuel's A04).
-            _praw = str(prod.get("packaging_raw") or "")
+            _praw = str(prod.get("packaging_raw") or "") + " " + row_text
             _mp = re.search(r"(\d+)\s*(?:wrapped\s*)?(?:six(?:es)?|six[\s-]?packs?|6[\s-]?packs?)",
                             _praw, re.IGNORECASE)
+            # Per-six-pack amount quoted, no per-case price derived yet: a case holds
+            # N six-packs, so the case price is amount × N (Ashmere A02 "4 wrapped
+            # six-packs / case … EUR 2.82 per six-pack" → EUR 11.28/case, per-can
+            # 0.47). Keep the row green with the real case price.
+            if (_mp and prod.get("price_per_case") is None
+                    and prod.get("price_per_unit")
+                    and re.search(r"per\s+six[\s-]?pack|per\s+6[\s-]?pack", row_text, re.IGNORECASE)):
+                try:
+                    _n6 = int(_mp.group(1))
+                    _ppc = round(float(prod["price_per_unit"]) * _n6, 4)
+                    prod["price_per_case"] = _ppc
+                    _upc = prod.get("units_per_case")
+                    if _upc and float(_upc) > 0:
+                        prod["price_per_unit"] = round(_ppc / float(_upc), 4)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
             if _mp and prod.get("price_per_case") and "per 6-pack" not in str(prod.get("commercial_conditions") or "").lower():
                 _sp = int(_mp.group(1))
                 try:
@@ -1734,13 +1768,23 @@ def extract_structured_products(file_path: str,
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
 
-            # (a) Sold out / closed parcel → not sellable stock.
+            # (a) Sold out / reserved / closed parcel → not sellable stock. Catch
+            #     the circular dialects too (Samuel 2026-11-27: Ashmere A14 "All 62
+            #     cases SOLD … 0 available … no stock offered"; B05 Raven "parcel
+            #     RESERVED … zero available for new orders").
             if re.search(r"\bsold\s*out\b|closed\s+parcel|no\s+longer\s+available"
-                         r"|out\s+of\s+stock|discontinued", row_text, re.IGNORECASE):
+                         r"|out\s+of\s+stock|discontinued"
+                         r"|all\s+\d[\d,]*\s+(?:cases?|units?|bottles?)\s+sold"
+                         r"|\b0\s+available\b|\bzero\s+available\b|nothing\s+available"
+                         r"|no\s+stock\s+offered|reserved\s+for\s+another"
+                         r"|entire\s+parcel\s+reserved", row_text, re.IGNORECASE):
                 for _qk in ("quantity_case", "quantity_bottles",
                             "quantity_pallets", "quantity_ftl"):
                     prod.pop(_qk, None)
-                _flag("sold out / closed parcel — not available; retained for reference")
+                _reserved = bool(re.search(r"reserved", row_text, re.IGNORECASE))
+                _flag(("reserved for another buyer — zero available for new orders; "
+                       "retained for reference") if _reserved else
+                      ("sold out — not available; retained for reference"))
             # (b) A currency but no price = the amount wasn't captured. Never show
             #     it green (Alder A03 lost its EUR 8.64).
             if (prod.get("currency") and prod.get("currency") not in ("Not Found",)
@@ -1760,16 +1804,72 @@ def extract_structured_products(file_path: str,
                     _flag("prices conflict (case price ≠ unit × pack) — confirm which applies")
             except (TypeError, ValueError):
                 pass
-            # (d) A declared total that disagrees with its own date/BBD breakdown
-            #     (Alder W02 "102 cases declared" vs "80 + 24 = 104").
-            _md = re.search(r"(\d[\d,]*)\s*cases?\s*declared", row_text, re.IGNORECASE)
-            if _md:
-                _decl = _num_thousands(_md.group(1))
-                _splits = [int(x.replace(",", "")) for x in
-                           re.findall(r"(\d[\d,]*)\s*cs\b", row_text, re.IGNORECASE)]
-                if _decl and len(_splits) >= 2 and sum(_splits) != _decl:
-                    _flag(f"declared {int(_decl)} cases but the breakdown sums to "
-                          f"{sum(_splits)} — confirm the quantity")
+            # (c2) Price basis UNCONFIRMED: the source states an amount but says it
+            #      does not identify the pricing unit (Ashmere A06 Slate "GBP 72 …
+            #      Packing is descriptive only. The quotation does not identify its
+            #      pricing unit"). Keep the amount visible as-quoted, blank the
+            #      per-case/per-unit prices (they would be a guess) and flag.
+            if re.search(r"does\s+not\s+(?:identify|state|specify)[^.]{0,30}pricing\s+unit"
+                         r"|pricing\s+unit[^.]{0,20}(?:not|unconfirmed)"
+                         r"|price\s+basis\s+(?:unconfirmed|not\s+stated)",
+                         row_text, re.IGNORECASE):
+                _amt = prod.get("price_per_case")
+                if _amt is None:
+                    _amt = prod.get("price_per_unit")
+                _cur = prod.get("currency") or ""
+                if _amt is not None and "as quoted" not in str(prod.get("commercial_conditions") or "").lower():
+                    _cc = prod.get("commercial_conditions") or ""
+                    prod["commercial_conditions"] = (_cc + " | " if _cc else "") + (
+                        f"as quoted: {(_cur + ' ') if _cur else ''}{_amt:g} "
+                        f"(price basis unconfirmed — per bottle or per case not stated)")
+                    for _pk in ("price_per_case", "price_per_case_eur",
+                                "price_per_unit", "price_per_unit_eur"):
+                        prod[_pk] = None
+                    _flag("price basis unconfirmed — amount kept as quoted, per-unit "
+                          "left blank; confirm the basis against the source")
+            # (c3) Customs status NOT supplied for the row (Ashmere A16 Willow
+            #      "Customs status not supplied. The T2 on Kestrel does not apply").
+            if re.search(r"customs\s+(?:status\s+)?not\s+(?:supplied|stated|confirmed|given)",
+                         row_text, re.IGNORECASE):
+                _flag("customs status not supplied — confirm before quoting")
+            # (d) A declared total that disagrees with its own lot/BBD breakdown.
+            #     Two source dialects, BOTH must be caught (Samuel 2026-11-27):
+            #       • "102 cases declared … 80 cs + 24 cs" (Alder W02)
+            #       • "Declared total: 118 cases … Lot J1: 49 cases. Lot J2: 71
+            #         cases. Please reconcile" (Ashmere A12) / "Lot N1=38 cases,
+            #         N2=61 cases" (Northwick W10).
+            #     The declared total is the quantity we already parsed for the row;
+            #     sum the enumerated lots and flag any disagreement. A stated total
+            #     that disagrees with its own breakdown is NOT a confirmed quantity.
+            _lots = [int(x.replace(",", "")) for x in re.findall(
+                r"(?:lot\s+)?[A-Za-z]{1,3}\d+\s*[:=]\s*(\d[\d,]*)\s*cases?\b",
+                row_text, re.IGNORECASE)]
+            _lots += [int(x.replace(",", "")) for x in
+                      re.findall(r"(\d[\d,]*)\s*cs\b", row_text, re.IGNORECASE)]
+            _declq = prod.get("quantity_case")
+            try:
+                _declq = int(round(float(_declq))) if _declq is not None else None
+            except (TypeError, ValueError):
+                _declq = None
+            if _declq and len(_lots) >= 2 and sum(_lots) != _declq:
+                _flag(f"declared total {_declq} cases ≠ lot breakdown "
+                      f"{' + '.join(str(x) for x in _lots)} = {sum(_lots)} — "
+                      f"quantity conflict, confirm with supplier")
+
+            # (e) A row-level EXPIRY in the past overrides the circular's general
+            #     validity: an offer that "expired <date>" / "has not been renewed"
+            #     is stale and must not read as live (Samuel 2026-11-27: Ashmere
+            #     B09 Hearth, Northwick W22 Moor both expired 25 Nov for a 26 Nov
+            #     circular, yet showed green). Keep the row visible for reference,
+            #     flag it, exclude it from active comparisons.
+            _mexp = re.search(
+                r"\bexpired\b[^.]*?(\d{1,2}\s+[A-Za-z]+\s+20\d\d|\d{4}-\d\d-\d\d)"
+                r"|has\s+not\s+been\s+renewed|no\s+renewal", row_text, re.IGNORECASE)
+            if _mexp:
+                _edate = (_mexp.group(1) or "").strip() if _mexp.lastindex else ""
+                _flag(f"offer expired{(' ' + _edate) if _edate else ''} and not "
+                      f"renewed — stale; excluded from active comparisons, "
+                      f"retained for reference")
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,
@@ -1784,6 +1884,10 @@ def extract_structured_products(file_path: str,
 
             prod.setdefault("category_slug", _category_slug(prod.get("category")))
             prod["_structured_source"] = f"{ws.title}:row{r}"
+            # Keep the full row text on the row so downstream deterministic passes
+            # (co-equal delivery split, etc.) can read an annotation that lives in
+            # a column we did not map to a field (Samuel 2026-11-27 parity).
+            prod["_row_text"] = row_text
             products.append(prod)
 
     if recognised_sheets == 0 or not products:
@@ -1793,9 +1897,95 @@ def extract_structured_products(file_path: str,
     # must skip it (else it would flag a clean per-case price as unconfirmed).
     for _p in products:
         _p["_structured_row"] = True
+        # A column literally headed "Reference" maps to supplier_reference, but on
+        # a sheet whose row code IS that column (Ashmere "Ready stock": B01…B10)
+        # the row has no other product_reference. Promote a row-code-shaped
+        # supplier_reference to product_reference so the row carries its own ticket
+        # (Samuel 2026-11-27: B-refs were invisible). supplier_reference is kept.
+        if not _p.get("product_reference"):
+            _sref = str(_p.get("supplier_reference") or "").strip()
+            if re.fullmatch(r"[A-Za-z]{1,3}\d{1,3}", _sref):
+                _p["product_reference"] = _sref
+    _split_structured_alt_delivery(products)
     logger.info(f"[xlsx_structured] extracted {len(products)} product(s) from "
                 f"{recognised_sheets} structured sheet(s)")
     return products
+
+
+# ── Co-equal dual-incoterm leg from a row annotation (Samuel 2026-11-27) ─────
+# A structured row can carry its alternative delivery term in a free note column
+# the text-path split never sees: Ashmere A10 Rowan "EUR 132/case EXW Ghent …
+# Alternatively DAP Lille at EUR 138/case and EUR 23/loose bottle. SAME stock,
+# not additional." The base leg is kept AND a co-equal DAP leg is emitted — both
+# carry the SAME stock (one pool, counted once), each comparable on its own
+# incoterm. Mirrors the text-path co-equal pool so both readers behave alike.
+_ALT_DELIVERY_RE = re.compile(
+    r"alternativ\w*\s+(?:(EXW|DAP|DDP|FCA|CIF|FOB|CFR|CPT)\s+)?"
+    r"([A-Z][A-Za-z]+)?\s*(?:at|:)?\s*"
+    r"(?:EUR|USD|GBP|CHF|€|\$|£)?\s*([\d.,]+)\s*(?:/|\bper\b)\s*case",
+    re.IGNORECASE)
+_ALT_INCOTERM_RE = re.compile(
+    r"\b(EXW|DAP|DDP|FCA|CIF|FOB|CFR|CPT)\b", re.IGNORECASE)
+_ALT_LOOSE_RE = re.compile(
+    r"(?:EUR|USD|GBP|CHF|€|\$|£)?\s*([\d.,]+)\s*(?:/|\bper\b)\s*loose",
+    re.IGNORECASE)
+
+
+def _split_structured_alt_delivery(products: List[Dict[str, Any]]) -> None:
+    import copy as _copy
+    for o in list(products):
+        rt = str(o.get("_row_text") or "")
+        if not rt:
+            continue
+        m = _ALT_DELIVERY_RE.search(rt)
+        if not m:
+            continue
+        # Only a SHARED-stock alternative (not an additional parcel) is co-equal.
+        if not re.search(r"same\s+stock|not\s+additional|share[sd]?\s+stock",
+                         rt, re.IGNORECASE):
+            continue
+        incoterm = (m.group(1) or "").upper()
+        if not incoterm:
+            mi = _ALT_INCOTERM_RE.search(rt[m.start():])
+            incoterm = (mi.group(1).upper() if mi else "")
+        place = (m.group(2) or "").strip()
+        try:
+            alt_case = float(str(m.group(3)).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        if not incoterm or incoterm == (o.get("incoterm") or "").upper():
+            continue
+        alt = _copy.deepcopy(o)
+        alt["incoterm"] = incoterm
+        if place:
+            alt["location"] = place
+        alt["price_per_case"] = alt_case
+        alt["price_per_case_eur"] = alt_case if (o.get("currency") == "EUR") else alt.get("price_per_case_eur")
+        # Loose-bottle prices: the first belongs to the base leg, the second to
+        # the alternative (A10 "EUR 22 per loose bottle … Alternatively … EUR 23
+        # per loose bottle"). Fill each leg's per-unit price when it is missing.
+        _loose = _ALT_LOOSE_RE.findall(rt)
+        try:
+            if _loose and o.get("price_per_unit") is None:
+                o["price_per_unit"] = float(str(_loose[0]).replace(",", "."))
+            if len(_loose) >= 2:
+                alt["price_per_unit"] = float(str(_loose[1]).replace(",", "."))
+        except (TypeError, ValueError):
+            pass
+        pool = o.get("product_reference") or o.get("supplier_reference") or (o.get("brand") or "stock")
+        note_base = (f"One stock pool ({pool} counted once): this "
+                     f"{(o.get('incoterm') or '').upper()} and the {incoterm} offer are the "
+                     f"SAME stock — take from either, not both.")
+        note_alt = (f"One stock pool ({pool} counted once): this {incoterm} and the "
+                    f"{(o.get('incoterm') or '').upper()} offer are the SAME stock — "
+                    f"take from either, not both.")
+        for tgt, nt in ((o, note_base), (alt, note_alt)):
+            cc = tgt.get("commercial_conditions") or ""
+            if "one stock pool" not in cc.lower():
+                tgt["commercial_conditions"] = (cc + " | " if cc else "") + nt
+            tgt["_stock_pool"] = str(pool)
+            tgt["_structured_source"] = (tgt.get("_structured_source") or "") + f"|pool:{incoterm if tgt is alt else (o.get('incoterm') or '')}"
+        products.append(alt)
 
 
 def extract_freetext_sheets(file_path: str,
