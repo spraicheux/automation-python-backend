@@ -414,6 +414,52 @@ def capture_row_whole_lot(offers: List[Dict[str, Any]], source_text: str) -> int
     return changed
 
 
+# Stop the product descriptor at the first size / %, comma, colon or customs token.
+_IDENT_STOP_RE = re.compile(r"[,:]|(?<![A-Za-z0-9])\d|%|\bT[12]\b", re.IGNORECASE)
+_IDENT_FMT = {"edt", "edp", "edc", "parfum", "cologne", "extrait", "ml", "cl", "l", "g"}
+
+
+def recover_dropped_identity_tokens(offers: List[Dict[str, Any]],
+                                    source_text: str) -> int:
+    """When free-text extraction DROPS a leading brand word on one run but not
+    another, the canonical identity / peer group diverges between import orders
+    (Samuel 2026-11-28: W01 'strand pils' vs 'kestrel strand pils', W07 dropped
+    'Mica', W19 dropped 'Rosebank'). The row's own source line carries the full
+    descriptor; when the row's brand+name is MISSING a descriptor word, re-derive a
+    deterministic split from the line (brand = first word, name = the rest) so both
+    orders converge. Conservative: only fires on a clean ref-prefixed line and only
+    when a non-format descriptor token is genuinely absent — well-extracted rows
+    (and other suppliers' differently-formatted lines) are left untouched."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        ln = _row_line_by_amount(o, lines) or _unique_source_line(o, lines)
+        if not ln:
+            continue
+        m = re.match(r"\s*[A-Za-z]{1,3}\d{1,4}\s*[—–\-:.]\s+(.+)", ln)
+        if not m:
+            continue
+        rest = m.group(1)
+        cut = _IDENT_STOP_RE.search(rest)
+        desc = (rest[:cut.start()] if cut else rest).strip(" .,-—–:")
+        words = desc.split()
+        if not (1 <= len(words) <= 6):
+            continue
+        desc_tokens = [w.lower() for w in words]
+        cur_tokens = set(re.findall(r"[a-z0-9]+",
+                         f"{o.get('brand') or ''} {o.get('product_name') or ''}".lower()))
+        missing = [t for t in desc_tokens if t not in cur_tokens and t not in _IDENT_FMT]
+        if not missing:
+            continue
+        o["brand"] = words[0]
+        o["product_name"] = " ".join(words[1:]) if len(words) > 1 else words[0]
+        _mark(o)
+        changed += 1
+    return changed
+
+
 def fill_document_supplier_and_date(offers: List[Dict[str, Any]],
                                     source_text: str) -> int:
     """Stamp the single document-level supplier name / reference / offer date onto
@@ -433,29 +479,45 @@ def fill_document_supplier_and_date(offers: List[Dict[str, Any]],
     def _real(v):
         return v not in (None, "", "Not Found")
 
+    # 1) The document header states the supplier + circular reference once, e.g.
+    #    "Northwick Fen Drinks BV — NF1126". Parse it deterministically — this is
+    #    the authoritative single value, independent of any per-row LLM noise.
+    doc_sup = doc_ref = None
+    for ln in [l.strip() for l in str(source_text or "").splitlines() if l.strip()][:5]:
+        mref = re.search(r"\b([A-Za-z]{2,5}\d{3,6})\b", ln)
+        if mref and (" — " in ln or " - " in ln or "," in ln or mref.start() > 3):
+            doc_ref = doc_ref or mref.group(1)
+            head = re.split(r"\s[—–-]\s|,", ln, maxsplit=1)[0].strip(" .,-—–")
+            # a plausible company name: a few words, not itself the reference
+            if head and head != mref.group(1) and 1 <= len(head.split()) <= 6 \
+                    and not re.fullmatch(r"[A-Za-z]{2,5}\d{3,6}", head):
+                doc_sup = doc_sup or head
+            break
+
+    # 2) Fall back to the single distinct / circular-pattern value the rows carry.
     sup_vals = {o.get("supplier_name") for o in offers if _real(o.get("supplier_name"))}
     ref_vals = {o.get("supplier_reference") for o in offers
-                if _real(o.get("supplier_reference"))}
+                if _real(o.get("supplier_reference"))
+                and re.fullmatch(r"[A-Za-z]{2,5}\d{3,6}", str(o.get("supplier_reference")))}
     date_vals = {o.get("offer_date") for o in offers if o.get("offer_date")}
-
-    doc_sup = next(iter(sup_vals)) if len(sup_vals) == 1 else None
-    doc_ref = next(iter(ref_vals)) if len(ref_vals) == 1 else None
+    if not doc_sup and len(sup_vals) == 1:
+        doc_sup = next(iter(sup_vals))
+    if not doc_ref and len(ref_vals) == 1:
+        doc_ref = next(iter(ref_vals))
     doc_date = next(iter(date_vals)) if len(date_vals) == 1 else None
 
     changed = 0
     for o in offers:
         if doc_sup and not _real(o.get("supplier_name")):
-            o["supplier_name"] = doc_sup
-            _mark(o)
-            changed += 1
-        if doc_ref and not _real(o.get("supplier_reference")):
-            o["supplier_reference"] = doc_ref
-            _mark(o)
-            changed += 1
+            o["supplier_name"] = doc_sup; _mark(o); changed += 1
+        # Backfill a blank reference, AND replace a per-row value that is really the
+        # row's own product reference leaking into supplier_reference (W06='W06').
+        rowref = o.get("supplier_reference")
+        if doc_ref and (not _real(rowref) or rowref == o.get("product_reference")):
+            if rowref != doc_ref:
+                o["supplier_reference"] = doc_ref; _mark(o); changed += 1
         if doc_date and not o.get("offer_date"):
-            o["offer_date"] = doc_date
-            _mark(o)
-            changed += 1
+            o["offer_date"] = doc_date; _mark(o); changed += 1
     return changed
 
 

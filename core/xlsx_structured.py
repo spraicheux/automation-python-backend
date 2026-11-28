@@ -2096,7 +2096,20 @@ def extract_structured_products(file_path: str,
             if not (_has_price or price_on_request or _has_qty or prod.get("ean_code")):
                 continue
 
-            prod.setdefault("category_slug", _category_slug(prod.get("category")))
+            # Per-row category on the structured path (parity with the text path):
+            # classify from the FULL row text incl. the notes column so a candle →
+            # cosmetics and a perfume gift set (its "sprays" live in the notes) →
+            # perfumes are not filed under wines & spirits (Samuel 2026-11-28:
+            # A07/B03 candles, A08 Mica discovery set). row_text is guaranteed here,
+            # unlike downstream where only mapped fields survive.
+            if not prod.get("category_slug"):
+                from core.category_classifier import detect_row_category as _drc
+                _slug = (_category_slug(prod.get("category"))
+                         or _drc(f"{row_text} {prod.get('product_name') or ''}"))
+                if _slug:
+                    prod["category_slug"] = _slug
+            if (not prod.get("product_type")) and re.search(r"\bcandles?\b", row_text, re.IGNORECASE):
+                prod["product_type"] = "candle"
             prod["_structured_source"] = f"{ws.title}:row{r}"
             # Keep the full row text on the row so downstream deterministic passes
             # (co-equal delivery split, etc.) can read an annotation that lives in

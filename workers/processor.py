@@ -3040,6 +3040,7 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     dropped |= _rec.drop_summary_rows(offers)
     changed += _rec.annotate_whole_lot(offers, src)
     changed += _rec.capture_row_whole_lot(offers, src)   # standalone whole-lot row (W21)
+    changed += _rec.recover_dropped_identity_tokens(offers, src)  # dropped brand word (W01/W07/W19)
     # LAST: once every row's own supplier/date is settled, stamp the single
     # document-level supplier + offer date onto any row the LLM left blank so the
     # two import orders are identical (W03/W06/W08/W17/W21 — Samuel 2026-11-28).
