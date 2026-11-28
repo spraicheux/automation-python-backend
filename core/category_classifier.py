@@ -58,6 +58,13 @@ _COSMETICS_TOKENS = [
     "lotion", "cleanser", "scrub", "peel", "mask",
     "cosmetics", "beauty", "skincare", "skin care", "makeup", "make up",
     "haircare", "hair care", "body care", "bodycare",
+    # Home-fragrance / candles sit in the cosmetics (non-alcohol) bucket rather
+    # than wines & spirits — the text path already tags candles cosmetics via the
+    # LLM; the deterministic classifier must agree so the structured XLSX path
+    # does not file a candle under wines & spirits (Samuel 2026-11-28: Ashmere
+    # A07 Dawn Loom Candle, B03 Silk Quay Candle).
+    "candle", "candles", "scented candle", "home fragrance",
+    "diffuser", "reed diffuser", "wax melt", "tea light", "pillar candle",
 ]
 
 _WINES_SPIRITS_TOKENS = [

@@ -327,7 +327,12 @@ def apply_deterministic_defaults(products: list, source_text: str,
         row_cat = _normalize_category(p.get("category_slug") or p.get("category"))
         if not row_cat:
             row_text_parts = [
+                # The structured XLSX reader carries the full row (incl. its notes
+                # column) on _row_text, not _raw_row_text — read both so a candle /
+                # perfume signal that lives only in the annotation (A08 "sprays")
+                # is seen on the Excel path too (Samuel 2026-11-28 parity).
                 p.get("_raw_row_text") or "",
+                p.get("_row_text") or "",
                 p.get("product_name") or "",
                 p.get("brand") or "",
                 p.get("sub_category") or "",
@@ -350,6 +355,17 @@ def apply_deterministic_defaults(products: list, source_text: str,
                 f"Row {i+1}: category_slug=None → {doc_category} "
                 f"(inherited from document heuristic)"
             )
+
+        # A candle is a distinct product_type within cosmetics — stamp it so the
+        # structured XLSX candle shares a peer group with the same candle quoted on
+        # the text path (Ashmere A07/B03 ↔ Northwick W06/W17), which already carries
+        # product_type='candle' (Samuel 2026-11-28 parity).
+        if not (p.get("product_type") or "").strip():
+            _cat_text = " ".join(s for s in (
+                p.get("_raw_row_text") or "", p.get("_row_text") or "",
+                p.get("product_name") or "") if s).lower()
+            if re.search(r"\bcandles?\b", _cat_text):
+                p["product_type"] = "candle"
 
         # ── €/case sanity: catch "Total Price" mis-mapping ──────────
         # LLM sometimes puts a source "Total Price" column (qty × unit price)

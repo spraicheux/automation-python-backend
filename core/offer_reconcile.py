@@ -387,6 +387,78 @@ def annotate_whole_lot(offers: List[Dict[str, Any]], source_text: str) -> int:
     return changed
 
 
+def capture_row_whole_lot(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Carry a STANDALONE whole-lot / all-or-nothing purchase condition from a
+    row's own line onto that row (Samuel 2026-11-28: Northwick W21 "Whole lot only:
+    all 12 cases must be taken" was lost). annotate_whole_lot only covers an
+    'also available' alt-delivery note; this covers an ordinary priced row whose
+    line states the lot must be taken whole."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        cc = _clean(o.get("commercial_conditions"))
+        if "whole lot" in cc.lower():
+            continue
+        ln = _row_line_by_amount(o, lines) or _unique_source_line(o, lines)
+        if not ln or not _WHOLE_LOT_RE.search(ln):
+            continue
+        m = re.search(r"all\s+(\d[\d,]*)\s*cases?", ln, re.IGNORECASE)
+        note = ("whole lot only — "
+                + (f"all {m.group(1)} cases must be taken" if m
+                   else "the entire lot must be taken as one order"))
+        o["commercial_conditions"] = (cc + " | " + note) if cc else note
+        _mark(o)
+        changed += 1
+    return changed
+
+
+def fill_document_supplier_and_date(offers: List[Dict[str, Any]],
+                                    source_text: str) -> int:
+    """Stamp the single document-level supplier name / reference / offer date onto
+    every row of a single-supplier file, so the result never depends on which rows
+    the LLM happened to tag (Samuel 2026-11-28: across the two import orders W03/
+    W06/W08/W17/W21 flipped supplier between the real name and 'Not Found', and W17
+    gained/lost its 26 Nov offer date). Deterministic over the file's own content:
+      • supplier_name / supplier_reference are backfilled ONLY when the file has
+        exactly ONE distinct real value (a single-supplier circular) — a genuinely
+        multi-supplier file is left untouched rather than mislabelled.
+      • offer_date is backfilled from the single distinct value the other rows
+        already carry, so the stored format is identical to theirs.
+    Backfill never overwrites a row's own real value; it only fills the blanks."""
+    if not offers:
+        return 0
+
+    def _real(v):
+        return v not in (None, "", "Not Found")
+
+    sup_vals = {o.get("supplier_name") for o in offers if _real(o.get("supplier_name"))}
+    ref_vals = {o.get("supplier_reference") for o in offers
+                if _real(o.get("supplier_reference"))}
+    date_vals = {o.get("offer_date") for o in offers if o.get("offer_date")}
+
+    doc_sup = next(iter(sup_vals)) if len(sup_vals) == 1 else None
+    doc_ref = next(iter(ref_vals)) if len(ref_vals) == 1 else None
+    doc_date = next(iter(date_vals)) if len(date_vals) == 1 else None
+
+    changed = 0
+    for o in offers:
+        if doc_sup and not _real(o.get("supplier_name")):
+            o["supplier_name"] = doc_sup
+            _mark(o)
+            changed += 1
+        if doc_ref and not _real(o.get("supplier_reference")):
+            o["supplier_reference"] = doc_ref
+            _mark(o)
+            changed += 1
+        if doc_date and not o.get("offer_date"):
+            o["offer_date"] = doc_date
+            _mark(o)
+            changed += 1
+    return changed
+
+
 _PACKING_RE = re.compile(
     r"(\d[\d,]*)\s*(loose|wrapped)\s+"
     r"(cans?|bottles?|six[\s-]?packs?|packs?|trays?)", re.IGNORECASE)
@@ -1197,6 +1269,31 @@ _EXPIRED_RE = re.compile(
     r"\bexpired\b[^.]*?(\d{1,2}\s+[A-Za-z]+\s+20\d\d|\d{4}-\d\d-\d\d)"
     r"|has\s+not\s+been\s+renewed|\bno\s+renewal\b", re.IGNORECASE)
 
+_RECON_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+
+
+def _date_words_to_iso(raw: Optional[str]) -> Optional[str]:
+    """'25 November 2026' / '2026-11-25' → '2026-11-25'; None when not a full date."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    m = re.search(r"\b(20\d\d)-(\d{1,2})-(\d{1,2})\b", s)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-z]+)\.?\s+(20\d\d)\b", s)
+    if m:
+        mo = _RECON_MONTHS.get(m.group(2).lower().rstrip("."))
+        if mo and 1 <= int(m.group(1)) <= 31:
+            return f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}"
+    return None
+
 
 def flag_expired_offer(offers: List[Dict[str, Any]], source_text: str) -> int:
     """Flag a row whose own source line states it has expired and not been renewed
@@ -1227,6 +1324,12 @@ def flag_expired_offer(offers: List[Dict[str, Any]], source_text: str) -> int:
             flags.append(note)
         o["error_flags"] = flags
         o["needs_manual_review"] = True
+        # The ACTUAL expiry date overrides the circular's general validity — the row
+        # must read the stale date, not the generic one (Samuel 2026-11-28: W22 kept
+        # valid_until 4 Dec though it expired 25 Nov).
+        _eiso = _date_words_to_iso(_edate)
+        if _eiso:
+            o["valid_until"] = _eiso
         o["_expired_flagged"] = True
         _mark(o)
         changed += 1

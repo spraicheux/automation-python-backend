@@ -316,6 +316,15 @@ def _norm_text(s: str | None) -> str:
     return v
 
 
+# Perfume FORMAT acronyms (eau de toilette / parfum …). The family rolls up
+# across formats ("Dior Sauvage EDT" and "EDP" are one family), and the format is
+# preserved separately in perfume_format for the SKU / peer key — so a format
+# token that leaked into the product NAME on one extraction run but sat only in
+# perfume_format on another must not split the family (Samuel 2026-11-28: W04
+# Linden Vault EDP changed canonical identity between import orders).
+_FAMILY_FORMAT_TOKENS = {"edt", "edp", "edc", "edf", "parfum", "extrait", "cologne"}
+
+
 def product_family_id(brand: str | None, product_name: str | None) -> str:
     """
     LEVEL A — FAMILY identity. Answers: "is this the same product family,
@@ -325,8 +334,20 @@ def product_family_id(brand: str | None, product_name: str | None) -> str:
     Used for: search, cross-size roll-up, storytelling ("all Hennessy VS
     offers this week"). NEVER for dedup, Best Price, or benchmarking —
     those need the SKU-level identity below.
+
+    The brand and product name are merged into ONE ordered, de-duplicated token
+    stream so the family identity does NOT depend on where the extractor drew the
+    brand vs product-name boundary — "Linden | Vault" and "Linden Vault | EDP"
+    (and "Dunlin Wharf | Soda" vs "Dunlin | Wharf Soda") fold to the same family.
+    This is what makes the key stable across extraction runs / import orders.
     """
-    return f"{canonical_brand(brand)}|{canonical_product(product_name)}"
+    seen: list[str] = []
+    for tok in f"{canonical_brand(brand)} {canonical_product(product_name)}".split():
+        if tok in _FAMILY_FORMAT_TOKENS:
+            continue
+        if tok not in seen:
+            seen.append(tok)
+    return " ".join(seen)
 
 
 # Historical alias — was used everywhere pre-split. Keep pointing at the

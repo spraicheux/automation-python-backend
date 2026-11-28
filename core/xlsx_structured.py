@@ -725,7 +725,16 @@ def _parse_pack(val: Any) -> Optional[float]:
         return float(val)
     s = str(val).strip()
     low = s.lower()
-    if any(k in low for k in ("individual", "single", "not case", "loose", "n/a")):
+    # An explicit per-case count IS a real case pack even when the units are
+    # described as "loose" — "24 loose cans / case" is a 24-per-case pack whose
+    # cans are loose (vs wrapped sixes, cf. A02), not an item sold singly (Samuel
+    # 2026-11-28: Ashmere A01/A03/A04 read 0 units/case and lost their per-unit
+    # price). Only a cell with NO per-case count is a non-case / per-piece pack.
+    _per_case = bool(re.search(r'(?:/|\bper\b)\s*cases?\b', low))
+    _nopack = ["individual", "single", "not case", "n/a"]
+    if not _per_case:
+        _nopack.append("loose")
+    if any(k in low for k in _nopack):
         return None
     # A gift SET / pack sold as one set is the sale unit, not a case: never derive a
     # case price from "3 × 40 g" inside it (Samuel 2026-11-24: Alder S02 "Gift set of
@@ -1970,6 +1979,44 @@ def extract_structured_products(file_path: str,
                 _flag(f"offer expired{(' ' + _edate) if _edate else ''} and not "
                       f"renewed — stale; excluded from active comparisons, "
                       f"retained for reference")
+                # The ACTUAL expiry date overrides the circular's general validity —
+                # valid_until must read the stale date, not the generic 4 Dec (Samuel
+                # 2026-11-28: B09 flagged expired yet valid_until still showed 4 Dec).
+                _eiso = _header_date(_edate) if _edate else None
+                if _eiso:
+                    prod["valid_until"] = _eiso
+
+            # (e2) Per-row commercial conditions that live in the Terms / Notes /
+            #      Quotation column and must be carried onto THIS row, not globalised
+            #      (Samuel 2026-11-28). A refundable deposit quoted separately from the
+            #      goods price (Ashmere C01 "plus EUR 2.40 refundable deposit/case")
+            #      and a whole-lot / all-or-nothing purchase condition (C04 "Whole lot
+            #      only, minimum order all 18 cases") were being lost.
+            def _add_cond(_n: str):
+                _cc = prod.get("commercial_conditions") or ""
+                if _n.lower() not in _cc.lower():
+                    prod["commercial_conditions"] = (_cc + " | " + _n) if _cc else _n
+
+            _mdep = re.search(
+                r"(?:plus|\+|and)\s+(?:a\s+)?([€$£]|eur|usd|gbp|chf)?\s*(\d[\d.,]*)\s*"
+                r"(?:[€$£]|eur|usd|gbp|chf)?\s*(?:refundable\s+)?deposit"
+                r"(?:\s*(?:/|per)\s*(case|cs|bottle|btl|unit))?", row_text, re.IGNORECASE)
+            if _mdep:
+                _dcur = (_mdep.group(1) or prod.get("currency") or "").upper()
+                _dcur = {"€": "EUR", "$": "USD", "£": "GBP"}.get(_dcur, _dcur)
+                _dper = _mdep.group(3) or "case"
+                _add_cond(f"refundable deposit {(_dcur + ' ') if _dcur else ''}"
+                          f"{_mdep.group(2)} per {_dper} — separate from the goods price")
+
+            if re.search(r"whole\s+lot\s+only|all\s+\d[\d,]*\s+cases?\s+must\s+be\s+taken"
+                         r"|minimum\s+order\s+all\s+\d|entire\s+(?:lot|parcel)\s+only",
+                         row_text, re.IGNORECASE):
+                _mwl = re.search(r"(?:all\s+|minimum\s+order\s+all\s+)(\d[\d,]*)\s*cases?",
+                                 row_text, re.IGNORECASE)
+                _wln = _mwl.group(1) if _mwl else None
+                _add_cond("whole lot only — "
+                          + (f"all {_wln} cases must be taken" if _wln
+                             else "the entire lot must be taken as one order"))
 
             # (f) Superseded / withdrawn price: the row states a CURRENT price and
             #     marks an earlier one withdrawn (Ashmere B04 Birch "CURRENT price

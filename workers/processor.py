@@ -2635,12 +2635,26 @@ def _extract_commercial_conditions(text: str, anchor: Optional[datetime]):
     # Minimum order value (MOV) / minimum order — captured verbatim with its
     # amount when stated nearby ("MOV 2.500 EUR"). Samuel W46 2026-11-13 — the
     # €2,500 MOV in the cover email was missing from every row.
-    if re.search(r'\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order(?:\s+(?:value|quantity))?',
-                 t, re.IGNORECASE):
+    # A whole-lot / all-or-nothing purchase line ("minimum order all 18 cases",
+    # "all 12 cases must be taken") is a PER-ROW condition, NOT a document-wide
+    # minimum order value — strip those phrasings before the MOV scan so a single
+    # row's whole-lot clause is never swept up and stamped on every row as a phantom
+    # "MOV: 18" (Samuel 2026-11-28: all 32 Ashmere rows carried MOV:18 sourced from
+    # C04's whole-lot line; the row now captures its own whole-lot condition).
+    _mov_text = re.sub(
+        r'(?i)minimum\s+order\s+all\s+\d[\d,]*\s*(?:cases?|units?|pieces?|bottles?)?',
+        ' ', t)
+    _mov_text = re.sub(
+        r'(?i)all\s+\d[\d,]*\s+(?:cases?|units?|pieces?|bottles?)\s+must\s+be\s+taken',
+        ' ', _mov_text)
+    # Require an explicit MOV token or "minimum order value/quantity" — a bare
+    # "minimum order all N" is whole-lot, handled per row, not a document MOV.
+    if re.search(r'\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order\s+(?:value|quantity|qty)',
+                 _mov_text, re.IGNORECASE):
         _mov = re.search(
-            r'(?:\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order(?:\s+(?:value|quantity))?)'
+            r'(?:\bM\.?\s?O\.?\s?V\.?\b|minimum\s+order\s+(?:value|quantity|qty))'
             r'[^\d€$£]{0,15}([€$£]?\s?\d[\d.,\s]*\d|\d)\s*(eur|euro|usd|gbp|€|\$|£)?',
-            t, re.IGNORECASE)
+            _mov_text, re.IGNORECASE)
         if _mov and _mov.group(1):
             _amt = _mov.group(1).strip()
             _cur = (_mov.group(2) or '').upper().replace('EURO', 'EUR')
@@ -3025,6 +3039,11 @@ def _reconcile_text_offer(offers: list, source_text: str, job_id: str) -> None:
     dropped |= _rec.collapse_identical_commercial_lines(offers)
     dropped |= _rec.drop_summary_rows(offers)
     changed += _rec.annotate_whole_lot(offers, src)
+    changed += _rec.capture_row_whole_lot(offers, src)   # standalone whole-lot row (W21)
+    # LAST: once every row's own supplier/date is settled, stamp the single
+    # document-level supplier + offer date onto any row the LLM left blank so the
+    # two import orders are identical (W03/W06/W08/W17/W21 — Samuel 2026-11-28).
+    changed += _rec.fill_document_supplier_and_date(offers, src)
     if not dropped and changed == 0:
         return
     # Rewrite this job's rows cleanly: delete all rows for the job, reset the
