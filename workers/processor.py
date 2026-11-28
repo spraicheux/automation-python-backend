@@ -2686,14 +2686,27 @@ def _apply_offer_level(safe_data: dict, conditions, cond_valid_until,
     one. All condition / source notes are merged into error_flags so nothing
     is silently dropped."""
     if conditions:
+        _conds = conditions
+        # A row whose OWN validity overrides the circular's — a line that says it
+        # expired 25 Nov while the header is valid to 4 Dec — must NOT also carry
+        # the header's validity clause: next to the row's valid_until (25 Nov) and
+        # its expiry flag it reads as a contradiction and re-raises the very "still
+        # says 4 December" complaint the row-level override resolved (Samuel
+        # 2026-11-28: B09/W22). Drop only the Validity clause; keep the rest.
+        _rv = safe_data.get('valid_until')
+        if _rv and cond_valid_until and str(_rv) != str(cond_valid_until):
+            _conds = re.sub(r"\s*Validity:[^;|]*(?:;|$)", " ", _conds)
+            _conds = re.sub(r"\s{2,}", " ", _conds).strip(" ;|")
         # Merge, never overwrite — a row may already carry its OWN note (an
         # ambiguous-basis price retained as-quoted, e.g. Beefeater "USD 75"),
         # which must survive alongside the offer-level terms (Samuel 2026-11-18).
         _existing = (safe_data.get('commercial_conditions') or '').strip()
-        if not _existing:
-            safe_data['commercial_conditions'] = conditions
-        elif conditions not in _existing:
-            safe_data['commercial_conditions'] = f"{_existing} | {conditions}"
+        if not _conds:
+            pass
+        elif not _existing:
+            safe_data['commercial_conditions'] = _conds
+        elif _conds not in _existing:
+            safe_data['commercial_conditions'] = f"{_existing} | {_conds}"
     if source_type:
         # VARCHAR(255) column — truncate, never let a long value fail the save.
         safe_data['source_type'] = str(source_type)[:255]
