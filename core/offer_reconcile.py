@@ -1409,6 +1409,18 @@ def flag_expired_offer(offers: List[Dict[str, Any]], source_text: str) -> int:
         _eiso = _date_words_to_iso(_edate)
         if _eiso:
             o["valid_until"] = _eiso
+            # Drop the circular's general "Validity: valid until 4 December" clause
+            # from THIS row's conditions: the row has expired (25 Nov), so echoing
+            # the header validity contradicts its own valid_until and its expiry
+            # flag and re-raises the "still says 4 December" complaint (Samuel
+            # 2026-11-28: W22). _apply_offer_level runs earlier and appended it, so
+            # strip it here now that the row-level expiry is known. On the structured
+            # path the same is done in processor._apply_offer_level (B09).
+            _cc = o.get("commercial_conditions")
+            if _cc:
+                _parts = [p.strip() for p in re.split(r"\s*[;|]\s*", _cc)
+                          if p.strip() and not re.match(r"(?i)validity\s*:", p.strip())]
+                o["commercial_conditions"] = " | ".join(_parts) if _parts else None
         o["_expired_flagged"] = True
         _mark(o)
         changed += 1
