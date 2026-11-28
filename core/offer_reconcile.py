@@ -1317,6 +1317,13 @@ def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> i
         o["error_flags"] = flags
         o["needs_manual_review"] = True
         o["_no_stock_flagged"] = True
+        # No stock = NO available quantity. A "70 cases SOLD" figure is what is gone,
+        # not what is on offer, so it must never read as an available quantity — one
+        # import order extracted it, the other did not (Samuel 2026-11-28: W12). The
+        # price is retained for reference; the availability is cleared.
+        for _qk in ("quantity_case", "quantity_bottles", "quantity_pallets",
+                    "quantity_ftl", "quantity_unit"):
+            o[_qk] = None
         _mark(o)
         changed += 1
     return changed
