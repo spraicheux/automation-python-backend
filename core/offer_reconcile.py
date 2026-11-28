@@ -1319,11 +1319,21 @@ def flag_no_available_stock(offers: List[Dict[str, Any]], source_text: str) -> i
         o["_no_stock_flagged"] = True
         # No stock = NO available quantity. A "70 cases SOLD" figure is what is gone,
         # not what is on offer, so it must never read as an available quantity — one
-        # import order extracted it, the other did not (Samuel 2026-11-28: W12). The
-        # price is retained for reference; the availability is cleared.
+        # import order extracted it, the other did not (Samuel 2026-11-28: W12).
         for _qk in ("quantity_case", "quantity_bottles", "quantity_pallets",
                     "quantity_ftl", "quantity_unit"):
             o[_qk] = None
+        # A price the source marks as a FORMER / HISTORICAL / PREVIOUS quote is a past
+        # figure, not a live offer, so it must not read as quotable — and one import
+        # order captured it while the other did not (Samuel 2026-11-28: W12 "previous
+        # EUR 36/case … Nothing available"; mirrors Ashmere A14). A merely reserved
+        # line keeps its live price for reference.
+        if re.search(r"former\s+quote|historical\s+price|\bprevious\b|\bformer\b"
+                     r"|price\s+only|old\s+price|was\s+(?:eur|gbp|usd|chf|€|£|\$)?\s*\d",
+                     ln, re.IGNORECASE):
+            for _pk in ("price_per_case", "price_per_unit", "price_per_bottle"):
+                if _pk in o:
+                    o[_pk] = None
         _mark(o)
         changed += 1
     return changed

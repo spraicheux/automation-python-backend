@@ -1881,6 +1881,7 @@ def extract_structured_products(file_path: str,
             #     the circular dialects too (Samuel 2026-11-27: Ashmere A14 "All 62
             #     cases SOLD … 0 available … no stock offered"; B05 Raven "parcel
             #     RESERVED … zero available for new orders").
+            _hist_cleared = False
             if re.search(r"\bsold\s*out\b|closed\s+parcel|no\s+longer\s+available"
                          r"|out\s+of\s+stock|discontinued"
                          r"|all\s+\d[\d,]*\s+(?:cases?|units?|bottles?)\s+sold"
@@ -1890,16 +1891,31 @@ def extract_structured_products(file_path: str,
                 for _qk in ("quantity_case", "quantity_bottles",
                             "quantity_pallets", "quantity_ftl"):
                     prod.pop(_qk, None)
+                # A price the source marks as a FORMER / HISTORICAL / PREVIOUS quote is
+                # a past figure, not a live offer, so it must not read as quotable — and
+                # one extraction run captured it while another did not (Samuel 2026-11-28:
+                # A14 "Former quote EUR 42/case … Historical price only"; mirrors Northwick
+                # W12 "previous EUR 36/case"). A merely RESERVED parcel keeps its live
+                # price (B05 "parcel reserved … zero available", price 102 is current).
+                _hist_cleared = bool(re.search(
+                    r"former\s+quote|historical\s+price|\bprevious\b|\bformer\b"
+                    r"|price\s+only|old\s+price|was\s+(?:eur|gbp|usd|chf|€|£|\$)?\s*\d",
+                    row_text, re.IGNORECASE))
+                if _hist_cleared:
+                    for _pk in ("price_per_case", "price_per_unit", "price_per_case_eur"):
+                        prod[_pk] = None
                 _reserved = bool(re.search(r"reserved", row_text, re.IGNORECASE))
                 _flag(("reserved for another buyer — zero available for new orders; "
-                       "retained for reference") if _reserved else
-                      ("sold out — not available; retained for reference"))
+                       "price retained for reference") if _reserved else
+                      ("sold out — historical price only, not a live offer" if _hist_cleared
+                       else "sold out — not available; retained for reference"))
             # (b) A currency but no price = the amount wasn't captured. Never show
             #     it green (Alder A03 lost its EUR 8.64).
             if (prod.get("currency") and prod.get("currency") not in ("Not Found",)
                     and prod.get("price_per_unit") is None
                     and prod.get("price_per_case") is None
                     and not price_on_request
+                    and not _hist_cleared
                     and "as quoted" not in str(prod.get("commercial_conditions") or "").lower()):
                 _flag("currency present but no price captured — confirm the price against the source")
             # (c) Case price and unit price disagree (case ≠ unit × pack) → a
@@ -2110,6 +2126,29 @@ def extract_structured_products(file_path: str,
                     prod["category_slug"] = _slug
             if (not prod.get("product_type")) and re.search(r"\bcandles?\b", row_text, re.IGNORECASE):
                 prod["product_type"] = "candle"
+            # Perfume / cosmetic discriminators the sheet left in the NAME rather than a
+            # Type column (Ashmere C02 "… EDP 100 ml TESTER", C03 "… RETAIL") must be
+            # captured into their own fields: product_family_id now strips format / size /
+            # retail-state tokens from the FAMILY identity (so a tester and a retail unit
+            # of the same perfume roll up to one family), so the SKU / peer key stays
+            # distinct only if perfume_format and retail_state carry the split. Without
+            # this the tester and the retail line would collapse to one SKU (Samuel
+            # 2026-11-28).
+            if (prod.get("category_slug") or "").lower() in ("perfumes", "cosmetics"):
+                _nm = f"{prod.get('product_name') or ''} {row_text}".lower()
+                if not prod.get("perfume_format"):
+                    _pf = re.search(r"\b(edp|edt|edc|edf|parfum|extrait|cologne)\b", _nm)
+                    if _pf:
+                        prod["perfume_format"] = _pf.group(1).upper()
+                if not prod.get("retail_state"):
+                    if re.search(r"\btester\b", _nm):
+                        prod["retail_state"] = "tester"
+                    elif re.search(r"\bsample\b", _nm):
+                        prod["retail_state"] = "sample"
+                    elif re.search(r"\bminiature\b", _nm):
+                        prod["retail_state"] = "miniature"
+                    elif re.search(r"\bretail\b", _nm):
+                        prod["retail_state"] = "retail"
             prod["_structured_source"] = f"{ws.title}:row{r}"
             # Keep the full row text on the row so downstream deterministic passes
             # (co-equal delivery split, etc.) can read an annotation that lives in

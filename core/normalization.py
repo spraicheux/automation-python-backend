@@ -324,6 +324,28 @@ def _norm_text(s: str | None) -> str:
 # Linden Vault EDP changed canonical identity between import orders).
 _FAMILY_FORMAT_TOKENS = {"edt", "edp", "edc", "edf", "parfum", "extrait", "cologne"}
 
+# Descriptor tokens the pipeline already captures in dedicated attribute fields
+# (size → unit_volume_ml, retail state → retail_state, format → perfume_format) and
+# that therefore must NOT leak into the FAMILY identity when one extraction run packs
+# them into the product NAME while another leaves them in their own field (Samuel
+# 2026-11-28: W04 "Linden Vault EDP 50ml retail boxed" vs "Linden | Vault" gave two
+# different canonical identities / comparison groups across import orders).
+_FAMILY_DROP_TOKENS = _FAMILY_FORMAT_TOKENS | {
+    "retail", "tester", "testers", "sample", "samples",   # retail_state
+    "boxed", "box", "boxes", "unboxed", "giftbox",        # packaging, not identity
+    "ml", "cl", "ltr", "litre", "liter",                  # bare volume units
+}
+# A volume/size token (number + unit, e.g. "50ml", "70cl", "1l") — the magnitude
+# lives in unit_volume_ml, never in the family identity. Bare numbers are left alone
+# so a brand that legitimately carries a number (e.g. "Pastis 51") is never merged,
+# EXCEPT when the bare number is immediately followed by a volume unit ("50 ml"
+# written with a space): then it is a size, and dropping it keeps the family identity
+# identical whether the extractor wrote "50ml" or "50 ml" — so the same product reads
+# the same across the text and the structured readers (W04 Linden Vault vs A05).
+_FAMILY_SIZE_RE = re.compile(r"^\d+(?:[.,]\d+)?(?:ml|cl|l|ltr|litre|liter|g|kg|oz)$")
+_FAMILY_SIZE_UNIT_WORDS = {"ml", "cl", "l", "ltr", "litre", "liter", "g", "kg", "oz"}
+_BARE_NUMBER_RE = re.compile(r"^\d+(?:[.,]\d+)?$")
+
 
 def product_family_id(brand: str | None, product_name: str | None) -> str:
     """
@@ -342,11 +364,21 @@ def product_family_id(brand: str | None, product_name: str | None) -> str:
     This is what makes the key stable across extraction runs / import orders.
     """
     seen: list[str] = []
-    for tok in f"{canonical_brand(brand)} {canonical_product(product_name)}".split():
-        if tok in _FAMILY_FORMAT_TOKENS:
+    toks = f"{canonical_brand(brand)} {canonical_product(product_name)}".split()
+    i, n = 0, len(toks)
+    while i < n:
+        tok = toks[i]
+        # "50 ml" written with a space → number + unit is a size pair: drop both.
+        if (i + 1 < n and _BARE_NUMBER_RE.match(tok)
+                and toks[i + 1] in _FAMILY_SIZE_UNIT_WORDS):
+            i += 2
+            continue
+        if tok in _FAMILY_DROP_TOKENS or _FAMILY_SIZE_RE.match(tok):
+            i += 1
             continue
         if tok not in seen:
             seen.append(tok)
+        i += 1
     return " ".join(seen)
 
 
