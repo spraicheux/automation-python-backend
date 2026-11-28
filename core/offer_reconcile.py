@@ -2303,23 +2303,63 @@ def fix_wrapped_pack_unit_price(offers: List[Dict[str, Any]], source_text: str) 
         if not (ppc and upc and upc > 1):
             continue
         per_can = round(ppc / upc, 4)
-        if ppu is not None and abs(ppu - per_can) <= 0.01:
-            continue  # already per-can
         ln = (_unique_source_line(o, lines) or _row_line_by_amount(o, lines)
               or _source_line_for(o, lines))
         if not ln or not _PACK_BASIS_RE.search(ln):
             continue
-        o["price_per_unit"] = per_can
-        o["price_per_unit_eur"] = None
+        did = False
+        # Repair the per-unit price only when the LLM left it per-PACK. The note,
+        # however, is attached whenever the source states a pack basis — not only
+        # when a repair was needed — so a run where the LLM already emitted the
+        # per-can price carries the SAME provenance note as one that was repaired
+        # (Samuel 2026-11-28: W02 note appeared in one import order but not the
+        # other, because only one order needed the repair).
+        if ppu is None or abs(ppu - per_can) > 0.01:
+            o["price_per_unit"] = per_can
+            o["price_per_unit_eur"] = None
+            o["error_flags"] = [f for f in (o.get("error_flags") or [])
+                if not (isinstance(f, str) and "does not match unit" in f.lower())]
+            o["needs_manual_review"] = False   # no real conflict; gate re-decides
+            did = True
         cc = _clean(o.get("commercial_conditions"))
         if "per pack" not in cc.lower() and "per six-pack" not in cc.lower():
             o["commercial_conditions"] = (cc + " | " if cc else "") + (
                 f"price quoted per pack; per-can price = case ÷ pack ({per_can:g})")
-        o["error_flags"] = [f for f in (o.get("error_flags") or [])
-            if not (isinstance(f, str) and "does not match unit" in f.lower())]
-        o["needs_manual_review"] = False   # no real conflict; gate re-decides
-        _mark(o)
-        changed += 1
+            did = True
+        if did:
+            _mark(o)
+            changed += 1
+    return changed
+
+
+def normalize_set_identity_fields(offers: List[Dict[str, Any]], source_text: str) -> int:
+    """Remove two LLM-variance leaks that diverge the peer group of a gift / set
+    product between import orders (Samuel 2026-11-28: W07 Mica Garden Discovery
+    Set got range_name='Mica' and unit_volume_ml=50 on one run, neither on the
+    other): (a) a range_name that merely repeats the brand is not a range, and
+    (b) a multi-component set ('two 50ml sprays plus one 15ml spray') has NO single
+    unit volume — a component size must not pose as the product's volume."""
+    if not source_text:
+        return 0
+    lines = [l.strip() for l in str(source_text).splitlines() if l.strip()]
+    changed = 0
+    for o in offers:
+        did = False
+        rn = (o.get("range_name") or "").strip()
+        br = (o.get("brand") or "").strip()
+        if rn and br and rn.lower() == br.lower():
+            o["range_name"] = None
+            did = True
+        ln = _unique_source_line(o, lines) or _row_line_by_amount(o, lines)
+        if ln and re.search(r"discovery\s+set|gift\s+set|\bset\s+of\b|intact\s+set|"
+                            r"each\s+(?:intact\s+)?set", ln, re.IGNORECASE):
+            sizes = set(re.findall(r"(\d+)\s*ml\b", ln, re.IGNORECASE))
+            if len(sizes) >= 2 and o.get("unit_volume_ml") is not None:
+                o["unit_volume_ml"] = None
+                did = True
+        if did:
+            _mark(o)
+            changed += 1
     return changed
 
 
