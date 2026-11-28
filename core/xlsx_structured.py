@@ -2103,13 +2103,18 @@ def extract_structured_products(file_path: str,
 
             # Keep the row when it carries ANY commercial signal — a price, a
             # price-on-request marker, a quantity, or an EAN. A no-price,
-            # no-quantity line falls through to the LLM/flagging path.
+            # no-quantity line falls through to the LLM/flagging path — UNLESS we
+            # have deliberately flagged it for review (e.g. a sold-out row whose
+            # price we cleared as historical, Ashmere A14): a flagged row must stay
+            # visible so it can be reviewed and excluded, never silently dropped
+            # here just because it now has no quotable figure (Samuel 2026-11-28).
             _has_price = (prod.get("price_per_unit") is not None
                           or prod.get("price_per_case") is not None)
             _has_qty = any(prod.get(k) for k in
                            ("quantity_case", "quantity_bottles",
                             "quantity_pallets", "quantity_ftl"))
-            if not (_has_price or price_on_request or _has_qty or prod.get("ean_code")):
+            if not (_has_price or price_on_request or _has_qty
+                    or prod.get("ean_code") or prod.get("needs_manual_review")):
                 continue
 
             # Per-row category on the structured path (parity with the text path):

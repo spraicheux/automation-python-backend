@@ -239,7 +239,7 @@ def worker_code_probe():
         pass
     return {
         "host": socket.gethostname(),
-        "build": "recon77",
+        "build": "recon78",
         "my_epoch": _MY_EPOCH,
         "current_epoch": _cur_epoch,
         "is_current": (_MY_EPOCH is not None and _MY_EPOCH == _cur_epoch),
