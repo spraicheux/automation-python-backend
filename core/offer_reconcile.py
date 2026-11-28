@@ -2364,6 +2364,18 @@ def normalize_set_identity_fields(offers: List[Dict[str, Any]], source_text: str
             if len(sizes) >= 2 and o.get("unit_volume_ml") is not None:
                 o["unit_volume_ml"] = None
                 did = True
+            # The LLM flips a perfume set between 'perfumes' and 'cosmetics' across
+            # runs (W07). Classify from the SOURCE LINE — identical in both import
+            # orders — so the category (and peer group) is deterministic. Only acts
+            # on a confident beauty signal; a non-beauty set is left to the LLM.
+            try:
+                from core.category_classifier import detect_row_category as _drc
+                _det = _drc(ln)
+            except Exception:
+                _det = None
+            if _det in ("perfumes", "cosmetics") and o.get("category_slug") != _det:
+                o["category_slug"] = _det
+                did = True
         if did:
             _mark(o)
             changed += 1

@@ -356,6 +356,25 @@ def apply_deterministic_defaults(products: list, source_text: str,
                 f"(inherited from document heuristic)"
             )
 
+        # The LLM sometimes flips a beauty product between 'perfumes' and
+        # 'cosmetics' from one run to the next (Samuel 2026-11-28: W07 Mica
+        # discovery set — cosmetics in one import order, perfumes in the other).
+        # When the row already reads as a beauty product AND the deterministic
+        # classifier confidently names the OTHER beauty category, the deterministic
+        # signal wins — it is stable across runs. Restricted to perfume↔cosmetic so
+        # a wines_spirits row is never pulled into beauty by a stray token.
+        if row_cat in ("perfumes", "cosmetics"):
+            _bt = " ".join(s for s in (
+                p.get("_raw_row_text") or "", p.get("_row_text") or "",
+                p.get("product_name") or "", p.get("brand") or "",
+                p.get("sub_category") or "") if s)
+            _det = detect_row_category(_bt) if _bt.strip() else None
+            if _det in ("perfumes", "cosmetics") and _det != row_cat:
+                p["category_slug"] = _det
+                corrections.append(
+                    f"Row {i+1}: category_slug {row_cat} → {_det} "
+                    f"(deterministic beauty signal overrides unstable LLM label)")
+
         # A candle is a distinct product_type within cosmetics — stamp it so the
         # structured XLSX candle shares a peer group with the same candle quoted on
         # the text path (Ashmere A07/B03 ↔ Northwick W06/W17), which already carries
